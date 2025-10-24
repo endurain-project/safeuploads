@@ -18,7 +18,7 @@ pip install safeuploads
 
 Requirements:
 - Python 3.13+
-- `fastapi` (UploadFile integration)
+- `fastapi` (HTTPException, status, UploadFile integration)
 - `python-magic` (installed automatically)
 - Python's standard `logging` configuration to collect `safeuploads` diagnostics
 

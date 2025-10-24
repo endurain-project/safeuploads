@@ -1,8 +1,6 @@
-"""
-Windows Security Validator Module
+"""Windows security validator for filename validation."""
 
-Handles validation of Windows-specific security threats.
-"""
+from __future__ import annotations
 
 import os
 from typing import TYPE_CHECKING
@@ -15,30 +13,30 @@ if TYPE_CHECKING:
 
 class WindowsSecurityValidator(BaseValidator):
     """
-    Validator that ensures filenames do not use Windows reserved device names
-    by stripping extensions and dots before comparison.
+    Validator for Windows reserved device names.
+
+    Attributes:
+        config: File security configuration settings.
     """
 
-    def __init__(self, config: "FileSecurityConfig"):
+    def __init__(self, config: FileSecurityConfig):
         """
-        Initialize the validator with the provided file security configuration.
+        Initialize the validator.
 
         Args:
-            config (FileSecurityConfig): Application-wide file security settings
-            used to enforce validation rules.
+            config: File security configuration settings.
         """
         super().__init__(config)
 
     def validate_windows_reserved_names(self, filename: str) -> None:
         """
-        Validate the given filename against Windows reserved device names.
+        Validate filename against Windows reserved device names.
 
         Args:
-            filename (str): The original filename, potentially including an extension.
+            filename: The filename to validate.
 
         Raises:
-            ValueError: If the filename (ignoring leading and trailing dots as well as file extension)
-                matches one of the Windows reserved device names.
+            ValueError: If filename matches a Windows reserved name.
         """
         name_without_ext = os.path.splitext(filename)[0].lower().strip()
         # Remove leading dots to handle hidden files like ".CON.jpg"
@@ -54,12 +52,12 @@ class WindowsSecurityValidator(BaseValidator):
 
     def validate(self, filename: str) -> None:
         """
-        Validate a filename against Windows reserved naming rules.
+        Validate filename against Windows reserved naming rules.
 
         Args:
-            filename (str): Name of the file to validate.
+            filename: The filename to validate.
 
         Raises:
-            ValueError: If the filename matches a Windows reserved name.
+            ValueError: If filename matches a Windows reserved name.
         """
         return self.validate_windows_reserved_names(filename)

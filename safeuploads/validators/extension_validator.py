@@ -1,8 +1,4 @@
-"""
-Extension Security Validator Module
-
-Handles validation of file extensions for security threats.
-"""
+from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
@@ -14,32 +10,30 @@ if TYPE_CHECKING:
 
 class ExtensionSecurityValidator(BaseValidator):
     """
-    Validates filenames against configured forbidden extensions to guard against risky uploads.
-    This validator checks for both compound extensions (e.g., ".tar.gz") and any
-    individual blocked extension segments within a filename. If a prohibited
-    extension is detected, a descriptive ValueError is raised to prevent the upload.
-        config (FileSecurityConfig): Configuration providing lists of blocked and compound blocked extensions.
+    Validates filenames against configured forbidden extensions.
+
+    Attributes:
+        config: File security configuration settings.
     """
 
-    def __init__(self, config: "FileSecurityConfig"):
+    def __init__(self, config: FileSecurityConfig):
         """
-        Initialize the validator with the provided file security configuration.
+        Initialize the validator.
 
         Args:
-            config (FileSecurityConfig): The file security settings that control how file extensions are validated.
+            config: File security configuration settings.
         """
         super().__init__(config)
 
     def validate_extensions(self, filename: str) -> None:
         """
-        Validate a filename against blocked extensions to prevent unsafe uploads.
+        Validate filename against blocked extensions.
 
         Args:
-            filename (str): Name of the file being validated, including its extension(s).
+            filename: Name of the file to validate.
 
         Raises:
-            ValueError: If the filename ends with a blocked compound extension or contains
-                any blocked single extension segment.
+            ValueError: If blocked compound or single extension detected.
         """
         # Check for compound dangerous extensions first (e.g., .tar.xz, .user.js)
         filename_lower = filename.lower()
@@ -60,12 +54,12 @@ class ExtensionSecurityValidator(BaseValidator):
 
     def validate(self, filename: str) -> None:
         """
-        Validate the given filename by delegating to :meth:`validate_extensions`.
+        Validate the given filename.
 
         Args:
-            filename (str): Name of the file whose extension should be validated.
+            filename: Name of the file to validate.
 
         Raises:
-            ValidationError: If the filename extension is not permitted.
+            ValueError: If filename extension is not permitted.
         """
         return self.validate_extensions(filename)

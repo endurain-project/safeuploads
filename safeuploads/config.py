@@ -1,10 +1,7 @@
 """
-File Security Configuration Module
-
-Contains configuration classes and settings for the file security system.
+File security configuration module.
 """
 
-from typing import Set, List
 from dataclasses import dataclass
 
 import logging
@@ -22,22 +19,23 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SecurityLimits:
     """
-    Security constraints applied to file submissions to ensure safe upload handling.
+    Security constraints for file submissions.
+
     Attributes:
-        max_image_size (int): Maximum allowed size, in bytes, for uploaded image files.
-        max_zip_size (int): Maximum allowed size, in bytes, for uploaded ZIP archives.
-        max_compression_ratio (int): Maximum expansion ratio permitted when decompressing ZIP files.
-        max_uncompressed_size (int): Maximum cumulative size, in bytes, of all files extracted from a ZIP archive.
-        max_individual_file_size (int): Maximum allowed size, in bytes, for any single file within a ZIP archive.
-        max_zip_entries (int): Maximum number of individual file entries permitted in a ZIP archive.
-        zip_analysis_timeout (float): Maximum time, in seconds, to spend analyzing the structure of a ZIP archive.
-        max_zip_depth (int): Maximum directory nesting depth allowed within a ZIP archive.
-        max_filename_length (int): Maximum length permitted for individual filenames inside ZIP archives.
-        max_path_length (int): Maximum length permitted for full file paths inside ZIP archives.
-        allow_nested_archives (bool): Flag indicating whether nested archive files are permitted.
-        allow_symlinks (bool): Flag indicating whether symbolic links within ZIP archives are permitted.
-        allow_absolute_paths (bool): Flag indicating whether absolute path entries within ZIP archives are permitted.
-        scan_zip_content (bool): Flag indicating whether a deep inspection of ZIP file contents should be performed.
+        max_image_size: Maximum size in bytes for image files.
+        max_zip_size: Maximum size in bytes for ZIP archives.
+        max_compression_ratio: Maximum expansion ratio for ZIP files.
+        max_uncompressed_size: Maximum cumulative size of ZIP contents.
+        max_individual_file_size: Maximum size of single file in ZIP.
+        max_zip_entries: Maximum number of file entries in ZIP.
+        zip_analysis_timeout: Maximum seconds for ZIP analysis.
+        max_zip_depth: Maximum directory nesting depth in ZIP.
+        max_filename_length: Maximum length for filenames in ZIP.
+        max_path_length: Maximum length for full paths in ZIP.
+        allow_nested_archives: Whether nested archives are permitted.
+        allow_symlinks: Whether symbolic links are permitted.
+        allow_absolute_paths: Whether absolute paths are permitted.
+        scan_zip_content: Whether deep content inspection is enabled.
     """
 
     # File size limits (in bytes)
@@ -67,36 +65,45 @@ class SecurityLimits:
 
 class FileSecurityConfig:
     """
-    Centralizes and validates file upload security settings, including allowed MIME types,
-    permitted extensions, blocked extension categories, dangerous Unicode characters, and
-    platform-specific reserved filenames. Provides helper accessors for enum-driven data,
-    performs consistency checks across all limits and mappings, and reports configuration issues
-    with severity-aware validation results.
+    Centralizes file upload security settings and validation.
+
+    Attributes:
+        limits: Security limits configuration instance.
+        ALLOWED_IMAGE_MIMES: Permitted MIME types for images.
+        ALLOWED_ZIP_MIMES: Permitted MIME types for ZIP files.
+        ALLOWED_IMAGE_EXTENSIONS: Permitted image file extensions.
+        ALLOWED_ZIP_EXTENSIONS: Permitted ZIP file extensions.
+        BLOCKED_EXTENSIONS: Dangerous file extensions to block.
+        COMPOUND_BLOCKED_EXTENSIONS: Multi-part extensions to block.
+        DANGEROUS_UNICODE_CHARS: Unicode characters for filename attacks.
+        WINDOWS_RESERVED_NAMES: Platform-specific reserved filenames.
     """
 
     # Security limits configuration
     limits = SecurityLimits()
 
     # Allowed MIME types for images
-    ALLOWED_IMAGE_MIMES: Set[str] = {"image/jpeg", "image/jpg", "image/png"}
+    ALLOWED_IMAGE_MIMES: set[str] = {"image/jpeg", "image/jpg", "image/png"}
 
     # Allowed MIME types for ZIP files
-    ALLOWED_ZIP_MIMES: Set[str] = {
+    ALLOWED_ZIP_MIMES: set[str] = {
         "application/zip",
         "application/x-zip-compressed",
         "multipart/x-zip",
     }
 
     # Allowed file extensions
-    ALLOWED_IMAGE_EXTENSIONS: Set[str] = {".jpg", ".jpeg", ".png"}
-    ALLOWED_ZIP_EXTENSIONS: Set[str] = {".zip"}
+    ALLOWED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png"}
+    ALLOWED_ZIP_EXTENSIONS: set[str] = {".zip"}
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod
-    def _generate_blocked_extensions() -> Set[str]:
+    def _generate_blocked_extensions() -> set[str]:
         """
-        Aggregate all extension lists defined in DangerousExtensionCategory into
-        a single set of blocked extensions.
+        Aggregate all dangerous extension categories.
+
+        Returns:
+            Combined set of blocked file extensions.
         """
         blocked_extensions = set()
 
@@ -108,11 +115,12 @@ class FileSecurityConfig:
 
     # Generate compound dangerous file extensions from categorized enums
     @staticmethod
-    def _generate_compound_blocked_extensions() -> Set[str]:
+    def _generate_compound_blocked_extensions() -> set[str]:
         """
-        Aggregate all compound extension categories into a single set of blocked compound extensions.
+        Aggregate all compound extension categories.
+
         Returns:
-            Set[str]: Combined set of blocked compound file extensions from every category.
+            Combined set of blocked compound file extensions.
         """
         compound_extensions = set()
 
@@ -124,10 +132,12 @@ class FileSecurityConfig:
 
     # Generate dangerous Unicode characters from categorized enums
     @staticmethod
-    def _generate_dangerous_unicode_chars() -> Set[int]:
+    def _generate_dangerous_unicode_chars() -> set[int]:
         """
-        Aggregate and return the union of all dangerous Unicode code points defined
-        across every Unicode attack category.
+        Aggregate all dangerous Unicode code points.
+
+        Returns:
+            Combined set of dangerous Unicode code points.
         """
         dangerous_chars = set()
 
@@ -138,19 +148,19 @@ class FileSecurityConfig:
         return dangerous_chars
 
     # Dangerous file extensions to explicitly block (generated from enums)
-    BLOCKED_EXTENSIONS: Set[str] = _generate_blocked_extensions()
+    BLOCKED_EXTENSIONS: set[str] = _generate_blocked_extensions()
 
     # Compound dangerous file extensions (multi-part extensions)
     # These are checked as complete strings, not individual parts
-    COMPOUND_BLOCKED_EXTENSIONS: Set[str] = _generate_compound_blocked_extensions()
+    COMPOUND_BLOCKED_EXTENSIONS: set[str] = _generate_compound_blocked_extensions()
 
     # Dangerous Unicode characters that can be used for filename attacks
     # These characters can disguise file extensions or cause rendering issues
-    DANGEROUS_UNICODE_CHARS: Set[int] = _generate_dangerous_unicode_chars()
+    DANGEROUS_UNICODE_CHARS: set[int] = _generate_dangerous_unicode_chars()
 
     # Windows reserved names that cannot be used as filenames
     # These names are reserved by Windows regardless of extension
-    WINDOWS_RESERVED_NAMES: Set[str] = {
+    WINDOWS_RESERVED_NAMES: set[str] = {
         "con",
         "prn",
         "aux",
@@ -179,8 +189,10 @@ class FileSecurityConfig:
     @classmethod
     def __init_subclass__(cls, **kwargs):
         """
-        Hook that runs when a subclass is created, ensuring configuration validation executes in
-        non-strict mode while logging warnings for any issues encountered.
+        Hook for subclass creation to validate configuration.
+
+        Args:
+            **kwargs: Subclass initialization arguments.
         """
         super().__init_subclass__(**kwargs)
         # Perform validation with warnings allowed (non-strict mode)
@@ -192,44 +204,43 @@ class FileSecurityConfig:
     @classmethod
     def get_extensions_by_category(
         cls, category: DangerousExtensionCategory
-    ) -> Set[str]:
+    ) -> set[str]:
         """
-        Return a copy of the extension set associated with the provided dangerous extension category.
+        Return extensions for a dangerous extension category.
 
         Args:
-            category (DangerousExtensionCategory): The category whose extensions should be retrieved.
+            category: The dangerous extension category.
 
         Returns:
-            Set[str]: A copy of the set containing all extensions in the specified category.
+            Copy of extensions in the specified category.
         """
         return category.value.copy()
 
     @classmethod
     def get_compound_extensions_by_category(
         cls, category: CompoundExtensionCategory
-    ) -> Set[str]:
+    ) -> set[str]:
         """
-        Return a copy of the compound extensions associated with the given category.
+        Return compound extensions for a category.
 
         Args:
-            category (CompoundExtensionCategory): The category whose compound extensions will be returned.
+            category: The compound extension category.
 
         Returns:
-            Set[str]: A copy of the compound extensions for the specified category.
+            Copy of compound extensions in the specified category.
         """
         return category.value.copy()
 
     @classmethod
-    def get_unicode_chars_by_category(cls, category: UnicodeAttackCategory) -> Set[int]:
+    def get_unicode_chars_by_category(cls, category: UnicodeAttackCategory) -> set[int]:
         """
-        Return the Unicode code points associated with a given attack category.
+        Return Unicode code points for an attack category.
 
         Args:
-            cls (Type[UnicodeAttackCategory]): Class the method is bound to.
-            category (UnicodeAttackCategory): Attack category whose code points will be retrieved.
+            category: The Unicode attack category.
 
         Returns:
-            Set[int]: A copy of the code points belonging to the specified category.
+            Copy of code points in the specified category.
         """
         return category.value.copy()
 
@@ -238,14 +249,14 @@ class FileSecurityConfig:
         cls, extension: str, category: DangerousExtensionCategory
     ) -> bool:
         """
-        Determine whether a given file extension belongs to the specified dangerous extension category.
+        Check if extension belongs to a dangerous category.
 
         Args:
-            extension (str): File extension to evaluate. It can include upper or lower case characters.
-            category (DangerousExtensionCategory): Category whose extensions will be checked against.
+            extension: File extension to evaluate.
+            category: Category to check against.
 
         Returns:
-            bool: True if the extension is present in the category, otherwise False.
+            True if extension is in the category, False otherwise.
         """
         return extension.lower() in category.value
 
@@ -254,14 +265,13 @@ class FileSecurityConfig:
         cls, extension: str
     ) -> DangerousExtensionCategory | None:
         """
-        Return the dangerous extension category for a given file extension.
+        Return the dangerous extension category for an extension.
 
         Args:
             extension: The file extension to evaluate.
 
         Returns:
-            The matching DangerousExtensionCategory if the extension is considered dangerous,
-            otherwise None.
+            Matching category if dangerous, None otherwise.
         """
         extension_lower = extension.lower()
         for category in DangerousExtensionCategory:
@@ -270,17 +280,15 @@ class FileSecurityConfig:
         return None
 
     @classmethod
-    def validate_configuration(cls, strict: bool = True) -> List[ConfigValidationError]:
+    def validate_configuration(cls, strict: bool = True) -> list[ConfigValidationError]:
         """
-        Run all configuration validation routines and return any detected issues.
+        Run all configuration validation routines.
 
         Args:
-            strict (bool, optional): Unused flag reserved for future behavior adjustments.
+            strict: Reserved for future behavior adjustments.
 
         Returns:
-            List[ConfigValidationError]: Collected validation errors found across file
-                size limits, MIME types, extensions, compression settings, enum
-                consistency, and cross-configuration dependencies.
+            List of detected validation errors.
         """
         errors = []
 
@@ -305,14 +313,12 @@ class FileSecurityConfig:
         return errors
 
     @classmethod
-    def _validate_file_size_limits(cls) -> List[ConfigValidationError]:
+    def _validate_file_size_limits(cls) -> list[ConfigValidationError]:
         """
-        Validate configured file size limits and collect any configuration errors.
+        Validate configured file size limits.
 
         Returns:
-            List[ConfigValidationError]: A list of detected configuration issues, such as
-                non-positive limits, excessively large limits, or inconsistent relationships
-                between ZIP and image size limits.
+            List of detected configuration issues.
         """
         errors = []
 
@@ -377,14 +383,12 @@ class FileSecurityConfig:
         return errors
 
     @classmethod
-    def _validate_mime_configurations(cls) -> List[ConfigValidationError]:
+    def _validate_mime_configurations(cls) -> list[ConfigValidationError]:
         """
-        Validate the configured image and ZIP MIME type sets for common issues.
+        Validate MIME type configurations.
 
         Returns:
-            list[ConfigValidationError]: Collected validation errors, including empty
-            MIME sets, image types lacking the 'image/' prefix, and duplicate entries
-            across image and ZIP MIME sets.
+            List of detected configuration issues.
         """
         errors = []
 
@@ -442,15 +446,12 @@ class FileSecurityConfig:
         return errors
 
     @classmethod
-    def _validate_extension_configurations(cls) -> List[ConfigValidationError]:
+    def _validate_extension_configurations(cls) -> list[ConfigValidationError]:
         """
-        Validates file extension configuration, ensuring allowed extension sets are populated, formatted correctly, and do not overlap with blocked entries or compound blocked lists.
-
-        Args:
-            cls: The configuration class providing extension configuration attributes.
+        Validate file extension configurations.
 
         Returns:
-            List[ConfigValidationError]: A list of discovered configuration issues, including empty sets, invalid formats, conflicting entries, or compound extension overlaps.
+            List of detected configuration issues.
         """
         errors = []
 
@@ -539,17 +540,12 @@ class FileSecurityConfig:
         return errors
 
     @classmethod
-    def _validate_compression_settings(cls) -> List[ConfigValidationError]:
+    def _validate_compression_settings(cls) -> list[ConfigValidationError]:
         """
-        Validate compression-related limits defined on the configuration class and collect any issues.
-
-        The method inspects the class-level `limits` settings for compression ratios, uncompressed
-        size, individual file size, ZIP entry counts, and analysis timeouts, emitting warnings for
-        suspicious values and errors for invalid thresholds.
+        Validate compression-related limits.
 
         Returns:
-            List[ConfigValidationError]: Collected validation errors or warnings. An empty list
-            indicates that all compression settings fall within acceptable ranges.
+            List of detected configuration issues.
         """
         errors = []
 
@@ -673,10 +669,12 @@ class FileSecurityConfig:
         return errors
 
     @classmethod
-    def _validate_enum_consistency(cls) -> List[ConfigValidationError]:
+    def _validate_enum_consistency(cls) -> list[ConfigValidationError]:
         """
-        Validate enum categories for emptiness and overlapping members,
-        returning any configuration errors found.
+        Validate enum categories for emptiness and overlaps.
+
+        Returns:
+            List of detected configuration issues.
         """
         errors = []
 
@@ -740,17 +738,12 @@ class FileSecurityConfig:
         return errors
 
     @classmethod
-    def _validate_cross_dependencies(cls) -> List[ConfigValidationError]:
+    def _validate_cross_dependencies(cls) -> list[ConfigValidationError]:
         """
-        Validate cross-field configuration constraints and collect any violations.
-
-        Checks that all Windows reserved names are lowercase to ensure consistent
-        case-insensitive matching, and verifies that every dangerous Unicode character
-        code is an integer within the valid Unicode range.
+        Validate cross-field configuration constraints.
 
         Returns:
-            List[ConfigValidationError]: A list of validation errors discovered while
-            evaluating cross-dependencies.
+            List of detected configuration issues.
         """
         errors = []
 
@@ -795,16 +788,13 @@ class FileSecurityConfig:
     @classmethod
     def validate_and_report(cls, strict: bool = True) -> None:
         """
-        Validate the file security configuration, log validation outcomes,
-        and optionally raise on issues.
+        Validate configuration and log outcomes.
 
         Args:
-            strict (bool): If True, raise an exception on errors and warnings;
-            otherwise, only log the findings.
+            strict: If True, raise on errors/warnings.
 
         Raises:
-            FileSecurityConfigurationError: If strict is True and validation
-            reports errors, or warnings alongside errors.
+            FileSecurityConfigurationError: If strict and issues found.
         """
         errors = cls.validate_configuration(strict=strict)
 

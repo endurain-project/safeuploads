@@ -3,6 +3,7 @@ Unicode Security Validator Module
 
 Handles validation of Unicode-based attacks in filenames.
 """
+
 import unicodedata
 from typing import TYPE_CHECKING
 
@@ -17,22 +18,45 @@ logger = logging.getLogger(__name__)
 
 
 class UnicodeSecurityValidator(BaseValidator):
-    
+    """
+    Provides filename validation focused on Unicode security by detecting
+    dangerous characters defined in the associated FileSecurityConfig, applying
+    NFC normalization, logging changes, and rechecking the normalized result to
+    ensure no unsafe code points are introduced.
+    """
+
     def __init__(self, config: "FileSecurityConfig"):
+        """
+        Initialize the Unicode validator with the provided security
+        configuration.
+
+        Args:
+            config (FileSecurityConfig): Runtime configuration that controls
+            file security rules.
+        """
         super().__init__(config)
 
     def validate_unicode_security(self, filename: str) -> str:
         """
-        Validate and normalize Unicode characters in filenames.
-        
-        Args:
-            filename: The filename to validate and normalize
-            
-        Returns:
-            str: The normalized filename
-            
-        Raises:
-            ValueError: If dangerous Unicode characters are detected
+        Validate a filename for unsafe Unicode characters and return its
+        NFC-normalized form.
+
+        Parameters
+        ----------
+        filename : str
+            The filename to validate and normalize.
+
+        Returns
+        -------
+        str
+            The NFC-normalized filename when it contains no dangerous Unicode
+            characters.
+
+        Raises
+        ------
+        ValueError
+            If the filename includes Unicode characters deemed dangerous or
+            normalization introduces them.
         """
         if not filename:
             return filename
@@ -82,7 +106,16 @@ class UnicodeSecurityValidator(BaseValidator):
                 )
 
         return normalized_filename
-    
+
     def validate(self, filename: str) -> str:
-        """Compatibility method for base class interface."""
+        """Validate a filename by delegating to the Unicode security validator.
+
+        Args:
+            filename (str): The name of the file to assess for Unicode-related
+            safety issues.
+
+        Returns:
+            str: The validation result returned by the Unicode security
+            validation routine.
+        """
         return self.validate_unicode_security(filename)

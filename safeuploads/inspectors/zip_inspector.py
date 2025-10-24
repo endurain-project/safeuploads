@@ -1,14 +1,12 @@
-"""
-ZIP Content Inspector Module
+"""ZIP content inspector for security threat detection."""
 
-Handles deep inspection of ZIP file contents for security threats.
-"""
+from __future__ import annotations
 
 import io
 import os
 import time
 import zipfile
-from typing import List, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import logging
 from ..enums import SuspiciousFilePattern, ZipThreatCategory
@@ -21,26 +19,34 @@ logger = logging.getLogger(__name__)
 
 
 class ZipContentInspector:
+    """
+    Inspects ZIP archive contents for security threats.
 
-    def __init__(self, config: "FileSecurityConfig"):
+    Attributes:
+        config: File security configuration.
+    """
+
+    def __init__(self, config: FileSecurityConfig):
         """
-        Initialize the zip inspector with the provided file security configuration.
+        Initialize ZIP inspector with configuration.
 
         Args:
-            config (FileSecurityConfig): The configuration settings used to validate ZIP archives.
+            config: File security configuration.
         """
         self.config = config
 
-    def inspect_zip_content(self, file_content: bytes) -> Tuple[bool, str]:
+    def inspect_zip_content(self, file_content: bytes) -> tuple[bool, str]:
         """
-        Inspect the contents and structure of a ZIP archive for potential threats.
+        Inspect ZIP archive for potential security threats.
 
         Args:
-            file_content (bytes): Raw bytes of the ZIP archive to be inspected.
+            file_content: Raw bytes of ZIP archive.
 
         Returns:
-            Tuple[bool, str]: A tuple where the boolean indicates whether the inspection
-            passed, and the string provides a detailed status or error message.
+            Tuple of validation result and message.
+
+        Raises:
+            zipfile.BadZipFile: If ZIP structure is invalid.
         """
         try:
             zip_bytes = io.BytesIO(file_content)
@@ -97,16 +103,16 @@ class ZipContentInspector:
 
     def _inspect_zip_entry(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
-    ) -> List[str]:
+    ) -> list[str]:
         """
-        Inspect a ZIP archive entry for security threats such as traversal attempts, disallowed paths, symlinks, excessive name lengths, suspicious patterns, nested archives, and optionally hostile content.
+        Inspect single ZIP entry for security threats.
 
         Args:
-            entry (zipfile.ZipInfo): The ZIP entry metadata to analyze.
-            zip_file (zipfile.ZipFile): The parent archive, used for reading entry content when needed.
+            entry: ZIP entry metadata.
+            zip_file: Parent ZIP archive.
 
         Returns:
-            list[str]: A collection of human-readable threat descriptions detected for the entry.
+            List of threat descriptions.
         """
         threats = []
         filename = entry.filename
@@ -156,17 +162,15 @@ class ZipContentInspector:
 
         return threats
 
-    def _inspect_zip_structure(self, entries: List[zipfile.ZipInfo]) -> List[str]:
+    def _inspect_zip_structure(self, entries: list[zipfile.ZipInfo]) -> list[str]:
         """
-        Inspect ZIP archive entries for structural anomalies and return descriptive threat messages.
+        Inspect ZIP structure for anomalies.
 
         Args:
-            entries (List[zipfile.ZipInfo]): ZIP entries to analyze, including files and directories.
+            entries: All ZIP entries to analyze.
 
         Returns:
-            List[str]: A list of human-readable threat descriptions, such as excessive
-            directory depth relative to the configured maximum or an unusually large number
-            of files sharing the same extension.
+            List of structural threat descriptions.
         """
         threats = []
 
@@ -197,14 +201,13 @@ class ZipContentInspector:
 
     def _has_directory_traversal(self, filename: str) -> bool:
         """
-        Identify if the provided filename matches directory traversal indicators
-        by checking against suspicious patterns and normalized path segments.
+        Check for directory traversal indicators.
 
         Args:
-            filename (str): Name of the file within the archive to examine.
+            filename: Filename to check.
 
         Returns:
-            bool: True if directory traversal is detected; otherwise, False.
+            True if traversal detected.
         """
         filename_lower = filename.lower()
 
@@ -223,13 +226,13 @@ class ZipContentInspector:
 
     def _has_absolute_path(self, filename: str) -> bool:
         """
-        Determine whether the provided filename represents an absolute path on Unix or Windows systems.
+        Check if filename is an absolute path.
 
         Args:
-            filename: The path string to examine.
+            filename: Path to check.
 
         Returns:
-            True if the filename is an absolute path (Unix-style, UNC, or Windows drive letter); otherwise, False.
+            True if absolute path detected.
         """
         return (
             filename.startswith("/")  # Unix absolute path
@@ -239,27 +242,26 @@ class ZipContentInspector:
 
     def _is_symlink(self, entry: zipfile.ZipInfo) -> bool:
         """
-        Determine whether a ZIP archive entry represents a symbolic link.
+        Check if entry is a symbolic link.
 
         Args:
-            entry (zipfile.ZipInfo): Metadata for a member of the ZIP archive.
+            entry: ZIP entry to check.
 
         Returns:
-            bool: True if the entry is identified as a symbolic link, otherwise False.
+            True if entry is a symlink.
         """
         # Check if entry has symlink attributes
         return (entry.external_attr >> 16) & 0o120000 == 0o120000
 
-    def _check_suspicious_patterns(self, filename: str) -> List[str]:
+    def _check_suspicious_patterns(self, filename: str) -> list[str]:
         """
-        Identify suspicious filename patterns within an archive entry.
+        Check filename for suspicious patterns.
 
         Args:
-            filename (str): The path of a file inside the archive to evaluate.
+            filename: Filename to check.
 
         Returns:
-            List[str]: A list of human-readable warnings describing any detected
-                suspicious patterns. The list is empty when no issues are found.
+            List of pattern warnings.
         """
         threats = []
         filename_lower = filename.lower()
@@ -283,13 +285,13 @@ class ZipContentInspector:
 
     def _is_nested_archive(self, filename: str) -> bool:
         """
-        Determine if the provided filename represents a nested archive based on its file extension.
+        Check if filename represents a nested archive.
 
         Args:
-            filename (str): The name of the file to evaluate.
+            filename: Filename to check.
 
         Returns:
-            bool: True if the filename indicates a nested archive; otherwise, False.
+            True if nested archive detected.
         """
         ext = os.path.splitext(filename)[1].lower()
 
@@ -301,16 +303,16 @@ class ZipContentInspector:
 
     def _inspect_entry_content(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
-    ) -> List[str]:
+    ) -> list[str]:
         """
-        Inspect a ZIP entry for potentially malicious content signatures.
+        Inspect ZIP entry content for malicious signatures.
 
         Args:
-            entry (zipfile.ZipInfo): Metadata describing the ZIP archive entry to inspect.
-            zip_file (zipfile.ZipFile): Open ZIP archive providing access to entry contents.
+            entry: ZIP entry to inspect.
+            zip_file: Parent ZIP archive.
 
         Returns:
-            List[str]: Descriptions of any detected threats, including executable or script content indicators.
+            List of content threat descriptions.
         """
         threats = []
 
@@ -342,19 +344,14 @@ class ZipContentInspector:
 
     def _contains_script_patterns(self, content: bytes, filename: str) -> bool:
         """
-        Checks if the content contains common script patterns that could indicate malicious code.
-
-        This method attempts to decode the content as UTF-8 text and searches for common
-        patterns found in executable scripts, shell commands, and code injection attempts.
+        Check content for malicious script patterns.
 
         Args:
-            content (bytes): The raw bytes content to inspect for script patterns.
-            filename (str): The name of the file being inspected (currently unused but
-                           provided for potential future use).
+            content: Raw bytes to inspect.
+            filename: Filename for context.
 
         Returns:
-            bool: True if any script pattern is found in the content, False otherwise.
-                  Also returns False if the content cannot be decoded as text (likely binary).
+            True if script patterns found.
         """
         try:
             # Try to decode as text

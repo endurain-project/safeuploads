@@ -1,14 +1,9 @@
-"""
-File Validator Module
-
-Main validator class that coordinates all file security validations.
-"""
+"""Main file validator coordinating all security validations."""
 
 import logging
 import os
 import time
 import mimetypes
-from typing import Set, Tuple
 
 import magic
 from fastapi import UploadFile
@@ -20,6 +15,16 @@ from .validators import (
     CompressionSecurityValidator,
 )
 from .inspectors import ZipContentInspector
+from .exceptions import (
+    ErrorCode,
+    FileValidationError,
+    FilenameSecurityError,
+    ExtensionSecurityError,
+    FileSizeError,
+    MimeTypeError,
+    FileSignatureError,
+    FileProcessingError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -27,30 +32,36 @@ logger = logging.getLogger(__name__)
 
 class FileValidator:
     """
-    Provides coordinated security validation for uploaded files, including Unicode- and extension-aware
-    filename sanitization, MIME and signature verification, size enforcement, compression safeguards,
-    and optional ZIP-content inspection. The validator combines specialized components configured
-    through `FileSecurityConfig` to ensure both images and ZIP archives comply with strict security rules.
+    Coordinated security validation for uploaded files.
+
+    Attributes:
+        config: Active security configuration.
+        unicode_validator: Validator for Unicode-related checks.
+        extension_validator: Validator for file extension rules.
+        windows_validator: Validator enforcing Windows-specific constraints.
+        compression_validator: Validator handling compressed file limits.
+        zip_inspector: Inspector for ZIP archive contents.
+        magic_mime: MIME type detector based on python-magic.
+        magic_available: Whether python-magic was successfully initialized.
     """
 
     def __init__(self, config: FileSecurityConfig | None = None):
         """
-        Initialize the file validator with configuration and detection utilities.
+        Initialize file validator with configuration and detection utilities.
 
         Args:
-            config (FileSecurityConfig | None): Optional configuration object that
-                defines file security rules. Defaults to a new `FileSecurityConfig`
-                instance when not provided.
+            config: Optional configuration object defining file security
+                rules. Defaults to new FileSecurityConfig instance.
 
         Attributes:
-            config (FileSecurityConfig): Active security configuration.
-            unicode_validator (UnicodeSecurityValidator): Validator for Unicode-related checks.
-            extension_validator (ExtensionSecurityValidator): Validator for file extension rules.
-            windows_validator (WindowsSecurityValidator): Validator enforcing Windows-specific constraints.
-            compression_validator (CompressionSecurityValidator): Validator handling compressed file limits.
-            zip_inspector (ZipContentInspector): Inspector for ZIP archive contents.
-            magic_mime (magic.Magic | None): MIME type detector based on python-magic, when available.
-            magic_available (bool): Indicates whether python-magic was successfully initialized.
+            config: Active security configuration.
+            unicode_validator: Validator for Unicode-related checks.
+            extension_validator: Validator for file extension rules.
+            windows_validator: Validator enforcing Windows constraints.
+            compression_validator: Validator for compressed file limits.
+            zip_inspector: Inspector for ZIP archive contents.
+            magic_mime: MIME type detector based on python-magic.
+            magic_available: Whether python-magic initialized successfully.
         """
         self.config = config or FileSecurityConfig()
 
@@ -75,14 +86,15 @@ class FileValidator:
 
     def _detect_mime_type(self, file_content: bytes, filename: str) -> str:
         """
-        Determine the MIME type for the provided file content, preferring content-aware detection with python-magic and falling back to filename-based detection.
+        Determine MIME type for file content.
 
         Args:
-            file_content (bytes): The raw bytes of the file to inspect.
-            filename (str): The original filename, used for fallback MIME detection.
+            file_content: Raw bytes of the file to inspect.
+            filename: Original filename for fallback MIME detection.
 
         Returns:
-            str: The detected MIME type or "application/octet-stream" if detection fails.
+            Detected MIME type or "application/octet-stream" if detection
+            fails.
         """
         detected_mime = None
 
@@ -100,19 +112,23 @@ class FileValidator:
 
         return detected_mime or "application/octet-stream"
 
-    def _validate_file_signature(self, file_content: bytes, expected_type: str) -> bool:
+    def _validate_file_signature(self, file_content: bytes, expected_type: str) -> None:
         """
-        Return True if the file content begins with a known signature for the expected type.
+        Verify file content begins with known signature for expected type.
 
         Args:
-            file_content (bytes): Raw bytes of the uploaded file.
-            expected_type (str): Logical file category, such as "image" or "zip", whose signatures to match.
+            file_content: Raw bytes of the uploaded file.
+            expected_type: Logical file category ("image" or "zip").
 
-        Returns:
-            bool: True when the file header matches one of the allowed signatures; otherwise, False.
+        Raises:
+            FileSignatureError: File header doesn't match expected type
+                signatures.
         """
         if len(file_content) < 4:
-            return False
+            raise FileSignatureError(
+                f"File too small to verify {expected_type} signature",
+                expected_type=expected_type,
+            )
 
         # Common file signatures
         signatures = {
@@ -132,27 +148,26 @@ class FileValidator:
 
         for signature in expected_signatures:
             if file_content.startswith(signature):
-                return True
+                return  # Signature matched
 
-        return False
+        # No matching signature found
+        raise FileSignatureError(
+            f"File content does not match expected {expected_type} format",
+            expected_type=expected_type,
+        )
 
     def _sanitize_filename(self, filename: str) -> str:
         """
-        Sanitize a user-provided filename to prevent security risks.
-
-        This applies Unicode security validation, strips path traversal components,
-        removes control and dangerous characters, enforces Windows reserved name rules,
-        validates compound extensions, and limits the length of the filename while
-        preserving its extension.
+        Sanitize user-provided filename to prevent security risks.
 
         Args:
-            filename (str): Original filename supplied by the user.
+            filename: Original filename supplied by the user.
 
         Returns:
-            str: A sanitized filename safe for storage and further processing.
+            Sanitized filename safe for storage and processing.
 
         Raises:
-            ValueError: If the filename is empty or fails Unicode security checks.
+            ValueError: Filename is empty or fails Unicode security checks.
         """
         if not filename:
             raise ValueError("Filename cannot be empty")
@@ -206,20 +221,26 @@ class FileValidator:
 
         return filename
 
-    def _validate_filename(self, file: UploadFile) -> Tuple[bool, str] | None:
+    def _validate_filename(self, file: UploadFile) -> None:
         """
-        Validate the filename of an uploaded file, sanitize it, and update the file object in place.
+        Validate filename of uploaded file and sanitize it in place.
 
         Args:
-            file (UploadFile): The uploaded file whose filename should be validated and sanitized.
+            file: Uploaded file whose filename should be validated and
+                sanitized.
 
-        Returns:
-            Optional[tuple[bool, str]]: A tuple containing a boolean status and an error message when validation fails,
-            or ``None`` if the filename passes all checks.
+        Raises:
+            FilenameSecurityError: Filename is empty, invalid, or fails
+                sanitization.
+            FileProcessingError: Unexpected error during filename
+                validation.
         """
         # Check filename
         if not file.filename:
-            return False, "Filename is required"
+            raise FilenameSecurityError(
+                "Filename is required",
+                error_code=ErrorCode.FILENAME_EMPTY,
+            )
 
         # Sanitize the filename to prevent security issues
         try:
@@ -230,57 +251,85 @@ class FileValidator:
 
             # Additional validation after sanitization
             if not sanitized_filename or sanitized_filename.strip() == "":
-                return False, "Invalid filename after sanitization"
+                raise FilenameSecurityError(
+                    "Invalid filename after sanitization",
+                    filename=file.filename,
+                    error_code=ErrorCode.FILENAME_INVALID,
+                )
         except ValueError as err:
-            # Dangerous extension detected - reject the file
-            return False, str(err)
+            # Re-raise as FilenameSecurityError if not already a FileValidationError
+            if isinstance(err, FileValidationError):
+                raise
+            raise FilenameSecurityError(
+                str(err),
+                filename=file.filename,
+                error_code=ErrorCode.FILENAME_INVALID,
+            ) from err
+        except FileValidationError:
+            # Let FileValidationError and subclasses propagate
+            raise
         except Exception as err:
             logger.exception("Unexpected error during filename validation: %s", err)
-            return False, "Filename validation failed due to internal error"
+            raise FileProcessingError(
+                "Filename validation failed due to internal error",
+                original_error=err,
+            ) from err
 
     def _validate_file_extension(
-        self, file: UploadFile, allowed_extensions: Set[str]
-    ) -> Tuple[bool, str] | None:
+        self, file: UploadFile, allowed_extensions: set[str]
+    ) -> None:
         """
-        Validate the extension of an uploaded file against allowed and blocked lists.
+        Validate extension of uploaded file against allowed and blocked lists.
 
         Args:
-            file (UploadFile): The file whose extension will be validated.
-            allowed_extensions (Set[str]): A set of allowed file extensions.
+            file: File whose extension will be validated.
+            allowed_extensions: Set of allowed file extensions.
 
-        Returns:
-            Tuple[bool, str] | None: Returns a tuple with the validation result and a message
-            when the filename is missing, the extension is not allowed, or is blocked.
+        Raises:
+            FilenameSecurityError: Filename is missing.
+            ExtensionSecurityError: Extension is not allowed or is blocked.
         """
         # Check file extension
         if not file.filename:
-            return False, "Filename is required for extension validation"
+            raise FilenameSecurityError(
+                "Filename is required for extension validation",
+                error_code=ErrorCode.FILENAME_EMPTY,
+            )
 
         _, ext = os.path.splitext(file.filename.lower())
         if ext not in allowed_extensions:
-            return (
-                False,
+            raise ExtensionSecurityError(
                 f"Invalid file extension. Allowed: {', '.join(allowed_extensions)}",
+                filename=file.filename,
+                extension=ext,
+                error_code=ErrorCode.EXTENSION_NOT_ALLOWED,
             )
 
         # Check for blocked extensions
         if ext in self.config.BLOCKED_EXTENSIONS:
-            return False, f"File extension {ext} is blocked for security reasons"
+            raise ExtensionSecurityError(
+                f"File extension {ext} is blocked for security reasons",
+                filename=file.filename,
+                extension=ext,
+                error_code=ErrorCode.EXTENSION_BLOCKED,
+            )
 
     async def _validate_file_size(
         self, file: UploadFile, max_file_size: int
-    ) -> Tuple[bytes | None, int | None, bool, str]:
+    ) -> tuple[bytes, int]:
         """
-        Validate an uploaded file’s size by sampling its initial content and determining the total byte length.
+        Validate uploaded file size by sampling content and determining total bytes.
 
         Args:
-            file (UploadFile): Uploaded file-like object that supports asynchronous read and seek operations.
-            max_file_size (int): Maximum allowed file size in bytes.
+            file: Uploaded file supporting asynchronous read and seek.
+            max_file_size: Maximum allowed file size in bytes.
 
         Returns:
-            Tuple[Optional[bytes], Optional[int], bool, str]: A tuple containing the first 8 KB of file content (or None),
-            the detected file size in bytes (or None), a boolean indicating whether the size validation passed, and a message
-            describing the validation outcome.
+            Tuple containing first 8 KB of file content and detected file
+            size in bytes.
+
+        Raises:
+            FileSizeError: File size exceeds maximum or file is empty.
         """
         # Read first chunk for content analysis
         file_content = await file.read(8192)  # Read first 8KB
@@ -299,139 +348,145 @@ class FileValidator:
             await file.seek(0)
 
         if file_size > max_file_size:
-            return (
-                None,
-                None,
-                False,
+            raise FileSizeError(
                 f"File too large. File size: {file_size // (1024*1024)}MB, maximum: {max_file_size // (1024*1024)}MB",
+                size=file_size,
+                max_size=max_file_size,
             )
 
         if file_size == 0:
-            return None, None, False, "Empty file not allowed"
+            raise FileSizeError(
+                "Empty file not allowed",
+                size=0,
+                max_size=max_file_size,
+            )
 
-        return file_content, file_size, True, "Passed"
+        return file_content, file_size
 
-    async def validate_image_file(self, file: UploadFile) -> Tuple[bool, str]:
+    async def validate_image_file(self, file: UploadFile) -> None:
         """
-        Asynchronously validate an uploaded image by checking its filename, extension, size, MIME type, and binary signature.
+        Validate uploaded image by checking filename, extension, size, MIME type, and signature.
 
         Args:
-            file (UploadFile): The uploaded file to validate.
+            file: Uploaded file to validate.
 
-        Returns:
-            Tuple[bool, str]: A tuple containing a success flag and a descriptive message
-            explaining the validation outcome.
+        Raises:
+            FilenameSecurityError: Filename is empty, invalid, or fails
+                security checks.
+            ExtensionSecurityError: File extension is not allowed or is
+                blocked.
+            FileSizeError: File size exceeds maximum or file is empty.
+            MimeTypeError: MIME type is not in allowed image types.
+            FileSignatureError: File signature doesn't match expected image
+                format.
+            FileProcessingError: Unexpected error during validation.
         """
         try:
-            # Validate filename
-            filename_validation = self._validate_filename(file)
-            if filename_validation is not None:
-                return filename_validation
+            # Validate filename (raises exceptions on failure)
+            self._validate_filename(file)
 
-            # Validate file extension
-            extension_validation = self._validate_file_extension(
-                file, self.config.ALLOWED_IMAGE_EXTENSIONS
-            )
-            if extension_validation is not None:
-                return extension_validation
+            # Validate file extension (raises exceptions on failure)
+            self._validate_file_extension(file, self.config.ALLOWED_IMAGE_EXTENSIONS)
 
-            # Validate file size
-            size_validation = await self._validate_file_size(
+            # Validate file size (raises exceptions on failure, returns content and size on success)
+            file_content, file_size = await self._validate_file_size(
                 file, self.config.limits.max_image_size
             )
-            if size_validation[0] is None:
-                return size_validation[2], size_validation[3]
 
             # Detect MIME type
             filename = file.filename or "unknown"
-            detected_mime = self._detect_mime_type(size_validation[0], filename)
+            detected_mime = self._detect_mime_type(file_content, filename)
 
             if detected_mime not in self.config.ALLOWED_IMAGE_MIMES:
-                return (
-                    False,
+                raise MimeTypeError(
                     f"Invalid file type. Detected: {detected_mime}. Allowed: {', '.join(self.config.ALLOWED_IMAGE_MIMES)}",
+                    filename=filename,
+                    detected_mime=detected_mime,
+                    allowed_mimes=list(self.config.ALLOWED_IMAGE_MIMES),
                 )
 
-            # Validate file signature
-            if not self._validate_file_signature(size_validation[0], "image"):
-                return False, "File content does not match expected image format"
+            # Validate file signature (raises exceptions on failure)
+            self._validate_file_signature(file_content, "image")
 
             logger.debug(
                 "Image file validation passed: %s (%s, %s bytes)",
                 filename,
                 detected_mime,
-                size_validation[1],
+                file_size,
             )
-
-            return True, "Validation successful"
+        except FileValidationError:
+            # Let FileValidationError and subclasses propagate
+            raise
         except Exception as err:
             logger.exception("Error during image file validation: %s", err)
-            return False, "File validation failed due to internal error"
+            raise FileProcessingError(
+                "File validation failed due to internal error",
+                original_error=err,
+            ) from err
 
-    async def validate_zip_file(self, file: UploadFile) -> Tuple[bool, str]:
+    async def validate_zip_file(self, file: UploadFile) -> None:
         """
-        Asynchronously validate the uploaded ZIP archive against the service configuration.
-
-        The validation pipeline:
-        1. Verifies filename conventions.
-        2. Confirms allowed ZIP extension and size limits.
-        3. Detects MIME type from the file header and enforces ZIP signatures.
-        4. Reads the full payload to evaluate compression ratio (zip bomb protection).
-        5. Optionally inspects ZIP contents for disallowed files.
+        Validate uploaded ZIP archive against service configuration.
 
         Args:
-            file (UploadFile): The incoming ZIP file-like object to validate.
-
-        Returns:
-            Tuple[bool, str]: A pair where the first element signals success and the second
-            provides a human-readable status or error message.
+            file: Incoming ZIP file-like object to validate.
 
         Raises:
-            ValueError: Propagated when a prohibited file extension is detected.
+            FilenameSecurityError: Filename is empty, invalid, or fails
+                security checks.
+            ExtensionSecurityError: File extension is not allowed or is
+                blocked.
+            FileSizeError: File size exceeds maximum or file is empty.
+            MimeTypeError: MIME type is not in allowed ZIP types.
+            FileSignatureError: File signature doesn't match expected ZIP
+                format.
+            CompressionSecurityError: ZIP compression validation failed
+                (zip bomb detected).
+            FileProcessingError: Unexpected error during validation.
         """
         try:
-            # Validate filename
-            filename_validation = self._validate_filename(file)
-            if filename_validation is not None:
-                return filename_validation
+            # Validate filename (raises exceptions on failure)
+            self._validate_filename(file)
 
-            # Validate file extension
-            extension_validation = self._validate_file_extension(
-                file, self.config.ALLOWED_ZIP_EXTENSIONS
-            )
-            if extension_validation is not None:
-                return extension_validation
+            # Validate file extension (raises exceptions on failure)
+            self._validate_file_extension(file, self.config.ALLOWED_ZIP_EXTENSIONS)
 
-            # Validate file size
-            size_validation = await self._validate_file_size(
+            # Validate file size (raises exceptions on failure, returns content and size on success)
+            file_content, file_size = await self._validate_file_size(
                 file, self.config.limits.max_zip_size
             )
-            if size_validation[0] is None:
-                return size_validation[2], size_validation[3]
 
             # Detect MIME type using first 8KB
             filename = file.filename or "unknown"
-            detected_mime = self._detect_mime_type(size_validation[0], filename)
+            detected_mime = self._detect_mime_type(file_content, filename)
 
             # Validate ZIP file signature first (most reliable check)
-            has_zip_signature = self._validate_file_signature(size_validation[0], "zip")
-
-            if not has_zip_signature:
-                return False, "File content does not match ZIP format"
+            # This will raise FileSignatureError if signature doesn't match
+            try:
+                self._validate_file_signature(file_content, "zip")
+            except FileSignatureError as err:
+                # Re-raise with more specific message
+                raise FileSignatureError(
+                    "File content does not match ZIP format",
+                    filename=filename,
+                    expected_type="zip",
+                ) from err
 
             # Check MIME type, but allow application/octet-stream if signature is valid
             # Some ZIP files are detected as octet-stream, but signature check ensures it's really a ZIP
             if detected_mime not in self.config.ALLOWED_ZIP_MIMES:
-                if detected_mime == "application/octet-stream" and has_zip_signature:
+                if detected_mime == "application/octet-stream":
                     # Valid ZIP file, just detected as generic binary
                     logger.debug(
                         "ZIP file detected as application/octet-stream, but signature is valid: %s",
                         filename,
                     )
                 else:
-                    return (
-                        False,
+                    raise MimeTypeError(
                         f"Invalid file type. Detected: {detected_mime}. Expected ZIP file.",
+                        filename=filename,
+                        detected_mime=detected_mime,
+                        allowed_mimes=list(self.config.ALLOWED_ZIP_MIMES),
                     )
 
             # For ZIP validation (compression ratio and content inspection), we need the full file
@@ -451,9 +506,11 @@ class FileValidator:
                     )
                 )
                 if not compression_validation[0]:
-                    return (
-                        False,
+                    # Compression validator still returns tuples, will be updated in Phase 3
+                    raise FileValidationError(
                         f"ZIP compression validation failed: {compression_validation[1]}",
+                        filename=filename,
+                        error_code=ErrorCode.COMPRESSION_RATIO_EXCEEDED,
                     )
 
             # Perform ZIP content inspection if enabled
@@ -462,9 +519,11 @@ class FileValidator:
                     full_file_content
                 )
                 if not content_inspection[0]:
-                    return (
-                        False,
+                    # ZIP inspector still returns tuples, will be updated in Phase 3
+                    raise FileValidationError(
                         f"ZIP content inspection failed: {content_inspection[1]}",
+                        filename=filename,
+                        error_code=ErrorCode.ZIP_CONTENT_THREAT,
                     )
 
             logger.debug(
@@ -473,11 +532,12 @@ class FileValidator:
                 detected_mime,
                 file_size,
             )
-
-            return True, "Validation successful"
-        except ValueError as err:
-            # Dangerous extension detected - reject the file
-            return False, str(err)
+        except FileValidationError:
+            # Let FileValidationError and subclasses propagate
+            raise
         except Exception as err:
             logger.exception("Error during ZIP file validation: %s", err)
-            return False, "File validation failed due to internal error"
+            raise FileProcessingError(
+                "File validation failed due to internal error",
+                original_error=err,
+            ) from err

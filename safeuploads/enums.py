@@ -1,16 +1,29 @@
-"""
-File Security Enums Module
-
-Contains all enumeration classes for categorizing security threats and patterns.
-"""
+"""Enumeration classes for categorizing security threats and patterns."""
 
 from enum import Enum
 
 
 class DangerousExtensionCategory(Enum):
     """
-    Enumeration of file extension categories considered potentially dangerous
-    for uploads, grouped by platform, scripting capability, or package format.
+    File extension categories considered potentially dangerous for uploads.
+
+    Attributes:
+        WINDOWS_EXECUTABLES: Traditional Windows executable formats.
+        SCRIPT_FILES: Script files that can execute code.
+        WEB_SCRIPTS: Web server and dynamic content scripts.
+        UNIX_EXECUTABLES: Unix/Linux executables and shell scripts.
+        MACOS_EXECUTABLES: macOS specific executables and applications.
+        JAVA_EXECUTABLES: Java related executables and bytecode.
+        MOBILE_APPS: Mobile application packages.
+        BROWSER_EXTENSIONS: Browser extensions and web applications.
+        PACKAGE_FORMATS: Modern package managers and distribution formats.
+        ARCHIVE_FORMATS: Archive formats that can contain executables.
+        VIRTUALIZATION_FORMATS: Virtualization and container formats.
+        OFFICE_MACROS: Office documents with macro capabilities.
+        SYSTEM_FILES: System shortcuts and configuration files.
+        SYSTEM_DRIVERS: System drivers and low-level components.
+        WINDOWS_THEMES: Windows theme and customization files.
+        HELP_FILES: Help and documentation files that can execute code.
     """
 
     # Traditional Windows executables
@@ -200,11 +213,12 @@ class DangerousExtensionCategory(Enum):
 
 class CompoundExtensionCategory(Enum):
     """
-    Defines categorized compound file extensions that combine multiple suffixes,
-    grouped by their typical usage:
-    - COMPRESSED_ARCHIVES: multi-part archive formats such as .tar.gz and .tgz.
-    - JAVASCRIPT_VARIANTS: specialized JavaScript files like .min.js or service workers.
-    - WEB_CONTENT: minified static assets including .min.css and .min.html.
+    Categorized compound file extensions that combine multiple suffixes.
+
+    Attributes:
+        COMPRESSED_ARCHIVES: Multi-part archive formats.
+        JAVASCRIPT_VARIANTS: Specialized JavaScript files.
+        WEB_CONTENT: Minified static web assets.
     """
 
     # Compressed archive formats
@@ -228,9 +242,13 @@ class CompoundExtensionCategory(Enum):
 
 class UnicodeAttackCategory(Enum):
     """
-    Enumerates categorized sets of Unicode code points that are commonly leveraged in
-    filename or text obfuscation attacks, such as directional override controls, zero-width
-    characters, language-specific marks, and punctuation that can disguise file extensions.
+    Categorized Unicode code points used in obfuscation attacks.
+
+    Attributes:
+        DIRECTIONAL_OVERRIDES: Right-to-left and directional controls.
+        ZERO_WIDTH_CHARACTERS: Zero-width and invisible characters.
+        LANGUAGE_MARKS: Language and format specific characters.
+        CONFUSING_PUNCTUATION: Punctuation that can disguise extensions.
     """
 
     # Right-to-Left and directional override characters
@@ -273,10 +291,13 @@ class UnicodeAttackCategory(Enum):
 
 class SuspiciousFilePattern(Enum):
     """
-    Defines categorized patterns used to flag potentially malicious uploads, including
-    known directory traversal sequences, suspicious filenames, executable magic bytes,
-    and protected path components. These patterns support validation layers that aim
-    to prevent unsafe files from being accepted by the system.
+    Categorized patterns used to flag potentially malicious uploads.
+
+    Attributes:
+        DIRECTORY_TRAVERSAL: Directory traversal attack patterns.
+        SUSPICIOUS_NAMES: Suspicious filename patterns.
+        EXECUTABLE_SIGNATURES: Dangerous file content signatures.
+        SUSPICIOUS_PATHS: Suspicious path components.
     """
 
     # Directory traversal attack patterns
@@ -362,9 +383,13 @@ class SuspiciousFilePattern(Enum):
 
 class ZipThreatCategory(Enum):
     """
-    Represents categories of potentially harmful contents that may be present within ZIP archives,
-    grouping common threat vectors such as nested archive formats, executable binaries, scripting
-    languages, and critical system or configuration files to support consistent security checks.
+    Categories of potentially harmful contents within ZIP archives.
+
+    Attributes:
+        NESTED_ARCHIVES: Archive format threats.
+        EXECUTABLE_FILES: Executable content threats.
+        SCRIPT_FILES: Script and code threats.
+        SYSTEM_FILES: System and configuration threats.
     """
 
     # Archive format threats

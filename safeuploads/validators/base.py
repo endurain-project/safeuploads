@@ -1,8 +1,8 @@
 """
-Base Validator Module
-
-Contains base classes and interfaces for file security validators.
+Base validator interface for file security checks.
 """
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
@@ -14,32 +14,30 @@ if TYPE_CHECKING:
 class BaseValidator(ABC):
     """
     Abstract base class for file security validators.
-    This class defines the interface that concrete validators must implement.
-    It stores the shared file security configuration and enforces implementation
-    of the `validate` method in subclasses.
+
     Attributes:
-        config (FileSecurityConfig): Shared configuration parameters for the validator.
+        config: File security configuration parameters.
     """
 
-    def __init__(self, config: "FileSecurityConfig"):
+    def __init__(self, config: FileSecurityConfig):
         """
-        Initialize the validator with the provided configuration.
+        Initialize validator with configuration.
 
         Args:
-            config (FileSecurityConfig): The file security settings to apply during validation.
+            config: File security settings to apply.
         """
         self.config = config
 
     @abstractmethod
     def validate(self, *args, **kwargs) -> Any:
         """
-        Validate provided data using subclass-specific logic.
+        Validate data using subclass-specific logic.
 
         Args:
-            *args: Positional arguments required by the concrete validator.
-            **kwargs: Keyword arguments required by the concrete validator.
+            *args: Positional arguments for concrete validator.
+            **kwargs: Keyword arguments for concrete validator.
 
         Returns:
-            Any: The validated result or outcome defined by subclasses.
+            Validated result defined by subclass.
         """
         pass

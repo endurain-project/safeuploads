@@ -1,6 +1,5 @@
 """File security exception classes and error codes."""
 
-from typing import List
 from dataclasses import dataclass
 
 
@@ -40,7 +39,7 @@ class FileSecurityConfigurationError(Exception):
         errors: List of validation errors that caused failure.
     """
 
-    def __init__(self, errors: List[ConfigValidationError]):
+    def __init__(self, errors: list[ConfigValidationError]):
         self.errors = errors
         error_messages = [
             f"{error.severity.upper()}: {error.message}" for error in errors

@@ -1,13 +1,11 @@
-"""
-Unicode Security Validator Module
+"""Unicode Security Validator Module."""
 
-Handles validation of Unicode-based attacks in filenames.
-"""
+from __future__ import annotations
 
 import unicodedata
-from typing import TYPE_CHECKING
-
 import logging
+
+from typing import TYPE_CHECKING
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -19,44 +17,33 @@ logger = logging.getLogger(__name__)
 
 class UnicodeSecurityValidator(BaseValidator):
     """
-    Provides filename validation focused on Unicode security by detecting
-    dangerous characters defined in the associated FileSecurityConfig, applying
-    NFC normalization, logging changes, and rechecking the normalized result to
-    ensure no unsafe code points are introduced.
+    Validates filenames for Unicode security threats.
+
+    Attributes:
+        config: Runtime configuration for file security rules.
     """
 
-    def __init__(self, config: "FileSecurityConfig"):
+    def __init__(self, config: FileSecurityConfig):
         """
-        Initialize the Unicode validator with the provided security
-        configuration.
+        Initialize the Unicode validator.
 
         Args:
-            config (FileSecurityConfig): Runtime configuration that controls
-            file security rules.
+            config: Runtime configuration that controls file security rules.
         """
         super().__init__(config)
 
     def validate_unicode_security(self, filename: str) -> str:
         """
-        Validate a filename for unsafe Unicode characters and return its
-        NFC-normalized form.
+        Validate filename for unsafe Unicode characters.
 
-        Parameters
-        ----------
-        filename : str
-            The filename to validate and normalize.
+        Args:
+            filename: The filename to validate and normalize.
 
-        Returns
-        -------
-        str
-            The NFC-normalized filename when it contains no dangerous Unicode
-            characters.
+        Returns:
+            The NFC-normalized filename.
 
-        Raises
-        ------
-        ValueError
-            If the filename includes Unicode characters deemed dangerous or
-            normalization introduces them.
+        Raises:
+            ValueError: If dangerous Unicode characters are detected.
         """
         if not filename:
             return filename
@@ -108,14 +95,13 @@ class UnicodeSecurityValidator(BaseValidator):
         return normalized_filename
 
     def validate(self, filename: str) -> str:
-        """Validate a filename by delegating to the Unicode security validator.
+        """
+        Validate a filename for Unicode security issues.
 
         Args:
-            filename (str): The name of the file to assess for Unicode-related
-            safety issues.
+            filename: The name of the file to assess.
 
         Returns:
-            str: The validation result returned by the Unicode security
-            validation routine.
+            The validated and normalized filename.
         """
         return self.validate_unicode_security(filename)

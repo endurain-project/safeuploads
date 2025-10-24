@@ -1,15 +1,15 @@
 """
-Compression Security Validator Module
-
-Handles validation of ZIP compression ratios and zip bomb detection.
+Validates ZIP compression ratios and detects zip bombs.
 """
+
+from __future__ import annotations
 
 import io
 import time
 import zipfile
-from typing import Tuple, TYPE_CHECKING
-
 import logging
+
+from typing import TYPE_CHECKING
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -21,36 +21,36 @@ logger = logging.getLogger(__name__)
 
 class CompressionSecurityValidator(BaseValidator):
     """
-    Validates ZIP uploads against security limits such as maximum entry count,
-    nested archives, uncompressed size, and compression ratios to detect zip
-    bombs and other unsafe archives.
+    Validates ZIP uploads against zip bombs and compression attacks.
+
+    Attributes:
+        config: Security configuration for validation limits.
     """
 
-    def __init__(self, config: "FileSecurityConfig"):
+    def __init__(self, config: FileSecurityConfig):
         """
-        Initialize the compression validator with security settings used to enforce file upload policies.
+        Initialize the compression validator.
 
         Args:
-            config (FileSecurityConfig): Shared file security configuration passed to the base validator.
+            config: Security configuration with compression limits.
         """
         super().__init__(config)
 
     def validate_zip_compression_ratio(
         self, file_content: bytes, compressed_size: int
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
-        Validate a ZIP archive against configurable safety limits to mitigate zip-bomb style attacks.
-
-        This method inspects the provided ZIP bytes for excessive entry counts, nested archives,
-        oversized files, and suspicious compression ratios—both per-entry and overall—within a
-        configurable analysis timeout. Validation failures return a descriptive message.
+        Validate ZIP archive against security limits.
 
         Args:
-            file_content (bytes): Raw bytes of the ZIP archive to be analyzed.
-            compressed_size (int): Reported size of the compressed archive, used to evaluate the overall compression ratio.
+            file_content: Raw bytes of the ZIP archive.
+            compressed_size: Size of the compressed archive in bytes.
 
         Returns:
-            Tuple[bool, str]: A tuple containing a success flag and a human-readable reason describing the outcome.
+            Tuple of success flag and descriptive message.
+
+        Raises:
+            No exceptions raised; all errors returned as tuple.
         """
         try:
             # Create a BytesIO object from file content for zipfile analysis
@@ -185,15 +185,15 @@ class CompressionSecurityValidator(BaseValidator):
             )
             return False, f"ZIP validation failed: {str(err)}"
 
-    def validate(self, file_content: bytes, compressed_size: int) -> Tuple[bool, str]:
+    def validate(self, file_content: bytes, compressed_size: int) -> tuple[bool, str]:
         """
-        Validate the compression ratio of a ZIP file buffer.
+        Validate the compression ratio of a ZIP file.
 
         Args:
-            file_content (bytes): Raw bytes of the uploaded file.
-            compressed_size (int): Size of the file after compression, in bytes.
+            file_content: Raw bytes of the uploaded file.
+            compressed_size: Size of the file after compression in bytes.
 
         Returns:
-            Tuple[bool, str]: A flag indicating whether the compression ratio is acceptable and an explanatory message.
+            Tuple of success flag and explanatory message.
         """
         return self.validate_zip_compression_ratio(file_content, compressed_size)

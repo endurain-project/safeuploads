@@ -3,5 +3,9 @@
 .env
 .DS_Store
 
+# Internal
+devdocs/
+devscripts/
+
 # Python
 __pycache__

@@ -6,7 +6,24 @@ A comprehensive file security system for validating uploads and preventing attac
 
 # Core classes and configurations
 from .config import SecurityLimits, FileSecurityConfig
-from .exceptions import ConfigValidationError, FileSecurityConfigurationError
+from .exceptions import (
+    ConfigValidationError,
+    FileSecurityConfigurationError,
+    ErrorCode,
+    FileSecurityError,
+    FileValidationError,
+    FilenameSecurityError,
+    UnicodeSecurityError,
+    ExtensionSecurityError,
+    WindowsReservedNameError,
+    FileSizeError,
+    MimeTypeError,
+    FileSignatureError,
+    CompressionSecurityError,
+    ZipBombError,
+    ZipContentError,
+    FileProcessingError,
+)
 from .enums import (
     DangerousExtensionCategory,
     CompoundExtensionCategory,
@@ -51,6 +68,20 @@ __all__ = [
     # Exceptions
     "ConfigValidationError",
     "FileSecurityConfigurationError",
+    "ErrorCode",
+    "FileSecurityError",
+    "FileValidationError",
+    "FilenameSecurityError",
+    "UnicodeSecurityError",
+    "ExtensionSecurityError",
+    "WindowsReservedNameError",
+    "FileSizeError",
+    "MimeTypeError",
+    "FileSignatureError",
+    "CompressionSecurityError",
+    "ZipBombError",
+    "ZipContentError",
+    "FileProcessingError",
     # Enums
     "DangerousExtensionCategory",
     "CompoundExtensionCategory",

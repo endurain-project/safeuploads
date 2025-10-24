@@ -12,6 +12,9 @@
 - Include concise inline comments only when logic is non-obvious (e.g., ordering of security checks). Avoid redundant commentary.
 - Preserve async boundaries in validator methods; do not block event loops with synchronous I/O inside `async` functions.
 - Use module-level `logging.getLogger(__name__)` for security-relevant events; never rely on application-specific loggers.
+- Enforce PEP 8 line limits:
+	- Code stays at or below 79 characters.
+	- Comments and docstrings stay at or below 72 characters.
 
 ## Design Principles
 - Validators should stay single-purpose and operate through `BaseValidator`; new checks belong in dedicated methods/classes mirroring current patterns.

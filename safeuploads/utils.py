@@ -30,7 +30,9 @@ async def validate_profile_image_upload(file: UploadFile) -> None:
     is_valid, error_message = await file_validator.validate_image_file(file)
 
     if not is_valid:
-        logger.warning("Profile image upload validation failed: %s", error_message)
+        logger.warning(
+            "Profile image upload validation failed: %s", error_message
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid image file: {error_message}",
@@ -50,7 +52,9 @@ async def validate_profile_data_upload(file: UploadFile) -> None:
     is_valid, error_message = await file_validator.validate_zip_file(file)
 
     if not is_valid:
-        logger.warning("Profile data upload validation failed: %s", error_message)
+        logger.warning(
+            "Profile data upload validation failed: %s", error_message
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid ZIP file: {error_message}",
@@ -96,7 +100,9 @@ def validate_configuration(strict: bool = False) -> None:
     """
     try:
         FileSecurityConfig.validate_and_report(strict=strict)
-        logger.info("File security configuration validation completed successfully")
+        logger.info(
+            "File security configuration validation completed successfully"
+        )
     except Exception as validation_error:
         logger.warning(
             "File security configuration validation encountered issues: %s",

@@ -7,8 +7,8 @@ from .compression_validator import CompressionSecurityValidator
 
 __all__ = [
     "BaseValidator",
-    "UnicodeSecurityValidator", 
+    "UnicodeSecurityValidator",
     "ExtensionSecurityValidator",
     "WindowsSecurityValidator",
-    "CompressionSecurityValidator"
+    "CompressionSecurityValidator",
 ]

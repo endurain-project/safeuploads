@@ -173,7 +173,13 @@ class FileValidator:
             Sanitized filename safe for storage and processing.
 
         Raises:
-            ValueError: Filename is empty or fails Unicode security checks.
+            UnicodeSecurityError: Filename contains dangerous Unicode
+                characters or fails normalization checks.
+            WindowsReservedNameError: Filename uses Windows reserved
+                device names.
+            ExtensionSecurityError: Filename contains blocked or
+                dangerous file extensions.
+            ValueError: Filename is empty string.
         """
         if not filename:
             raise ValueError("Filename cannot be empty")

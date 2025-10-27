@@ -174,10 +174,7 @@ class FileValidator:
 
         # Unicode security validation (must be first)
         # This detects and blocks Unicode-based attacks before any other processing
-        try:
-            filename = self.unicode_validator.validate_unicode_security(filename)
-        except ValueError as err:
-            raise err
+        filename = self.unicode_validator.validate_unicode_security(filename)
 
         # Remove path components to prevent directory traversal
         filename = os.path.basename(filename)
@@ -256,15 +253,6 @@ class FileValidator:
                     filename=file.filename,
                     error_code=ErrorCode.FILENAME_INVALID,
                 )
-        except ValueError as err:
-            # Re-raise as FilenameSecurityError if not already a FileValidationError
-            if isinstance(err, FileValidationError):
-                raise
-            raise FilenameSecurityError(
-                str(err),
-                filename=file.filename,
-                error_code=ErrorCode.FILENAME_INVALID,
-            ) from err
         except FileValidationError:
             # Let FileValidationError and subclasses propagate
             raise
@@ -500,31 +488,13 @@ class FileValidator:
 
             # Validate ZIP compression ratio to detect zip bombs
             if file_size is not None:
-                compression_validation = (
-                    self.compression_validator.validate_zip_compression_ratio(
-                        full_file_content, file_size
-                    )
+                self.compression_validator.validate_zip_compression_ratio(
+                    full_file_content, file_size
                 )
-                if not compression_validation[0]:
-                    # Compression validator still returns tuples, will be updated in Phase 3
-                    raise FileValidationError(
-                        f"ZIP compression validation failed: {compression_validation[1]}",
-                        filename=filename,
-                        error_code=ErrorCode.COMPRESSION_RATIO_EXCEEDED,
-                    )
 
             # Perform ZIP content inspection if enabled
             if self.config.limits.scan_zip_content:
-                content_inspection = self.zip_inspector.inspect_zip_content(
-                    full_file_content
-                )
-                if not content_inspection[0]:
-                    # ZIP inspector still returns tuples, will be updated in Phase 3
-                    raise FileValidationError(
-                        f"ZIP content inspection failed: {content_inspection[1]}",
-                        filename=filename,
-                        error_code=ErrorCode.ZIP_CONTENT_THREAT,
-                    )
+                self.zip_inspector.inspect_zip_content(full_file_content)
 
             logger.debug(
                 "ZIP file validation passed: %s (%s, %s bytes)",

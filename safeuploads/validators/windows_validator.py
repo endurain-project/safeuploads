@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import TYPE_CHECKING
 
 from .base import BaseValidator
+from ..exceptions import WindowsReservedNameError
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class WindowsSecurityValidator(BaseValidator):
@@ -36,7 +41,8 @@ class WindowsSecurityValidator(BaseValidator):
             filename: The filename to validate.
 
         Raises:
-            ValueError: If filename matches a Windows reserved name.
+            WindowsReservedNameError: If filename matches a Windows
+                reserved device name.
         """
         name_without_ext = os.path.splitext(filename)[0].lower().strip()
         # Remove leading dots to handle hidden files like ".CON.jpg"
@@ -45,9 +51,19 @@ class WindowsSecurityValidator(BaseValidator):
         name_without_ext = name_without_ext.rstrip(".")
 
         if name_without_ext in self.config.WINDOWS_RESERVED_NAMES:
-            raise ValueError(
-                f"Filename '{filename}' uses Windows reserved name '{name_without_ext.upper()}'. "
-                f"Reserved names: {', '.join(sorted(self.config.WINDOWS_RESERVED_NAMES)).upper()}"
+            logger.warning(
+                "Windows reserved name detected",
+                extra={
+                    "error_type": "windows_reserved_name",
+                    "filename": filename,
+                    "reserved_name": name_without_ext.upper(),
+                },
+            )
+            raise WindowsReservedNameError(
+                message=f"Filename '{filename}' uses Windows reserved name '{name_without_ext.upper()}'. "
+                f"Reserved names: {', '.join(sorted(self.config.WINDOWS_RESERVED_NAMES)).upper()}",
+                filename=filename,
+                reserved_name=name_without_ext.upper(),
             )
 
     def validate(self, filename: str) -> None:
@@ -58,6 +74,7 @@ class WindowsSecurityValidator(BaseValidator):
             filename: The filename to validate.
 
         Raises:
-            ValueError: If filename matches a Windows reserved name.
+            WindowsReservedNameError: If filename matches a Windows
+                reserved device name.
         """
         return self.validate_windows_reserved_names(filename)

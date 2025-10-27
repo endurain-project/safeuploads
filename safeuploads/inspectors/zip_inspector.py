@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import logging
 from ..enums import SuspiciousFilePattern, ZipThreatCategory
+from ..exceptions import ZipContentError, FileProcessingError, ErrorCode
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -35,18 +36,19 @@ class ZipContentInspector:
         """
         self.config = config
 
-    def inspect_zip_content(self, file_content: bytes) -> tuple[bool, str]:
+    def inspect_zip_content(self, file_content: bytes) -> None:
         """
         Inspect ZIP archive for potential security threats.
 
         Args:
             file_content: Raw bytes of ZIP archive.
 
-        Returns:
-            Tuple of validation result and message.
-
         Raises:
-            zipfile.BadZipFile: If ZIP structure is invalid.
+            ZipContentError: If security threats are detected in ZIP
+                content such as directory traversal, symlinks, nested
+                archives, or suspicious patterns.
+            FileProcessingError: If ZIP structure is invalid or
+                unexpected error occurs during inspection.
         """
         try:
             zip_bytes = io.BytesIO(file_content)
@@ -65,9 +67,17 @@ class ZipContentInspector:
                         time.time() - start_time
                         > self.config.limits.zip_analysis_timeout
                     ):
-                        return (
-                            False,
-                            f"ZIP content inspection timeout after {self.config.limits.zip_analysis_timeout}s",
+                        logger.error(
+                            "ZIP content inspection timeout",
+                            extra={
+                                "error_type": "zip_analysis_timeout",
+                                "timeout": self.config.limits.zip_analysis_timeout,
+                            },
+                        )
+                        raise ZipContentError(
+                            message=f"ZIP content inspection timeout after {self.config.limits.zip_analysis_timeout}s",
+                            threats=["Analysis timeout - potential zip bomb"],
+                            error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
                         )
 
                     # Inspect individual entry
@@ -80,26 +90,42 @@ class ZipContentInspector:
 
                 # Return results
                 if threats_found:
-                    return (
-                        False,
-                        f"ZIP content threats detected: {'; '.join(threats_found)}",
+                    logger.warning(
+                        "ZIP content threats detected",
+                        extra={
+                            "error_type": "zip_content_threat",
+                            "threats": threats_found,
+                            "threat_count": len(threats_found),
+                        },
+                    )
+                    raise ZipContentError(
+                        message=f"ZIP content threats detected: {'; '.join(threats_found)}",
+                        threats=threats_found,
                     )
 
                 logger.debug(
                     "ZIP content inspection passed: %s entries analyzed",
                     len(zip_entries),
                 )
-                return True, "ZIP content inspection passed"
 
-        except zipfile.BadZipFile:
-            return False, "Invalid or corrupted ZIP file structure"
+        except ZipContentError:
+            # Re-raise our own exceptions
+            raise
+        except zipfile.BadZipFile as err:
+            logger.error("Invalid or corrupted ZIP file structure", exc_info=True)
+            raise FileProcessingError(
+                message="Invalid or corrupted ZIP file structure",
+                original_error=err,
+            ) from err
         except Exception as err:
-            logger.warning(
-                "Error during ZIP content inspection: %s",
-                err,
-                exc_info=err,
+            logger.error(
+                "Unexpected error during ZIP content inspection",
+                exc_info=True,
             )
-            return False, f"ZIP content inspection failed: {str(err)}"
+            raise FileProcessingError(
+                message=f"ZIP content inspection failed: {str(err)}",
+                original_error=err,
+            ) from err
 
     def _inspect_zip_entry(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile

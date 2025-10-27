@@ -70,7 +70,7 @@ class UnicodeSecurityValidator(BaseValidator):
                 "Dangerous Unicode characters detected",
                 extra={
                     "error_type": "unicode_security",
-                    "filename": filename,
+                    "file_name": filename,
                     "char_codes": [code for _, code, _ in dangerous_chars_found],
                     "positions": [pos for _, _, pos in dangerous_chars_found],
                 },
@@ -105,7 +105,7 @@ class UnicodeSecurityValidator(BaseValidator):
                     "Unicode normalization resulted in dangerous character",
                     extra={
                         "error_type": "unicode_normalization_error",
-                        "filename": filename,
+                        "file_name": filename,
                         "normalized_filename": normalized_filename,
                         "char_code": char_code,
                     },

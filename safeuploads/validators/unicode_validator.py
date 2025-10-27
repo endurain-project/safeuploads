@@ -7,6 +7,7 @@ import logging
 
 from typing import TYPE_CHECKING
 from .base import BaseValidator
+from ..exceptions import UnicodeSecurityError
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -43,7 +44,8 @@ class UnicodeSecurityValidator(BaseValidator):
             The NFC-normalized filename.
 
         Raises:
-            ValueError: If dangerous Unicode characters are detected.
+            UnicodeSecurityError: If dangerous Unicode characters are
+                detected in the filename or result from normalization.
         """
         if not filename:
             return filename
@@ -64,9 +66,20 @@ class UnicodeSecurityValidator(BaseValidator):
                     f"'{char}' (U+{code:04X}: {char_name}) at position {pos}"
                 )
 
-            raise ValueError(
-                f"Dangerous Unicode characters detected in filename: {', '.join(char_details)}. "
-                f"These characters can be used to disguise file extensions or create security vulnerabilities."
+            logger.warning(
+                "Dangerous Unicode characters detected",
+                extra={
+                    "error_type": "unicode_security",
+                    "filename": filename,
+                    "char_codes": [code for _, code, _ in dangerous_chars_found],
+                    "positions": [pos for _, _, pos in dangerous_chars_found],
+                },
+            )
+            raise UnicodeSecurityError(
+                message=f"Dangerous Unicode characters detected in filename: {', '.join(char_details)}. "
+                f"These characters can be used to disguise file extensions or create security vulnerabilities.",
+                filename=filename,
+                dangerous_chars=dangerous_chars_found,
             )
 
         # Normalize Unicode to prevent normalization attacks
@@ -87,9 +100,21 @@ class UnicodeSecurityValidator(BaseValidator):
         for char in normalized_filename:
             char_code = ord(char)
             if char_code in self.config.DANGEROUS_UNICODE_CHARS:
-                raise ValueError(
-                    f"Unicode normalization resulted in dangerous character: "
-                    f"'{char}' (U+{char_code:04X}: {unicodedata.name(char, f'U+{char_code:04X}')})"
+                char_name = unicodedata.name(char, f"U+{char_code:04X}")
+                logger.error(
+                    "Unicode normalization resulted in dangerous character",
+                    extra={
+                        "error_type": "unicode_normalization_error",
+                        "filename": filename,
+                        "normalized_filename": normalized_filename,
+                        "char_code": char_code,
+                    },
+                )
+                raise UnicodeSecurityError(
+                    message=f"Unicode normalization resulted in dangerous character: "
+                    f"'{char}' (U+{char_code:04X}: {char_name})",
+                    filename=filename,
+                    dangerous_chars=[(char, char_code, 0)],
                 )
 
         return normalized_filename

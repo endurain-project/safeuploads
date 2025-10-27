@@ -6,7 +6,13 @@ import time
 import mimetypes
 
 import magic
-from fastapi import UploadFile
+
+# Optional FastAPI integration - fallback to protocol if not available
+try:
+    from fastapi import UploadFile
+except ImportError:
+    from .protocols import UploadFileProtocol as UploadFile
+
 from .config import FileSecurityConfig
 from .validators import (
     UnicodeSecurityValidator,

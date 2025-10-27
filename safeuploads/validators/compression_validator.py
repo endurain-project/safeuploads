@@ -136,7 +136,7 @@ class CompressionSecurityValidator(BaseValidator):
                                 "Excessive compression ratio detected",
                                 extra={
                                     "error_type": "compression_ratio_exceeded",
-                                    "filename": entry.filename,
+                                    "file_name": entry.filename,
                                     "compression_ratio": compression_ratio,
                                     "max_ratio": self.config.limits.max_compression_ratio,
                                 },
@@ -162,7 +162,7 @@ class CompressionSecurityValidator(BaseValidator):
                             "Individual file too large",
                             extra={
                                 "error_type": "file_too_large",
-                                "filename": entry.filename,
+                                "file_name": entry.filename,
                                 "size_mb": uncompressed_size // (1024 * 1024),
                                 "max_size_mb": self.config.limits.max_individual_file_size
                                 // (1024 * 1024),

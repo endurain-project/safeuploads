@@ -49,7 +49,7 @@ class ExtensionSecurityValidator(BaseValidator):
                     "Dangerous compound extension detected",
                     extra={
                         "error_type": "compound_extension_blocked",
-                        "filename": filename,
+                        "file_name": filename,
                         "extension": compound_ext,
                     },
                 )
@@ -71,7 +71,7 @@ class ExtensionSecurityValidator(BaseValidator):
                         "Dangerous extension detected",
                         extra={
                             "error_type": "extension_blocked",
-                            "filename": filename,
+                            "file_name": filename,
                             "extension": ext,
                         },
                     )

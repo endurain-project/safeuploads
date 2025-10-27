@@ -2,6 +2,7 @@
 .vscode/
 .env
 .DS_Store
+.venv/
 
 # Internal
 devdocs/
@@ -9,3 +10,8 @@ devscripts/
 
 # Python
 __pycache__
+
+# Tests
+.coverage
+htmlcov/
+.pytest_cache/

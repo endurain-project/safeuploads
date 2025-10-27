@@ -47,20 +47,11 @@ from .validators import (
 # Inspectors
 from .inspectors import ZipContentInspector
 
-# Utility functions (for backward compatibility)
-from .utils import (
-    validate_profile_image_upload,
-    validate_profile_data_upload,
-    get_secure_filename,
-    validate_configuration,
-    file_validator,
-)
-
 # Perform configuration validation when module is imported
 # This ensures configuration issues are caught early during application startup
-validate_configuration(strict=False)
+FileSecurityConfig.validate_and_report(strict=False)
 
-# Export all public APIs for backward compatibility
+# Export all public APIs
 __all__ = [
     # Core configuration
     "SecurityLimits",
@@ -98,10 +89,4 @@ __all__ = [
     "CompressionSecurityValidator",
     # Inspectors
     "ZipContentInspector",
-    # Utility functions (maintain original API)
-    "validate_profile_image_upload",
-    "validate_profile_data_upload",
-    "get_secure_filename",
-    "validate_configuration",
-    "file_validator",
 ]

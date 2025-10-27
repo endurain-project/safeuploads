@@ -180,3 +180,43 @@ class TestUnicodeSecurityValidator:
                 filename = f"file{chr(char_code)}.txt"
                 with pytest.raises(UnicodeSecurityError):
                     validator.validate_unicode_security(filename)
+
+    def test_normalization_introduces_dangerous_character(self) -> None:
+        """
+        Test that normalization creating dangerous characters is rejected.
+
+        This covers the case where Unicode normalization transforms
+        safe-looking characters into dangerous Unicode characters.
+        Tests lines 103-113 in unicode_validator.py.
+
+        This is a defensive code path that's difficult to trigger
+        naturally with the current dangerous character set (which
+        already contains normalized forms). We use mocking to simulate
+        the scenario.
+        """
+        from unittest.mock import patch
+        import unicodedata
+
+        # Create a normal validator
+        config = FileSecurityConfig()
+        validator = UnicodeSecurityValidator(config)
+
+        # Create a filename that will pass the initial check
+        filename = "file!important.txt"
+
+        # Mock unicodedata.normalize to return a string with a dangerous character
+        # We'll make it return a string containing U+202E (RLO) which IS dangerous
+        def mock_normalize(form, text):
+            if form == "NFC" and text == filename:
+                # Return text with a dangerous RLO character inserted
+                return f"file{chr(0x202E)}important.txt"
+            return unicodedata.normalize(form, text)
+
+        # Apply the mock and try validation
+        with patch("unicodedata.normalize", side_effect=mock_normalize):
+            with pytest.raises(UnicodeSecurityError) as exc_info:
+                validator.validate_unicode_security(filename)
+
+            # Verify it's about normalization resulting in dangerous char
+            assert "normalization" in str(exc_info.value).lower()
+            assert "dangerous character" in str(exc_info.value).lower()

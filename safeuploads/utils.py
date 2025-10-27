@@ -10,6 +10,7 @@ from fastapi import HTTPException, status, UploadFile
 
 from .file_validator import FileValidator
 from .config import FileSecurityConfig
+from .exceptions import FileValidationError
 
 # Global validator instance
 file_validator = FileValidator()
@@ -22,21 +23,19 @@ async def validate_profile_image_upload(file: UploadFile) -> None:
     Validate an uploaded profile image and raise an HTTP 400 error if the file is invalid.
 
     Args:
-        file (UploadFile): The uploaded image file to validate.
+        file: The uploaded image file to validate.
 
     Raises:
         HTTPException: If the image file fails validation, indicating the specific reason.
     """
-    is_valid, error_message = await file_validator.validate_image_file(file)
-
-    if not is_valid:
-        logger.warning(
-            "Profile image upload validation failed: %s", error_message
-        )
+    try:
+        await file_validator.validate_image_file(file)
+    except FileValidationError as err:
+        logger.warning("Profile image upload validation failed: %s", str(err))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid image file: {error_message}",
-        )
+            detail=f"Invalid image file: {err}",
+        ) from err
 
 
 async def validate_profile_data_upload(file: UploadFile) -> None:
@@ -44,21 +43,19 @@ async def validate_profile_data_upload(file: UploadFile) -> None:
     Validate the uploaded profile data ZIP file.
 
     Args:
-        file (UploadFile): The uploaded ZIP archive to validate.
+        file: The uploaded ZIP archive to validate.
 
     Raises:
         HTTPException: If the provided file fails ZIP validation.
     """
-    is_valid, error_message = await file_validator.validate_zip_file(file)
-
-    if not is_valid:
-        logger.warning(
-            "Profile data upload validation failed: %s", error_message
-        )
+    try:
+        await file_validator.validate_zip_file(file)
+    except FileValidationError as err:
+        logger.warning("Profile data upload validation failed: %s", str(err))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid ZIP file: {error_message}",
-        )
+            detail=f"Invalid ZIP file: {err}",
+        ) from err
 
 
 def get_secure_filename(original_filename: str) -> str:
@@ -100,11 +97,9 @@ def validate_configuration(strict: bool = False) -> None:
     """
     try:
         FileSecurityConfig.validate_and_report(strict=strict)
-        logger.info(
-            "File security configuration validation completed successfully"
-        )
-    except Exception as validation_error:
+        logger.info("File security configuration validation completed successfully")
+    except Exception as err:
         logger.warning(
             "File security configuration validation encountered issues: %s",
-            validation_error,
+            err,
         )

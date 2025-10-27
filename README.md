@@ -25,9 +25,10 @@ Requirements:
 ## Quick Start
 
 ```python
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, UploadFile, HTTPException, status
 
 from safeuploads import FileValidator
+from safeuploads.exceptions import FileValidationError
 
 app = FastAPI()
 validator = FileValidator()
@@ -35,9 +36,13 @@ validator = FileValidator()
 
 @app.post("/images")
 async def upload_image(file: UploadFile):
-	is_valid, message = await validator.validate_image_file(file)
-	if not is_valid:
-		return {"status": "rejected", "reason": message}
+	try:
+		await validator.validate_image_file(file)
+	except FileValidationError as err:
+		raise HTTPException(
+			status_code=status.HTTP_400_BAD_REQUEST,
+			detail=str(err)
+		) from err
 
 	# Continue with storage once validation passes
 	return {"status": "accepted", "filename": file.filename}

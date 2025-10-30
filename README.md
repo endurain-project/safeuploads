@@ -1,10 +1,8 @@
 # safeuploads
 
-<div>
-    ![License](https://img.shields.io/github/license/joaovitoriasilva/safeuploads)
-    [![GitHub release](https://img.shields.io/github/v/release/joaovitoriasilva/safeuploads)](https://github.com/joaovitoriasilva/safeuploads/releases)
-    [![GitHub stars](https://img.shields.io/github/stars/joaovitoriasilva/safeuploads.svg?style=social&label=Star)](https://github.com/joaovitoriasilva/safeuploads/stargazers)
-</div>
+![License](https://img.shields.io/github/license/joaovitoriasilva/safeuploads)
+[![GitHub release](https://img.shields.io/github/v/release/joaovitoriasilva/safeuploads)](https://github.com/joaovitoriasilva/safeuploads/releases)
+[![GitHub stars](https://img.shields.io/github/stars/joaovitoriasilva/safeuploads.svg?style=social&label=Star)](https://github.com/joaovitoriasilva/safeuploads/stargazers)
 
 Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 

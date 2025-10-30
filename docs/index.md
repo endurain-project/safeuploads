@@ -79,10 +79,6 @@ except FileValidationError as err:
     return {"error": str(err), "code": err.error_code}
 ```
 
-## Documentation
-
-Full documentation available at [link to your docs].
-
 ## Sponsors
 
 A huge thank you to the project sponsors! Your support helps keep this project going.
@@ -91,10 +87,8 @@ Consider [sponsoring safeuploads on GitHub](https://github.com/sponsors/joaovito
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/joaovitoriasilva/safeuploads/blob/main/LICENSE.md) file for details.
 
 ## Contributing
 
-Contributions welcome! See [Contributing Guidelines](CONTRIBUTING.md) for guidelines.
-
-
+Contributions welcome! See [Contributing Guidelines](https://github.com/joaovitoriasilva/safeuploads/blob/main/CONTRIBUTING.md) for guidelines.

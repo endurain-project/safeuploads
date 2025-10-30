@@ -8,6 +8,9 @@
 devdocs/
 devscripts/
 
+# site folder
+site/
+
 # Python
 __pycache__
 

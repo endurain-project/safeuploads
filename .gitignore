@@ -3,6 +3,7 @@
 .env
 .DS_Store
 .venv/
+dist/
 
 # Internal
 devdocs/

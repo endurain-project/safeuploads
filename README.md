@@ -1,5 +1,11 @@
 # safeuploads
 
+<div>
+    ![License](https://img.shields.io/github/license/joaovitoriasilva/safeuploads)
+    [![GitHub release](https://img.shields.io/github/v/release/joaovitoriasilva/safeuploads)](https://github.com/joaovitoriasilva/safeuploads/releases)
+    [![GitHub stars](https://img.shields.io/github/stars/joaovitoriasilva/safeuploads.svg?style=social&label=Star)](https://github.com/joaovitoriasilva/safeuploads/stargazers)
+</div>
+
 Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 
 ## Features
@@ -78,6 +84,49 @@ except ExtensionSecurityError as err:
 except FileValidationError as err:
     return {"error": str(err), "code": err.error_code}
 ```
+
+## Current Status & Roadmap
+
+### What's Working
+
+- **Filename Security**: Unicode normalization, directory traversal prevention, Windows reserved names blocking
+- **Extension Validation**: Allow/block lists with configurable rules, dangerous extension detection
+- **Compression Security**: ZIP bomb detection, nested archive inspection, size and ratio limits
+- **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits
+- **MIME Type Verification**: Magic number validation for common file types
+- **Rich Exception System**: Machine-readable error codes with detailed context
+
+### Planned Improvements
+
+#### Critical (Pre-1.0)
+- **Streaming Validation**: Memory-efficient processing for large files to prevent resource exhaustion
+- **Resource Limits**: CPU and memory monitoring during validation operations
+- **Rate Limiting Guide**: Documentation and examples for production deployments
+
+#### High Priority
+- **Enhanced ZIP Security**: Protection against recursive ZIP structures and algorithmic complexity attacks
+- **Audit Logging**: Structured logging for security-relevant events with request correlation
+- **Performance Optimizations**: Pattern caching, compiled regex optimization, async I/O improvements
+
+#### Future Enhancements
+- **Additional File Types**: .gpx, .tcx, .fit, .gz
+- **Content Analysis**: Malware signature detection, embedded script scanning
+- **Fuzzing Tests**: Automated testing with malformed and malicious payloads
+- **Security Documentation**: Threat model, architecture diagrams, integration security checklist
+
+### Production Readiness
+
+**Status**: Beta - suitable for testing, not yet recommended for production use
+
+**Before Production**:
+1. Address memory exhaustion vulnerability in ZIP inspection
+2. Implement streaming validation for large files
+3. Complete security audit and penetration testing
+
+**Known Limitations**:
+- No built-in rate limiting (must be implemented at application level)
+- Limited to synchronous content reading in ZIP inspection
+- Performance not yet optimized for high-throughput scenarios
 
 ## Documentation
 

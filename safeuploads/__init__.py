@@ -25,6 +25,7 @@ from .exceptions import (
     FileProcessingError,
 )
 from .enums import (
+    BinaryFileCategory,
     DangerousExtensionCategory,
     CompoundExtensionCategory,
     UnicodeAttackCategory,

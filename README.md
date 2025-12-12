@@ -1,8 +1,8 @@
 # safeuploads
 
-![License](https://img.shields.io/github/license/joaovitoriasilva/safeuploads)
-[![GitHub release](https://img.shields.io/github/v/release/joaovitoriasilva/safeuploads)](https://github.com/joaovitoriasilva/safeuploads/releases)
-[![GitHub stars](https://img.shields.io/github/stars/joaovitoriasilva/safeuploads.svg?style=social&label=Star)](https://github.com/joaovitoriasilva/safeuploads/stargazers)
+![License](https://img.shields.io/github/license/endurain-project/safeuploads)
+[![GitHub release](https://img.shields.io/github/v/release/endurain-project/safeuploads)](https://github.com/endurain-project/safeuploads/releases)
+[![GitHub stars](https://img.shields.io/github/stars/endurain-project/safeuploads.svg?style=social&label=Star)](https://github.com/endurain-project/safeuploads/stargazers)
 
 Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 
@@ -134,7 +134,7 @@ Full documentation available at [link to your docs].
 
 A huge thank you to the project sponsors! Your support helps keep this project going.
 
-Consider [sponsoring safeuploads on GitHub](https://github.com/sponsors/joaovitoriasilva) to ensure continuous development.
+Consider [sponsoring safeuploads on GitHub](https://github.com/sponsors/endurain-project) to ensure continuous development.
 
 ## License
 
@@ -144,4 +144,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 Contributions welcome! See [Contributing Guidelines](CONTRIBUTING.md) for guidelines.
 
-
+<div align="center">
+  <sub>Built with ❤️ from Portugal | Part of the Endurain ecosystem</sub>
+</div>

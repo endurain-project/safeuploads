@@ -30,7 +30,7 @@ Thank you for considering contributing to safeuploads! Your involvement helps im
 1. **Fork the Repository**: Create a fork of the project repository to work on your changes.
 2. **Clone the Repository**: Clone your forked repository to your local machine.
    ```bash
-   git clone https://github.com/joaovitoriasilva/safeuploads.git
+   git clone https://github.com/endurain-project/safeuploads.git
    ```
 3. **Create a Branch**: Create a new branch for your changes.
     ```bash

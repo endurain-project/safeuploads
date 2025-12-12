@@ -145,5 +145,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 Contributions welcome! See [Contributing Guidelines](CONTRIBUTING.md) for guidelines.
 
 <div align="center">
-  <sub>Built with ❤️ from Portugal | Part of the Endurain ecosystem</sub>
+  <sub>Built with ❤️ from Portugal | Part of the <a href="https://github.com/endurain-project">Endurain</a> ecosystem</sub>
 </div>

@@ -1,5 +1,5 @@
 site_name: safeuploads documentation
-repo_url: https://github.com/joaovitoriasilva/safeuploads
+repo_url: https://github.com/endurain-project/safeuploads
 theme:
   name: material
   palette:

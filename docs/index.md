@@ -1,12 +1,12 @@
 # safeuploads
 
 <div>
-    <img src="https://img.shields.io/github/license/joaovitoriasilva/safeuploads" alt="License">
-    <a href="https://github.com/joaovitoriasilva/safeuploads/releases">
-      <img src="https://img.shields.io/github/v/release/joaovitoriasilva/safeuploads" alt="GitHub release">
+    <img src="https://img.shields.io/github/license/endurain-project/safeuploads" alt="License">
+    <a href="https://github.com/endurain-project/safeuploads/releases">
+      <img src="https://img.shields.io/github/v/release/endurain-project/safeuploads" alt="GitHub release">
     </a>
-    <a href="https://github.com/joaovitoriasilva/safeuploads/stargazers">
-      <img src="https://img.shields.io/github/stars/joaovitoriasilva/safeuploads.svg?style=social&label=Star" alt="GitHub stars">
+    <a href="https://github.com/endurain-project/safeuploads/stargazers">
+      <img src="https://img.shields.io/github/stars/endurain-project/safeuploads.svg?style=social&label=Star" alt="GitHub stars">
     </a>
 </div>
 
@@ -140,8 +140,8 @@ Consider [sponsoring safeuploads on GitHub](https://github.com/sponsors/joaovito
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](https://github.com/joaovitoriasilva/safeuploads/blob/main/LICENSE.md) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/endurain-project/safeuploads/blob/main/LICENSE.md) file for details.
 
 ## Contributing
 
-Contributions welcome! See [Contributing Guidelines](https://github.com/joaovitoriasilva/safeuploads/blob/main/CONTRIBUTING.md) for guidelines.
+Contributions welcome! See [Contributing Guidelines](https://github.com/endurain-project/safeuploads/blob/main/CONTRIBUTING.md) for guidelines.

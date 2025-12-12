@@ -145,3 +145,7 @@ This project is licensed under the MIT License - see the [LICENSE](https://githu
 ## Contributing
 
 Contributions welcome! See [Contributing Guidelines](https://github.com/endurain-project/safeuploads/blob/main/CONTRIBUTING.md) for guidelines.
+
+<div align="center">
+  <sub>Built with ❤️ from Portugal | Part of the <a href="https://github.com/endurain-project">Endurain</a> ecosystem</sub>
+</div>

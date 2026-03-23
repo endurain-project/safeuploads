@@ -8,10 +8,10 @@ bombs.
 """
 
 from .base import BaseValidator
-from .unicode_validator import UnicodeSecurityValidator
-from .extension_validator import ExtensionSecurityValidator
-from .windows_validator import WindowsSecurityValidator
 from .compression_validator import CompressionSecurityValidator
+from .extension_validator import ExtensionSecurityValidator
+from .unicode_validator import UnicodeSecurityValidator
+from .windows_validator import WindowsSecurityValidator
 
 __all__ = [
     "BaseValidator",

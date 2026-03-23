@@ -4,22 +4,22 @@ Validates ZIP compression ratios and detects zip bombs.
 
 from __future__ import annotations
 
-import io
+import logging
 import time
 import zipfile
-import logging
-
 from typing import TYPE_CHECKING
-from .base import BaseValidator
+
 from ..exceptions import (
-    ZipBombError,
     CompressionSecurityError,
-    FileProcessingError,
     ErrorCode,
+    FileProcessingError,
+    ZipBombError,
 )
+from .base import BaseValidator
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
+    from ..protocols import SeekableFile
 
 
 logger = logging.getLogger(__name__)
@@ -43,13 +43,13 @@ class CompressionSecurityValidator(BaseValidator):
         super().__init__(config)
 
     def validate_zip_compression_ratio(
-        self, file_content: bytes, compressed_size: int
+        self, file_obj: SeekableFile, compressed_size: int
     ) -> None:
         """
         Validate ZIP archive against security limits.
 
         Args:
-            file_content: Raw bytes of the ZIP archive.
+            file_obj: Seekable file-like object containing ZIP data.
             compressed_size: Size of the compressed archive in bytes.
 
         Raises:
@@ -62,8 +62,8 @@ class CompressionSecurityValidator(BaseValidator):
                 validation such as memory errors or I/O errors.
         """
         try:
-            # Create a BytesIO object from file content for zipfile analysis
-            zip_bytes = io.BytesIO(file_content)
+            # Seek to start for zipfile analysis
+            file_obj.seek(0)
 
             # Track analysis metrics
             total_uncompressed_size = 0
@@ -76,7 +76,7 @@ class CompressionSecurityValidator(BaseValidator):
             # Analyze ZIP file structure with timeout protection
             start_time = time.time()
 
-            with zipfile.ZipFile(zip_bytes, "r") as zip_file:
+            with zipfile.ZipFile(file_obj, "r") as zip_file:
                 # Check for excessive number of files
                 zip_entries = zip_file.infolist()
                 file_count = len(zip_entries)
@@ -270,17 +270,22 @@ class CompressionSecurityValidator(BaseValidator):
                 message=f"ZIP validation failed: {str(err)}",
             ) from err
 
-    def validate(self, file_content: bytes, compressed_size: int) -> None:
+    def validate(
+        self, file_obj: SeekableFile, compressed_size: int
+    ) -> None:
         """
         Validate the compression ratio of a ZIP file.
 
         Args:
-            file_content: Raw bytes of the uploaded file.
-            compressed_size: Size of the file after compression in bytes.
+            file_obj: Seekable file-like object of the ZIP.
+            compressed_size: Size of the file after compression
+                in bytes.
 
         Raises:
-            ZipBombError: If compression ratio exceeds maximum allowed.
+            ZipBombError: If compression ratio exceeds maximum.
             CompressionSecurityError: If ZIP structure is invalid.
             FileProcessingError: If unexpected error occurs.
         """
-        return self.validate_zip_compression_ratio(file_content, compressed_size)
+        return self.validate_zip_compression_ratio(
+            file_obj, compressed_size
+        )

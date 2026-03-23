@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 
-
 # ============================================================================
 # Configuration Validation
 # ============================================================================
@@ -110,6 +109,11 @@ class ErrorCode:
     ZIP_SYMLINK_DETECTED = "ZIP_SYMLINK_DETECTED"
     ZIP_ABSOLUTE_PATH = "ZIP_ABSOLUTE_PATH"
     ZIP_ANALYSIS_TIMEOUT = "ZIP_ANALYSIS_TIMEOUT"
+
+    # Resource limit errors
+    RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
+    RESOURCE_TIME_EXCEEDED = "RESOURCE_TIME_EXCEEDED"
+    RESOURCE_MEMORY_EXCEEDED = "RESOURCE_MEMORY_EXCEEDED"
 
     # Processing errors
     PROCESSING_ERROR = "PROCESSING_ERROR"
@@ -466,3 +470,40 @@ class FileProcessingError(FileSecurityError):
     def __init__(self, message: str, original_error: Exception | None = None):
         self.original_error = original_error
         super().__init__(message, error_code=ErrorCode.PROCESSING_ERROR)
+
+
+# ============================================================================
+# Resource Limit Exceptions
+# ============================================================================
+
+
+class ResourceLimitError(FileProcessingError):
+    """
+    Validation exceeded configured resource limits.
+
+    Args:
+        message: Human-readable error description.
+        error_code: Machine-readable error code.
+        elapsed_seconds: Optional wall-clock time consumed.
+        memory_bytes: Optional peak memory consumed in bytes.
+        original_error: Optional original exception.
+
+    Attributes:
+        elapsed_seconds: Wall-clock seconds consumed.
+        memory_bytes: Peak memory consumed in bytes.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = ErrorCode.RESOURCE_LIMIT_EXCEEDED,
+        elapsed_seconds: float | None = None,
+        memory_bytes: int | None = None,
+        original_error: Exception | None = None,
+    ):
+        self.elapsed_seconds = elapsed_seconds
+        self.memory_bytes = memory_bytes
+        super().__init__(
+            message, original_error=original_error
+        )
+        self.error_code = error_code

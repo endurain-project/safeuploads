@@ -1,9 +1,10 @@
 """Main file validator coordinating all security validations."""
 
 import logging
-import os
-import time
 import mimetypes
+import os
+import tempfile
+import time
 
 import magic
 
@@ -14,24 +15,25 @@ except ImportError:
     from .protocols import UploadFileProtocol as UploadFile
 
 from .config import FileSecurityConfig
-from .validators import (
-    UnicodeSecurityValidator,
-    ExtensionSecurityValidator,
-    WindowsSecurityValidator,
-    CompressionSecurityValidator,
-)
-from .inspectors import ZipContentInspector
 from .exceptions import (
     ErrorCode,
-    FileValidationError,
-    FilenameSecurityError,
     ExtensionSecurityError,
-    FileSizeError,
-    MimeTypeError,
-    FileSignatureError,
+    FilenameSecurityError,
     FileProcessingError,
+    FileSignatureError,
+    FileSizeError,
+    FileValidationError,
+    MimeTypeError,
+    ResourceLimitError,
 )
-
+from .inspectors import ZipContentInspector
+from .utils import ResourceMonitor
+from .validators import (
+    CompressionSecurityValidator,
+    ExtensionSecurityValidator,
+    UnicodeSecurityValidator,
+    WindowsSecurityValidator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +365,69 @@ class FileValidator:
 
         return file_content, file_size
 
+    async def _stream_to_temp_file(
+        self, file: UploadFile, max_file_size: int
+    ) -> tuple[tempfile.SpooledTemporaryFile, int]:
+        """
+        Stream uploaded file to a SpooledTemporaryFile with size validation.
+
+        Reads the upload in chunks to avoid loading the entire file
+        into memory. The SpooledTemporaryFile stays in memory for
+        files smaller than max_memory_buffer_size and spills to
+        disk for larger files.
+
+        Args:
+            file: Uploaded file supporting asynchronous read/seek.
+            max_file_size: Maximum allowed file size in bytes.
+
+        Returns:
+            Tuple of SpooledTemporaryFile positioned at start and
+            total bytes written.
+
+        Raises:
+            FileSizeError: File exceeds maximum or is empty.
+        """
+        temp = tempfile.SpooledTemporaryFile(
+            max_size=self.config.limits.max_memory_buffer_size
+        )
+        total_bytes = 0
+        chunk_size = self.config.limits.chunk_size
+
+        await file.seek(0)
+
+        try:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_file_size:
+                    temp.close()
+                    raise FileSizeError(
+                        f"File too large. "
+                        f"Maximum: "
+                        f"{max_file_size // (1024 * 1024)}MB",
+                        size=total_bytes,
+                        max_size=max_file_size,
+                    )
+                temp.write(chunk)
+
+            if total_bytes == 0:
+                temp.close()
+                raise FileSizeError(
+                    "Empty file not allowed",
+                    size=0,
+                    max_size=max_file_size,
+                )
+
+            temp.seek(0)
+            return temp, total_bytes
+        except FileSizeError:
+            raise
+        except Exception:
+            temp.close()
+            raise
+
     async def validate_image_file(self, file: UploadFile) -> None:
         """
         Validate uploaded image by checking filename, extension, size, MIME type, and signature.
@@ -388,33 +453,43 @@ class FileValidator:
             # Validate file extension (raises exceptions on failure)
             self._validate_file_extension(file, self.config.ALLOWED_IMAGE_EXTENSIONS)
 
-            # Validate file size (raises exceptions on failure, returns content and size on success)
-            file_content, file_size = await self._validate_file_size(
-                file, self.config.limits.max_image_size
-            )
-
-            # Detect MIME type
-            filename = file.filename or "unknown"
-            detected_mime = self._detect_mime_type(file_content, filename)
-
-            if detected_mime not in self.config.ALLOWED_IMAGE_MIMES:
-                raise MimeTypeError(
-                    f"Invalid file type. Detected: {detected_mime}. Allowed: {', '.join(self.config.ALLOWED_IMAGE_MIMES)}",
-                    filename=filename,
-                    detected_mime=detected_mime,
-                    allowed_mimes=list(self.config.ALLOWED_IMAGE_MIMES),
+            with ResourceMonitor(
+                max_time_seconds=(
+                    self.config.limits
+                    .max_validation_time_seconds
+                ),
+                max_memory_mb=(
+                    self.config.limits
+                    .max_validation_memory_mb
+                ),
+            ):
+                # Validate file size (raises exceptions on failure, returns content and size on success)
+                file_content, file_size = await self._validate_file_size(
+                    file, self.config.limits.max_image_size
                 )
 
-            # Validate file signature (raises exceptions on failure)
-            self._validate_file_signature(file_content, "image")
+                # Detect MIME type
+                filename = file.filename or "unknown"
+                detected_mime = self._detect_mime_type(file_content, filename)
 
-            logger.debug(
-                "Image file validation passed: %s (%s, %s bytes)",
-                filename,
-                detected_mime,
-                file_size,
-            )
-        except FileValidationError:
+                if detected_mime not in self.config.ALLOWED_IMAGE_MIMES:
+                    raise MimeTypeError(
+                        f"Invalid file type. Detected: {detected_mime}. Allowed: {', '.join(self.config.ALLOWED_IMAGE_MIMES)}",
+                        filename=filename,
+                        detected_mime=detected_mime,
+                        allowed_mimes=list(self.config.ALLOWED_IMAGE_MIMES),
+                    )
+
+                # Validate file signature (raises exceptions on failure)
+                self._validate_file_signature(file_content, "image")
+
+                logger.debug(
+                    "Image file validation passed: %s (%s, %s bytes)",
+                    filename,
+                    detected_mime,
+                    file_size,
+                )
+        except (FileValidationError, ResourceLimitError):
             # Let FileValidationError and subclasses propagate
             raise
         except Exception as err:
@@ -451,70 +526,88 @@ class FileValidator:
             # Validate file extension (raises exceptions on failure)
             self._validate_file_extension(file, self.config.ALLOWED_ZIP_EXTENSIONS)
 
-            # Validate file size (raises exceptions on failure, returns content and size on success)
-            file_content, file_size = await self._validate_file_size(
-                file, self.config.limits.max_zip_size
-            )
-
-            # Detect MIME type using first 8KB
-            filename = file.filename or "unknown"
-            detected_mime = self._detect_mime_type(file_content, filename)
-
-            # Validate ZIP file signature first (most reliable check)
-            # This will raise FileSignatureError if signature doesn't match
-            try:
-                self._validate_file_signature(file_content, "zip")
-            except FileSignatureError as err:
-                # Re-raise with more specific message
-                raise FileSignatureError(
-                    "File content does not match ZIP format",
-                    filename=filename,
-                    expected_type="zip",
-                ) from err
-
-            # Check MIME type, but allow application/octet-stream if signature is valid
-            # Some ZIP files are detected as octet-stream, but signature check ensures it's really a ZIP
-            if detected_mime not in self.config.ALLOWED_ZIP_MIMES:
-                if detected_mime == "application/octet-stream":
-                    # Valid ZIP file, just detected as generic binary
-                    logger.debug(
-                        "ZIP file detected as application/octet-stream, but signature is valid: %s",
-                        filename,
-                    )
-                else:
-                    raise MimeTypeError(
-                        f"Invalid file type. Detected: {detected_mime}. Expected ZIP file.",
-                        filename=filename,
-                        detected_mime=detected_mime,
-                        allowed_mimes=list(self.config.ALLOWED_ZIP_MIMES),
-                    )
-
-            # For ZIP validation (compression ratio and content inspection), we need the full file
-            # Read the entire file content for proper ZIP analysis
-            await file.seek(0)
-            full_file_content = await file.read()
-            file_size = len(full_file_content)
-
-            # Reset file position for any subsequent operations
-            await file.seek(0)
-
-            # Validate ZIP compression ratio to detect zip bombs
-            if file_size is not None:
-                self.compression_validator.validate_zip_compression_ratio(
-                    full_file_content, file_size
+            with ResourceMonitor(
+                max_time_seconds=(
+                    self.config.limits
+                    .max_validation_time_seconds
+                ),
+                max_memory_mb=(
+                    self.config.limits
+                    .max_validation_memory_mb
+                ),
+            ):
+                # Stream file to SpooledTemporaryFile with size validation
+                temp_file, file_size = await self._stream_to_temp_file(
+                    file, self.config.limits.max_zip_size
                 )
 
-            # Perform ZIP content inspection if enabled
-            if self.config.limits.scan_zip_content:
-                self.zip_inspector.inspect_zip_content(full_file_content)
+                try:
+                    # Read header for MIME/signature checks
+                    header = temp_file.read(8192)
+                    temp_file.seek(0)
 
-            logger.debug(
-                "ZIP file validation passed: %s (%s, %s bytes)",
-                filename,
-                detected_mime,
-                file_size,
-            )
-        except FileValidationError:
+                    # Detect MIME type using header bytes
+                    filename = file.filename or "unknown"
+                    detected_mime = self._detect_mime_type(
+                        header, filename
+                    )
+
+                    # Validate ZIP file signature first
+                    try:
+                        self._validate_file_signature(
+                            header, "zip"
+                        )
+                    except FileSignatureError as err:
+                        raise FileSignatureError(
+                            "File content does not match ZIP format",
+                            filename=filename,
+                            expected_type="zip",
+                        ) from err
+
+                    # Check MIME type, allow octet-stream if signature valid
+                    if detected_mime not in self.config.ALLOWED_ZIP_MIMES:
+                        if detected_mime == "application/octet-stream":
+                            logger.debug(
+                                "ZIP file detected as "
+                                "application/octet-stream, "
+                                "but signature is valid: %s",
+                                filename,
+                            )
+                        else:
+                            raise MimeTypeError(
+                                f"Invalid file type. "
+                                f"Detected: {detected_mime}. "
+                                f"Expected ZIP file.",
+                                filename=filename,
+                                detected_mime=detected_mime,
+                                allowed_mimes=list(
+                                    self.config.ALLOWED_ZIP_MIMES
+                                ),
+                            )
+
+                    # Validate ZIP compression ratio
+                    self.compression_validator\
+                        .validate_zip_compression_ratio(
+                            temp_file, file_size
+                        )
+
+                    # Perform ZIP content inspection if enabled
+                    if self.config.limits.scan_zip_content:
+                        temp_file.seek(0)
+                        self.zip_inspector.inspect_zip_content(
+                            temp_file
+                        )
+
+                    logger.debug(
+                        "ZIP file validation passed: "
+                        "%s (%s, %s bytes)",
+                        filename,
+                        detected_mime,
+                        file_size,
+                    )
+                finally:
+                    temp_file.close()
+        except (FileValidationError, ResourceLimitError):
             # Let FileValidationError and subclasses propagate
             raise
         except Exception as err:

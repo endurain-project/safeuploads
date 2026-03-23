@@ -74,7 +74,7 @@ class CompressionSecurityValidator(BaseValidator):
             overall_compression_ratio = 0  # Initialize to avoid unbound variable
 
             # Analyze ZIP file structure with timeout protection
-            start_time = time.time()
+            start_time = time.monotonic()
 
             with zipfile.ZipFile(file_obj, "r") as zip_file:
                 # Check for excessive number of files
@@ -100,7 +100,7 @@ class CompressionSecurityValidator(BaseValidator):
                 for entry in zip_entries:
                     # Check for timeout
                     if (
-                        time.time() - start_time
+                        time.monotonic() - start_time
                         > self.config.limits.zip_analysis_timeout
                     ):
                         logger.error(
@@ -218,7 +218,11 @@ class CompressionSecurityValidator(BaseValidator):
                         )
 
                 # Reject nested archives (potential security risk)
-                if nested_archives:
+                if (
+                    nested_archives
+                    and not self.config.limits
+                    .allow_nested_archives
+                ):
                     logger.warning(
                         "Nested archives detected",
                         extra={
@@ -267,7 +271,8 @@ class CompressionSecurityValidator(BaseValidator):
                 exc_info=True,
             )
             raise FileProcessingError(
-                message=f"ZIP validation failed: {str(err)}",
+                message="ZIP validation failed due to "
+                "an internal error",
             ) from err
 
     def validate(

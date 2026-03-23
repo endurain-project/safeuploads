@@ -2,9 +2,10 @@
 
 import pytest
 
-from safeuploads.config import FileSecurityConfig
-from safeuploads.validators.extension_validator import ExtensionSecurityValidator
-from safeuploads.exceptions import ExtensionSecurityError, ErrorCode
+from safeuploads.exceptions import ErrorCode, ExtensionSecurityError
+from safeuploads.validators.extension_validator import (
+    ExtensionSecurityValidator,
+)
 
 
 class TestExtensionSecurityValidator:

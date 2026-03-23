@@ -3,8 +3,8 @@
 import pytest
 
 from safeuploads.config import FileSecurityConfig
-from safeuploads.validators.unicode_validator import UnicodeSecurityValidator
 from safeuploads.exceptions import UnicodeSecurityError
+from safeuploads.validators.unicode_validator import UnicodeSecurityValidator
 
 
 class TestUnicodeSecurityValidator:
@@ -98,21 +98,6 @@ class TestUnicodeSecurityValidator:
         assert "\u0301" not in result  # No combining character
         assert "é" in result  # Has composed é
 
-    def test_normalization_introduces_dangerous_char(self, default_config):
-        """Test rejection when normalization creates dangerous character."""
-        validator = UnicodeSecurityValidator(default_config)
-        # This is a contrived example - in practice, normalization shouldn't
-        # introduce dangerous chars, but we test the safety check
-
-        # For this test, we'll directly test the post-normalization check
-        # by using a filename that after NFC normalization might trigger the check
-        # Most real-world cases won't hit this, but it's a safety net
-
-        # Using a normal safe filename to ensure the normalization check passes
-        filename = "normal_file.txt"
-        result = validator.validate_unicode_security(filename)
-        assert result == "normal_file.txt"
-
     def test_validate_method_delegates_to_validate_unicode_security(
         self, default_config
     ):
@@ -194,8 +179,8 @@ class TestUnicodeSecurityValidator:
         already contains normalized forms). We use mocking to simulate
         the scenario.
         """
-        from unittest.mock import patch
         import unicodedata
+        from unittest.mock import patch
 
         # Create a normal validator
         config = FileSecurityConfig()

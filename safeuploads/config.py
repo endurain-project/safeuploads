@@ -2,16 +2,15 @@
 File security configuration module.
 """
 
+import logging
 from dataclasses import dataclass
 
-import logging
 from .enums import (
-    DangerousExtensionCategory,
     CompoundExtensionCategory,
+    DangerousExtensionCategory,
     UnicodeAttackCategory,
 )
 from .exceptions import ConfigValidationError, FileSecurityConfigurationError
-
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +40,18 @@ class SecurityLimits:
     # File size limits (in bytes)
     max_image_size: int = 20 * 1024 * 1024  # 20MB for images
     max_zip_size: int = 500 * 1024 * 1024  # 500MB for ZIP files
+
+    # Streaming validation settings
+    max_memory_buffer_size: int = (
+        10 * 1024 * 1024  # 10MB before spilling to disk
+    )
+    chunk_size: int = 65536  # 64KB chunks for streaming reads
+
+    # Resource monitoring limits
+    max_validation_memory_mb: int = 512  # Max MB during validation
+    max_validation_time_seconds: float = (
+        30.0  # Overall validation timeout in seconds
+    )
 
     # ZIP compression security settings
     max_compression_ratio: int = 100  # Maximum allowed expansion ratio (e.g., 100:1)

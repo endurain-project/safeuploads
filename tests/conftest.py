@@ -2,7 +2,6 @@
 
 import io
 import zipfile
-from typing import AsyncIterator
 
 import pytest
 
@@ -186,24 +185,6 @@ def dangerous_unicode_filename() -> str:
     """
     # Right-to-left override (U+202E) - can disguise file extensions
     return "document\u202Etxt.exe"
-
-
-@pytest.fixture
-def windows_reserved_filenames() -> list[str]:
-    """
-    Provide list of Windows reserved device names.
-
-    Returns:
-        List of reserved Windows filenames.
-    """
-    return [
-        "CON.jpg",
-        "PRN.txt",
-        "AUX.png",
-        "NUL.zip",
-        "COM1.doc",
-        "LPT1.pdf",
-    ]
 
 
 @pytest.fixture

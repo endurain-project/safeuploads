@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import unicodedata
 import logging
-
+import unicodedata
 from typing import TYPE_CHECKING
-from .base import BaseValidator
+
 from ..exceptions import UnicodeSecurityError
+from .base import BaseValidator
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig

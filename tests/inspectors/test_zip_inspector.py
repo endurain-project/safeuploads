@@ -2,15 +2,16 @@
 
 import io
 import zipfile
+
 import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
-from safeuploads.inspectors.zip_inspector import ZipContentInspector
 from safeuploads.exceptions import (
-    ZipContentError,
-    FileProcessingError,
     ErrorCode,
+    FileProcessingError,
+    ZipContentError,
 )
+from safeuploads.inspectors.zip_inspector import ZipContentInspector
 
 
 class TestZipContentInspector:
@@ -34,7 +35,7 @@ class TestZipContentInspector:
         )
 
         # Should not raise any exception
-        inspector.inspect_zip_content(zip_bytes)
+        inspector.inspect_zip_content(io.BytesIO(zip_bytes))
 
     def test_reject_directory_traversal_dotdot_slash(self, default_config):
         """Test rejection of ../ directory traversal."""
@@ -45,7 +46,7 @@ class TestZipContentInspector:
             zf.writestr("../../../etc/passwd", b"malicious content")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Directory traversal" in str(exc_info.value)
         assert exc_info.value.threats is not None
@@ -60,7 +61,7 @@ class TestZipContentInspector:
             zf.writestr("..\\..\\windows\\system32\\config", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -73,7 +74,7 @@ class TestZipContentInspector:
             zf.writestr(".../sensitive/file.txt", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -86,7 +87,7 @@ class TestZipContentInspector:
             zf.writestr("%2e%2e%2fmalicious.txt", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -99,7 +100,7 @@ class TestZipContentInspector:
             zf.writestr("/etc/passwd", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -112,7 +113,7 @@ class TestZipContentInspector:
             zf.writestr("C:/Windows/System32/file.txt", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -125,7 +126,7 @@ class TestZipContentInspector:
             zf.writestr("\\\\server\\share\\file.txt", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -141,7 +142,7 @@ class TestZipContentInspector:
             zf.writestr("/data/config.txt", b"allowed content")
 
         # Should not raise when absolute paths allowed (and path not suspicious)
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_reject_symlink(self, default_config):
         """Test rejection of symbolic links in ZIP."""
@@ -157,7 +158,7 @@ class TestZipContentInspector:
             zf.writestr(info, b"/etc/passwd")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Symbolic link" in str(exc_info.value)
 
@@ -174,7 +175,7 @@ class TestZipContentInspector:
             zf.writestr(info, b"/etc/passwd")
 
         # Should not raise when symlinks allowed
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_reject_filename_too_long(self):
         """Test rejection of excessively long filenames."""
@@ -189,7 +190,7 @@ class TestZipContentInspector:
             zf.writestr(long_filename, b"content")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Filename too long" in str(exc_info.value)
 
@@ -206,7 +207,7 @@ class TestZipContentInspector:
             zf.writestr(long_path, b"content")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Path too long" in str(exc_info.value)
 
@@ -219,7 +220,7 @@ class TestZipContentInspector:
             zf.writestr("autorun.inf", b"[autorun]\nopen=malware.exe")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -232,7 +233,7 @@ class TestZipContentInspector:
             zf.writestr(".htaccess", b"malicious config")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -245,7 +246,7 @@ class TestZipContentInspector:
             zf.writestr("windows/system32/malware.dll", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Suspicious path component" in str(exc_info.value)
 
@@ -258,7 +259,7 @@ class TestZipContentInspector:
             zf.writestr(".git/config", b"repository config")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Suspicious path component" in str(exc_info.value)
 
@@ -279,7 +280,7 @@ class TestZipContentInspector:
             zf.writestr("nested.zip", inner_zip.getvalue())
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(outer_zip.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(outer_zip.getvalue()))
 
         assert "Nested archive" in str(exc_info.value)
 
@@ -294,7 +295,7 @@ class TestZipContentInspector:
             zf.writestr("archive.rar", b"fake RAR content")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Nested archive" in str(exc_info.value)
 
@@ -313,7 +314,7 @@ class TestZipContentInspector:
             zf.writestr("nested.zip", inner_zip.getvalue())
 
         # Should not raise when nested archives allowed
-        inspector.inspect_zip_content(outer_zip.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(outer_zip.getvalue()))
 
     def test_reject_excessive_directory_depth(self):
         """Test rejection of excessively deep directory structures."""
@@ -329,7 +330,7 @@ class TestZipContentInspector:
             zf.writestr(deep_path, b"content")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Excessive directory depth" in str(exc_info.value)
 
@@ -344,7 +345,7 @@ class TestZipContentInspector:
                 zf.writestr(f"file{i}.txt", b"content")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Excessive number" in str(exc_info.value)
 
@@ -362,7 +363,7 @@ class TestZipContentInspector:
             zf.writestr("document.pdf", pe_content)  # Disguised as PDF
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Executable content" in str(exc_info.value)
 
@@ -380,7 +381,7 @@ class TestZipContentInspector:
             zf.writestr("data.bin", elf_content)
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Executable content" in str(exc_info.value)
 
@@ -397,7 +398,7 @@ class TestZipContentInspector:
             zf.writestr("backup.txt", script_content)  # Disguised
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Script content" in str(exc_info.value)
 
@@ -414,7 +415,7 @@ class TestZipContentInspector:
             zf.writestr("readme.txt", php_content)
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Script content" in str(exc_info.value)
 
@@ -432,7 +433,7 @@ class TestZipContentInspector:
             zf.writestr("file.bin", pe_content)
 
         # Should not raise when content scanning disabled
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_skip_content_scan_for_large_files(self):
         """Test that large files skip content scanning."""
@@ -448,7 +449,7 @@ class TestZipContentInspector:
             zf.writestr("large.bin", large_content)
 
         # Should not raise even with executable signature in large file
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_handle_corrupted_zip(self, default_config):
         """Test handling of corrupted ZIP file."""
@@ -457,7 +458,7 @@ class TestZipContentInspector:
         corrupted_zip = b"PK\x03\x04corrupted data"
 
         with pytest.raises(FileProcessingError) as exc_info:
-            inspector.inspect_zip_content(corrupted_zip)
+            inspector.inspect_zip_content(io.BytesIO(corrupted_zip))
 
         assert "Invalid or corrupted" in str(exc_info.value)
 
@@ -475,7 +476,7 @@ class TestZipContentInspector:
 
         # Timeout behavior is system-dependent
         try:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
         except ZipContentError as e:
             if "timeout" in str(e).lower():
                 assert e.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
@@ -495,7 +496,7 @@ class TestZipContentInspector:
             zf.writestr("autorun.inf", b"suspicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         # Should detect multiple threats
         assert exc_info.value.threats is not None
@@ -513,7 +514,7 @@ class TestZipContentInspector:
             zf.writestr("another_folder/", "")
 
         # Should handle directories without issues
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_case_insensitive_pattern_matching(self, default_config):
         """Test that suspicious patterns are matched case-insensitively."""
@@ -524,7 +525,7 @@ class TestZipContentInspector:
             zf.writestr("AUTORUN.INF", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -538,7 +539,7 @@ class TestZipContentInspector:
             zf.writestr("folder\\..\\..\\evil.txt", b"malicious")
 
         with pytest.raises(ZipContentError) as exc_info:
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -552,7 +553,7 @@ class TestZipContentInspector:
 
         # Should raise ZipContentError, not FileProcessingError
         with pytest.raises(ZipContentError):
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_empty_zip_allowed(self, default_config):
         """Test that empty ZIP files are allowed."""
@@ -563,7 +564,7 @@ class TestZipContentInspector:
             pass  # Empty ZIP
 
         # Should not raise for empty ZIP
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_normal_subdirectories_allowed(self, default_config):
         """Test that normal subdirectories are allowed."""
@@ -576,7 +577,7 @@ class TestZipContentInspector:
             zf.writestr("data/config.json", b'{"key": "value"}')
 
         # Should not raise for normal structure
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_corrupted_zip_file_structure(self, default_config):
         """Test handling of corrupted ZIP file."""
@@ -586,7 +587,7 @@ class TestZipContentInspector:
         corrupted_zip = b"PK\x03\x04" + b"corrupted data that is not a valid ZIP"
 
         with pytest.raises(FileProcessingError, match="Invalid or corrupted ZIP"):
-            inspector.inspect_zip_content(corrupted_zip)
+            inspector.inspect_zip_content(io.BytesIO(corrupted_zip))
 
     def test_generic_exception_during_content_inspection(
         self, default_config, monkeypatch
@@ -607,7 +608,7 @@ class TestZipContentInspector:
 
         # Should catch and wrap the exception
         with pytest.raises(FileProcessingError, match="ZIP content inspection failed"):
-            inspector.inspect_zip_content(zip_buffer.getvalue())
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_content_inspection_warning_on_read_error(
         self, default_config, monkeypatch
@@ -630,7 +631,7 @@ class TestZipContentInspector:
 
         # Should log warning but not raise (line 362-368)
         # This should not raise - warning is logged internally
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_script_pattern_decode_error(self, default_config):
         """
@@ -650,4 +651,4 @@ class TestZipContentInspector:
 
         # Should handle decode errors gracefully without raising
         # The decode error is caught and logged but doesn't cause failure
-        inspector.inspect_zip_content(zip_buffer.getvalue())
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))

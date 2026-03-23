@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..exceptions import ErrorCode, ExtensionSecurityError
 from .base import BaseValidator
-from ..exceptions import ExtensionSecurityError, ErrorCode
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig

@@ -5,48 +5,51 @@ A comprehensive file security system for validating uploads and preventing attac
 """
 
 # Core classes and configurations
-from .config import SecurityLimits, FileSecurityConfig
-from .exceptions import (
-    ConfigValidationError,
-    FileSecurityConfigurationError,
-    ErrorCode,
-    FileSecurityError,
-    FileValidationError,
-    FilenameSecurityError,
-    UnicodeSecurityError,
-    ExtensionSecurityError,
-    WindowsReservedNameError,
-    FileSizeError,
-    MimeTypeError,
-    FileSignatureError,
-    CompressionSecurityError,
-    ZipBombError,
-    ZipContentError,
-    FileProcessingError,
-)
+from .config import FileSecurityConfig, SecurityLimits
 from .enums import (
     BinaryFileCategory,
-    DangerousExtensionCategory,
     CompoundExtensionCategory,
-    UnicodeAttackCategory,
+    DangerousExtensionCategory,
     SuspiciousFilePattern,
+    UnicodeAttackCategory,
     ZipThreatCategory,
+)
+from .exceptions import (
+    CompressionSecurityError,
+    ConfigValidationError,
+    ErrorCode,
+    ExtensionSecurityError,
+    FilenameSecurityError,
+    FileProcessingError,
+    FileSecurityConfigurationError,
+    FileSecurityError,
+    FileSignatureError,
+    FileSizeError,
+    FileValidationError,
+    MimeTypeError,
+    ResourceLimitError,
+    UnicodeSecurityError,
+    WindowsReservedNameError,
+    ZipBombError,
+    ZipContentError,
 )
 
 # Main validator
 from .file_validator import FileValidator
 
+# Inspectors
+from .inspectors import ZipContentInspector
+from .protocols import SeekableFile
+from .utils import ResourceMonitor
+
 # Specialized validators
 from .validators import (
     BaseValidator,
-    UnicodeSecurityValidator,
-    ExtensionSecurityValidator,
-    WindowsSecurityValidator,
     CompressionSecurityValidator,
+    ExtensionSecurityValidator,
+    UnicodeSecurityValidator,
+    WindowsSecurityValidator,
 )
-
-# Inspectors
-from .inspectors import ZipContentInspector
 
 # Perform configuration validation when module is imported
 # This ensures configuration issues are caught early during application startup
@@ -57,6 +60,8 @@ __all__ = [
     # Core configuration
     "SecurityLimits",
     "FileSecurityConfig",
+    # Protocols
+    "SeekableFile",
     # Exceptions
     "ConfigValidationError",
     "FileSecurityConfigurationError",
@@ -74,6 +79,7 @@ __all__ = [
     "ZipBombError",
     "ZipContentError",
     "FileProcessingError",
+    "ResourceLimitError",
     # Enums
     "DangerousExtensionCategory",
     "CompoundExtensionCategory",
@@ -90,4 +96,6 @@ __all__ = [
     "CompressionSecurityValidator",
     # Inspectors
     "ZipContentInspector",
+    # Utilities
+    "ResourceMonitor",
 ]

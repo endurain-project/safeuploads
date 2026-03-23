@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-import io
+import logging
 import os
 import time
 import zipfile
 from typing import TYPE_CHECKING
 
-import logging
-from ..enums import SuspiciousFilePattern, ZipThreatCategory, BinaryFileCategory
-from ..exceptions import ZipContentError, FileProcessingError, ErrorCode
+from ..enums import (
+    BinaryFileCategory,
+    SuspiciousFilePattern,
+    ZipThreatCategory,
+)
+from ..exceptions import ErrorCode, FileProcessingError, ZipContentError
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
+    from ..protocols import SeekableFile
 
 
 logger = logging.getLogger(__name__)
@@ -36,12 +40,12 @@ class ZipContentInspector:
         """
         self.config = config
 
-    def inspect_zip_content(self, file_content: bytes) -> None:
+    def inspect_zip_content(self, file_obj: SeekableFile) -> None:
         """
         Inspect ZIP archive for potential security threats.
 
         Args:
-            file_content: Raw bytes of ZIP archive.
+            file_obj: Seekable file-like object containing ZIP data.
 
         Raises:
             ZipContentError: If security threats are detected in ZIP
@@ -51,13 +55,13 @@ class ZipContentInspector:
                 unexpected error occurs during inspection.
         """
         try:
-            zip_bytes = io.BytesIO(file_content)
+            file_obj.seek(0)
             threats_found = []
 
             # Start analysis timer
             start_time = time.time()
 
-            with zipfile.ZipFile(zip_bytes, "r") as zip_file:
+            with zipfile.ZipFile(file_obj, "r") as zip_file:
                 zip_entries = zip_file.infolist()
 
                 # Analyze each entry in the ZIP

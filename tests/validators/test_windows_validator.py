@@ -2,9 +2,8 @@
 
 import pytest
 
-from safeuploads.config import FileSecurityConfig
-from safeuploads.validators.windows_validator import WindowsSecurityValidator
 from safeuploads.exceptions import WindowsReservedNameError
+from safeuploads.validators.windows_validator import WindowsSecurityValidator
 
 
 class TestWindowsSecurityValidator:

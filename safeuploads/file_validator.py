@@ -344,9 +344,24 @@ class FileValidator:
         if hasattr(file, "size") and file.size:
             file_size = file.size
         else:
-            # Estimate size by reading the rest
-            remaining = await file.read()
-            file_size = len(file_content) + len(remaining)
+            # Determine size via chunked reads to prevent
+            # memory exhaustion when Content-Length is absent
+            chunk_size = self.config.limits.chunk_size
+            file_size = 0
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > max_file_size:
+                    await file.seek(0)
+                    raise FileSizeError(
+                        f"File too large. "
+                        f"Maximum: "
+                        f"{max_file_size // (1024 * 1024)}MB",
+                        size=file_size,
+                        max_size=max_file_size,
+                    )
             await file.seek(0)
 
         if file_size > max_file_size:

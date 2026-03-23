@@ -59,7 +59,7 @@ class ZipContentInspector:
             threats_found = []
 
             # Start analysis timer
-            start_time = time.time()
+            start_time = time.monotonic()
 
             with zipfile.ZipFile(file_obj, "r") as zip_file:
                 zip_entries = zip_file.infolist()
@@ -68,7 +68,7 @@ class ZipContentInspector:
                 for entry in zip_entries:
                     # Check for timeout
                     if (
-                        time.time() - start_time
+                        time.monotonic() - start_time
                         > self.config.limits.zip_analysis_timeout
                     ):
                         logger.error(
@@ -127,7 +127,8 @@ class ZipContentInspector:
                 exc_info=True,
             )
             raise FileProcessingError(
-                message=f"ZIP content inspection failed: {str(err)}",
+                message="ZIP content inspection failed "
+                "due to an internal error",
                 original_error=err,
             ) from err
 
@@ -147,41 +148,47 @@ class ZipContentInspector:
         threats = []
         filename = entry.filename
 
-        # 1. Check for directory traversal attacks
+        # 1. Check for null bytes (truncation attacks)
+        if "\x00" in filename:
+            threats.append(
+                f"Null byte in filename: '{filename}'"
+            )
+
+        # 2. Check for directory traversal attacks
         if self._has_directory_traversal(filename):
             threats.append(f"Directory traversal attack in '{filename}'")
 
-        # 2. Check for absolute paths
+        # 3. Check for absolute paths
         if not self.config.limits.allow_absolute_paths and self._has_absolute_path(
             filename
         ):
             threats.append(f"Absolute path detected in '{filename}'")
 
-        # 3. Check for symbolic links
+        # 4. Check for symbolic links
         if not self.config.limits.allow_symlinks and self._is_symlink(entry):
             threats.append(f"Symbolic link detected: '{filename}'")
 
-        # 4. Check filename length limits
+        # 5. Check filename length limits
         if len(os.path.basename(filename)) > self.config.limits.max_filename_length:
             threats.append(
                 f"Filename too long: '{filename}' ({len(os.path.basename(filename))} chars)"
             )
 
-        # 5. Check path length limits
+        # 6. Check path length limits
         if len(filename) > self.config.limits.max_path_length:
             threats.append(f"Path too long: '{filename}' ({len(filename)} chars)")
 
-        # 6. Check for suspicious filename patterns
+        # 7. Check for suspicious filename patterns
         suspicious_patterns = self._check_suspicious_patterns(filename)
         threats.extend(suspicious_patterns)
 
-        # 7. Check for nested archives
+        # 8. Check for nested archives
         if not self.config.limits.allow_nested_archives and self._is_nested_archive(
             filename
         ):
             threats.append(f"Nested archive detected: '{filename}'")
 
-        # 8. Check file content if enabled and entry is small enough
+        # 9. Check file content if enabled and entry is small enough
         if (
             self.config.limits.scan_zip_content
             and not entry.is_dir()

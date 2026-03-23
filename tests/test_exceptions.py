@@ -1,24 +1,23 @@
 """Tests for exception classes and error codes."""
 
-import pytest
 
 from safeuploads.exceptions import (
-    ErrorCode,
-    FileSecurityError,
-    FileValidationError,
-    FilenameSecurityError,
-    UnicodeSecurityError,
-    ExtensionSecurityError,
-    WindowsReservedNameError,
-    FileSizeError,
-    MimeTypeError,
-    FileSignatureError,
     CompressionSecurityError,
-    ZipBombError,
-    ZipContentError,
+    ConfigValidationError,
+    ErrorCode,
+    ExtensionSecurityError,
+    FilenameSecurityError,
     FileProcessingError,
     FileSecurityConfigurationError,
-    ConfigValidationError,
+    FileSecurityError,
+    FileSignatureError,
+    FileSizeError,
+    FileValidationError,
+    MimeTypeError,
+    UnicodeSecurityError,
+    WindowsReservedNameError,
+    ZipBombError,
+    ZipContentError,
 )
 
 

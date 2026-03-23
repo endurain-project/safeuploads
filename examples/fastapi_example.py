@@ -2,13 +2,26 @@
 FastAPI Integration Example for safeuploads.
 
 Complete working example showing how to integrate safeuploads with FastAPI,
-including exception handling, custom error responses, and configuration.
+including exception handling, custom error responses, rate limiting,
+and configuration.
+
+Rate limiting requires ``slowapi``::
+
+    pip install slowapi
 """
 
 import uvicorn
-
-from fastapi import FastAPI, HTTPException, UploadFile, status
+from fastapi import FastAPI, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
+
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.util import get_remote_address
+
+    SLOWAPI_AVAILABLE = True
+except ImportError:
+    SLOWAPI_AVAILABLE = False
 
 from safeuploads import FileValidator
 from safeuploads.config import FileSecurityConfig, SecurityLimits
@@ -29,6 +42,14 @@ app = FastAPI(
     description="Example API demonstrating safeuploads integration",
     version="1.0.0",
 )
+
+# Optional: configure rate limiting if slowapi is installed
+if SLOWAPI_AVAILABLE:
+    limiter = Limiter(key_func=get_remote_address)
+    app.state.limiter = limiter
+    app.add_exception_handler(
+        RateLimitExceeded, _rate_limit_exceeded_handler
+    )
 
 # Create custom security limits for stricter validation
 strict_limits = SecurityLimits(
@@ -270,9 +291,37 @@ async def root():
             "POST /upload/image/strict": "Upload image with strict validation",
             "POST /upload/zip": "Upload and validate ZIP archive",
             "POST /upload/multiple": "Upload multiple files",
+            "POST /upload/image/rate-limited": "Rate-limited image upload (requires slowapi)",
             "GET /config": "View validator configurations",
         },
     }
+
+
+# ------------------------------------------------------------------ #
+# Rate-limited upload endpoint (requires slowapi)
+# ------------------------------------------------------------------ #
+if SLOWAPI_AVAILABLE:
+
+    @app.post("/upload/image/rate-limited")
+    @limiter.limit("10/minute")
+    async def upload_image_rate_limited(
+        request: Request, file: UploadFile
+    ):
+        """
+        Upload image with per-IP rate limiting.
+
+        Limited to 10 requests per minute per client IP.
+        Returns HTTP 429 when the limit is exceeded.
+        Requires ``slowapi`` to be installed.
+        """
+        await default_validator.validate_image_file(file)
+
+        return {
+            "status": "success",
+            "message": "Rate-limited image upload succeeded",
+            "filename": file.filename,
+            "size": file.size,
+        }
 
 
 if __name__ == "__main__":

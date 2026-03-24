@@ -88,6 +88,12 @@ class SecurityLimits:
     # Audit logging
     enable_audit_logging: bool = False  # Structured security event logging
 
+    # Content analysis (optional deep scan)
+    enable_content_analysis: bool = False  # Malware/script/polyglot scan
+    content_scan_max_size: int = (
+        50 * 1024 * 1024  # Max bytes to scan (50MB)
+    )
+
 
 class FileSecurityConfig:
     """

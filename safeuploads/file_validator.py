@@ -34,6 +34,7 @@ from .exceptions import (
     ResourceLimitError,
 )
 from .inspectors import ZipContentInspector
+from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
 from .utils import ResourceMonitor
 from .validators import (
@@ -90,6 +91,9 @@ class FileValidator:
         self.zip_inspector = ZipContentInspector(self.config)
         self.xml_validator = XmlSecurityValidator(self.config)
         self.gzip_inspector = GzipContentInspector(self.config)
+        self.content_inspector = ContentSecurityInspector(
+            self.config
+        )
 
         # Initialize audit logger
         self._audit = SecurityAuditLogger(
@@ -573,6 +577,28 @@ class FileValidator:
                 # Validate file signature (raises exceptions on failure)
                 self._validate_file_signature(file_content, "image")
 
+                # Optional content analysis
+                if self.config.limits.enable_content_analysis:
+                    scan_size = (
+                        self.config.limits
+                        .content_scan_max_size
+                    )
+                    sample = file_content[:scan_size]
+                    threats = (
+                        self.content_inspector
+                        .scan_content(
+                            sample,
+                            filename,
+                            "image",
+                        )
+                    )
+                    if threats:
+                        raise FileProcessingError(
+                            "Content analysis threats"
+                            " detected:"
+                            f" {'; '.join(threats)}"
+                        )
+
                 logger.debug(
                     "Image file validation passed: %s (%s, %s bytes)",
                     filename,
@@ -581,7 +607,11 @@ class FileValidator:
                 )
             ms = (time.monotonic() - t0) * 1000
             self._audit.success(filename, cid, ms)
-        except (FileValidationError, ResourceLimitError) as exc:
+        except (
+            FileValidationError,
+            ResourceLimitError,
+            FileProcessingError,
+        ) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
                 filename, cid, ms, str(exc),
@@ -694,6 +724,32 @@ class FileValidator:
                         temp_file.seek(0)
                         self.zip_inspector.inspect_zip_content(temp_file)
 
+                    # Optional content analysis
+                    if self.config.limits.enable_content_analysis:
+                        temp_file.seek(0)
+                        scan_size = (
+                            self.config.limits
+                            .content_scan_max_size
+                        )
+                        sample = temp_file.read(
+                            scan_size
+                        )
+                        temp_file.seek(0)
+                        threats = (
+                            self.content_inspector
+                            .scan_content(
+                                sample,
+                                filename,
+                                "zip",
+                            )
+                        )
+                        if threats:
+                            raise FileProcessingError(
+                                "Content analysis"
+                                " threats detected:"
+                                f" {'; '.join(threats)}"
+                            )
+
                     logger.debug(
                         "ZIP file validation passed: %s (%s, %s bytes)",
                         filename,
@@ -704,7 +760,11 @@ class FileValidator:
                     temp_file.close()
             ms = (time.monotonic() - t0) * 1000
             self._audit.success(filename, cid, ms)
-        except (FileValidationError, ResourceLimitError) as exc:
+        except (
+            FileValidationError,
+            ResourceLimitError,
+            FileProcessingError,
+        ) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
                 filename, cid, ms, str(exc),

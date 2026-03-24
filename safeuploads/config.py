@@ -80,6 +80,14 @@ class SecurityLimits:
     allow_absolute_paths: bool = False
     scan_zip_content: bool = True  # Whether to perform deep content inspection
 
+    # Recursive ZIP inspection limits
+    max_total_entries_recursive: int = (
+        50000  # Max total entries across all nesting levels
+    )
+
+    # Audit logging
+    enable_audit_logging: bool = False  # Structured security event logging
+
 
 class FileSecurityConfig:
     """

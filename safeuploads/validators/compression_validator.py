@@ -13,6 +13,7 @@ from ..exceptions import (
     FileProcessingError,
     ZipBombError,
 )
+from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -39,6 +40,9 @@ class CompressionSecurityValidator(BaseValidator):
             config: Security configuration with compression limits.
         """
         super().__init__(config)
+        self._audit = SecurityAuditLogger(
+            enabled=config.limits.enable_audit_logging
+        )
 
     def validate_zip_compression_ratio(
         self, file_obj: SeekableFile, compressed_size: int
@@ -84,11 +88,11 @@ class CompressionSecurityValidator(BaseValidator):
                 if file_count > self.config.limits.max_zip_entries:
                     logger.warning(
                         "ZIP contains too many files",
-                        extra={
+                        extra=log_extra({
                             "error_type": "zip_too_many_entries",
                             "file_count": file_count,
                             "max_entries": self.config.limits.max_zip_entries,
-                        },
+                        }),
                     )
                     raise CompressionSecurityError(
                         message=(
@@ -109,12 +113,12 @@ class CompressionSecurityValidator(BaseValidator):
                     ):
                         logger.error(
                             "ZIP analysis timeout",
-                            extra={
+                            extra=log_extra({
                                 "error_type": "zip_analysis_timeout",
                                 "timeout": (
                                     self.config.limits.zip_analysis_timeout
                                 ),
-                            },
+                            }),
                         )
                         raise ZipBombError(
                             message=(
@@ -150,15 +154,22 @@ class CompressionSecurityValidator(BaseValidator):
                         ):
                             logger.error(
                                 "Excessive compression ratio detected",
-                                extra={
+                                extra=log_extra({
                                     "error_type": "compression_ratio_exceeded",
                                     "file_name": entry.filename,
                                     "compression_ratio": compression_ratio,
                                     "max_ratio": (
                                         self.config.limits.max_compression_ratio
                                     ),
-                                },
+                                }),
                             )
+                            cid = get_correlation_id()
+                            if cid:
+                                self._audit.threat(
+                                    entry.filename, cid,
+                                    "Zip bomb — excessive"
+                                    " compression ratio",
+                                )
                             max_ratio = (
                                 self.config.limits.max_compression_ratio
                             )
@@ -197,7 +208,7 @@ class CompressionSecurityValidator(BaseValidator):
                     ):
                         logger.warning(
                             "Individual file too large",
-                            extra={
+                            extra=log_extra({
                                 "error_type": "file_too_large",
                                 "file_name": entry.filename,
                                 "size_mb": uncompressed_size // (1024 * 1024),
@@ -205,7 +216,7 @@ class CompressionSecurityValidator(BaseValidator):
                                     self.config.limits.max_individual_file_size
                                     // (1024 * 1024)
                                 ),
-                            },
+                            }),
                         )
                         max_file_mb = (
                             self.config.limits.max_individual_file_size
@@ -230,7 +241,7 @@ class CompressionSecurityValidator(BaseValidator):
                 ):
                     logger.warning(
                         "Total uncompressed size too large",
-                        extra={
+                        extra=log_extra({
                             "error_type": "zip_too_large",
                             "total_size_mb": total_uncompressed_size
                             // (1024 * 1024),
@@ -238,7 +249,7 @@ class CompressionSecurityValidator(BaseValidator):
                                 self.config.limits.max_uncompressed_size
                                 // (1024 * 1024)
                             ),
-                        },
+                        }),
                     )
                     max_uncomp_mb = (
                         self.config.limits.max_uncompressed_size
@@ -268,13 +279,13 @@ class CompressionSecurityValidator(BaseValidator):
                     ):
                         logger.error(
                             "Overall compression ratio too high",
-                            extra={
+                            extra=log_extra({
                                 "error_type": ("compression_ratio_exceeded"),
                                 "overall_ratio": (overall_compression_ratio),
                                 "max_ratio": (
                                     self.config.limits.max_compression_ratio
                                 ),
-                            },
+                            }),
                         )
                         raise ZipBombError(
                             message=(
@@ -298,10 +309,10 @@ class CompressionSecurityValidator(BaseValidator):
                 ):
                     logger.warning(
                         "Nested archives detected",
-                        extra={
+                        extra=log_extra({
                             "error_type": "zip_nested_archive",
                             "nested_archives": nested_archives,
-                        },
+                        }),
                     )
                     raise CompressionSecurityError(
                         message=(
@@ -310,6 +321,34 @@ class CompressionSecurityValidator(BaseValidator):
                             f" {', '.join(nested_archives)}"
                         ),
                         error_code=ErrorCode.ZIP_NESTED_ARCHIVE,
+                    )
+
+                # Cumulative entry count check for
+                # complexity attack prevention
+                max_recursive = (
+                    self.config.limits
+                    .max_total_entries_recursive
+                )
+                if file_count > max_recursive:
+                    logger.error(
+                        "ZIP entry count exceeds"
+                        " recursive limit",
+                        extra=log_extra({
+                            "file_count": file_count,
+                            "max_recursive": max_recursive,
+                        }),
+                    )
+                    raise CompressionSecurityError(
+                        message=(
+                            "ZIP entry count"
+                            f" ({file_count})"
+                            " exceeds recursive limit"
+                            f" ({max_recursive})"
+                        ),
+                        error_code=(
+                            ErrorCode
+                            .ZIP_COMPLEXITY_ATTACK
+                        ),
                     )
 
                 # Log analysis results

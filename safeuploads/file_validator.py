@@ -14,6 +14,12 @@ try:
 except ImportError:
     from .protocols import UploadFileProtocol as UploadFile
 
+from .audit import (
+    SecurityAuditLogger,
+    get_correlation_id,
+    reset_correlation_id,
+    set_correlation_id,
+)
 from .config import FileSecurityConfig
 from .exceptions import (
     ErrorCode,
@@ -83,6 +89,11 @@ class FileValidator:
         self.zip_inspector = ZipContentInspector(self.config)
         self.xml_validator = XmlSecurityValidator(self.config)
         self.gzip_inspector = GzipContentInspector(self.config)
+
+        # Initialize audit logger
+        self._audit = SecurityAuditLogger(
+            enabled=self.config.limits.enable_audit_logging
+        )
 
         # Initialize python-magic for content-based detection
         try:
@@ -501,6 +512,10 @@ class FileValidator:
                 format.
             FileProcessingError: Unexpected error during validation.
         """
+        cid = set_correlation_id()
+        filename = file.filename or "unknown"
+        self._audit.start(filename, cid)
+        t0 = time.monotonic()
         try:
             # Validate filename (raises exceptions on failure)
             self._validate_filename(file)
@@ -548,15 +563,26 @@ class FileValidator:
                     detected_mime,
                     file_size,
                 )
-        except (FileValidationError, ResourceLimitError):
-            # Let FileValidationError and subclasses propagate
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.success(filename, cid, ms)
+        except (FileValidationError, ResourceLimitError) as exc:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, str(exc),
+            )
             raise
         except Exception as err:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, "internal_error",
+            )
             logger.exception("Error during image file validation: %s", err)
             raise FileProcessingError(
                 "File validation failed due to internal error",
                 original_error=err,
             ) from err
+        finally:
+            reset_correlation_id()
 
     async def validate_zip_file(self, file: UploadFile) -> None:
         """
@@ -578,6 +604,10 @@ class FileValidator:
                 (zip bomb detected).
             FileProcessingError: Unexpected error during validation.
         """
+        cid = set_correlation_id()
+        filename = file.filename or "unknown"
+        self._audit.start(filename, cid)
+        t0 = time.monotonic()
         try:
             # Validate filename (raises exceptions on failure)
             self._validate_filename(file)
@@ -656,15 +686,26 @@ class FileValidator:
                     )
                 finally:
                     temp_file.close()
-        except (FileValidationError, ResourceLimitError):
-            # Let FileValidationError and subclasses propagate
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.success(filename, cid, ms)
+        except (FileValidationError, ResourceLimitError) as exc:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, str(exc),
+            )
             raise
         except Exception as err:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, "internal_error",
+            )
             logger.exception("Error during ZIP file validation: %s", err)
             raise FileProcessingError(
                 "File validation failed due to internal error",
                 original_error=err,
             ) from err
+        finally:
+            reset_correlation_id()
 
     async def validate_activity_file(
         self, file: UploadFile
@@ -687,6 +728,10 @@ class FileValidator:
             FileSignatureError: Signature mismatch.
             FileProcessingError: XML parsing or other error.
         """
+        cid = set_correlation_id()
+        filename = file.filename or "unknown"
+        self._audit.start(filename, cid)
+        t0 = time.monotonic()
         try:
             self._validate_filename(file)
             self._validate_file_extension(
@@ -774,9 +819,19 @@ class FileValidator:
                     )
                 finally:
                     temp_file.close()
-        except (FileValidationError, ResourceLimitError):
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.success(filename, cid, ms)
+        except (FileValidationError, ResourceLimitError) as exc:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, str(exc),
+            )
             raise
         except Exception as err:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, "internal_error",
+            )
             logger.exception(
                 "Error during activity file validation:"
                 " %s",
@@ -787,6 +842,8 @@ class FileValidator:
                 " internal error",
                 original_error=err,
             ) from err
+        finally:
+            reset_correlation_id()
 
     async def validate_gzip_file(
         self, file: UploadFile
@@ -810,6 +867,10 @@ class FileValidator:
             CompressionSecurityError: Invalid gzip structure.
             FileProcessingError: Unexpected error.
         """
+        cid = set_correlation_id()
+        filename = file.filename or "unknown"
+        self._audit.start(filename, cid)
+        t0 = time.monotonic()
         try:
             self._validate_filename(file)
             self._validate_file_extension(
@@ -890,9 +951,19 @@ class FileValidator:
                     )
                 finally:
                     temp_file.close()
-        except (FileValidationError, ResourceLimitError):
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.success(filename, cid, ms)
+        except (FileValidationError, ResourceLimitError) as exc:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, str(exc),
+            )
             raise
         except Exception as err:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(
+                filename, cid, ms, "internal_error",
+            )
             logger.exception(
                 "Error during gzip file validation:"
                 " %s",
@@ -903,3 +974,5 @@ class FileValidator:
                 " internal error",
                 original_error=err,
             ) from err
+        finally:
+            reset_correlation_id()

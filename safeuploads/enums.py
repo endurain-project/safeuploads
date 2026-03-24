@@ -8,7 +8,8 @@ class BinaryFileCategory(Enum):
     Enumeration of binary file categories.
 
     Attributes:
-        FITNESS_FILES: Set of file extensions representing fitness or activity binary files (e.g., '.fit').
+        FITNESS_FILES: Fitness/activity binary file
+            extensions (e.g., '.fit').
     """
 
     # Fitness/activity binary files

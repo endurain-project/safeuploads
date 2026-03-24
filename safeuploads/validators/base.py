@@ -1,6 +1,4 @@
-"""
-Base validator interface for file security checks.
-"""
+"""Base validator interface for file security checks."""
 
 from __future__ import annotations
 
@@ -40,4 +38,3 @@ class BaseValidator(ABC):
         Returns:
             Validated result defined by subclass.
         """
-        pass

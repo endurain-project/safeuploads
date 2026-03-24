@@ -125,7 +125,9 @@ class TestWindowsSecurityValidator:
         with pytest.raises(WindowsReservedNameError):
             validator.validate_windows_reserved_names(" CON .txt")
 
-    def test_filename_containing_but_not_matching_reserved(self, default_config):
+    def test_filename_containing_but_not_matching_reserved(
+        self, default_config
+    ):
         """Test that filenames containing reserved words are allowed."""
         validator = WindowsSecurityValidator(default_config)
 

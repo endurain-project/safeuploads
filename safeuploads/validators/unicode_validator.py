@@ -71,20 +71,31 @@ class UnicodeSecurityValidator(BaseValidator):
                 extra={
                     "error_type": "unicode_security",
                     "file_name": filename,
-                    "char_codes": [code for _, code, _ in dangerous_chars_found],
+                    "char_codes": [
+                        code for _, code, _ in dangerous_chars_found
+                    ],
                     "positions": [pos for _, _, pos in dangerous_chars_found],
                 },
             )
             raise UnicodeSecurityError(
-                message=f"Dangerous Unicode characters detected in filename: {', '.join(char_details)}. "
-                f"These characters can be used to disguise file extensions or create security vulnerabilities.",
+                message=(
+                    "Dangerous Unicode characters"
+                    " detected in filename:"
+                    f" {', '.join(char_details)}."
+                    " These characters can be used"
+                    " to disguise file extensions"
+                    " or create security"
+                    " vulnerabilities."
+                ),
                 filename=filename,
                 dangerous_chars=dangerous_chars_found,
             )
 
         # Normalize Unicode to prevent normalization attacks
-        # Use NFC (Canonical Decomposition, followed by Canonical Composition)
-        # This prevents attacks where different Unicode representations of the same text are used
+        # Use NFC (Canonical Decomposition, then
+        # Canonical Composition). This prevents attacks
+        # where different Unicode representations of
+        # the same text are used.
         normalized_filename = unicodedata.normalize("NFC", filename)
 
         # Check if normalization changed the filename significantly
@@ -95,8 +106,10 @@ class UnicodeSecurityValidator(BaseValidator):
                 normalized_filename,
             )
 
-        # Additional check: ensure normalized filename doesn't contain dangerous chars
-        # (some normalization attacks might introduce them)
+        # Additional check: ensure normalized filename
+        # doesn't contain dangerous chars
+        # (some normalization attacks might introduce
+        # them)
         for char in normalized_filename:
             char_code = ord(char)
             if char_code in self.config.DANGEROUS_UNICODE_CHARS:
@@ -111,8 +124,13 @@ class UnicodeSecurityValidator(BaseValidator):
                     },
                 )
                 raise UnicodeSecurityError(
-                    message=f"Unicode normalization resulted in dangerous character: "
-                    f"'{char}' (U+{char_code:04X}: {char_name})",
+                    message=(
+                        "Unicode normalization resulted"
+                        " in dangerous character:"
+                        f" '{char}'"
+                        f" (U+{char_code:04X}:"
+                        f" {char_name})"
+                    ),
                     filename=filename,
                     dangerous_chars=[(char, char_code, 0)],
                 )

@@ -304,12 +304,18 @@ class TestConfigurationValidation:
         reserved = FileSecurityConfig.WINDOWS_RESERVED_NAMES
 
         for name in reserved:
-            assert name == name.lower(), f"Reserved name {name} should be lowercase"
+            assert name == name.lower(), (
+                f"Reserved name {name} should be lowercase"
+            )
 
     def test_extensions_include_dot(self):
         """Test that extensions include leading dot."""
         for ext in FileSecurityConfig.ALLOWED_IMAGE_EXTENSIONS:
-            assert ext.startswith("."), f"Extension {ext} should start with dot"
+            assert ext.startswith("."), (
+                f"Extension {ext} should start with dot"
+            )
 
         for ext in FileSecurityConfig.BLOCKED_EXTENSIONS:
-            assert ext.startswith("."), f"Extension {ext} should start with dot"
+            assert ext.startswith("."), (
+                f"Extension {ext} should start with dot"
+            )

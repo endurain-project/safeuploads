@@ -1,6 +1,4 @@
-"""
-Utility classes for resource monitoring during validation.
-"""
+"""Utility classes for resource monitoring during validation."""
 
 import logging
 import resource
@@ -78,8 +76,7 @@ class ResourceMonitor:
 
         if self._elapsed > self.max_time_seconds:
             logger.error(
-                "Validation time limit exceeded: "
-                "%.2fs > %.2fs",
+                "Validation time limit exceeded: %.2fs > %.2fs",
                 self._elapsed,
                 self.max_time_seconds,
             )
@@ -100,8 +97,7 @@ class ResourceMonitor:
             delta_mb = self._memory_delta // (1024 * 1024)
             max_mb = self.max_memory_bytes // (1024 * 1024)
             logger.error(
-                "Validation memory limit exceeded: "
-                "%dMB > %dMB",
+                "Validation memory limit exceeded: %dMB > %dMB",
                 delta_mb,
                 max_mb,
             )
@@ -110,9 +106,7 @@ class ResourceMonitor:
                     f"Validation memory limit exceeded: "
                     f"{delta_mb}MB (max {max_mb}MB)"
                 ),
-                error_code=(
-                    ErrorCode.RESOURCE_MEMORY_EXCEEDED
-                ),
+                error_code=(ErrorCode.RESOURCE_MEMORY_EXCEEDED),
                 memory_bytes=self._memory_delta,
             )
 
@@ -127,8 +121,7 @@ class ResourceMonitor:
         elapsed = time.monotonic() - self.start_time
         if elapsed > self.max_time_seconds:
             logger.error(
-                "Validation time limit exceeded: "
-                "%.2fs > %.2fs",
+                "Validation time limit exceeded: %.2fs > %.2fs",
                 elapsed,
                 self.max_time_seconds,
             )

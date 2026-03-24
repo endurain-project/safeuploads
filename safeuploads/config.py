@@ -1,6 +1,4 @@
-"""
-File security configuration module.
-"""
+"""File security configuration module."""
 
 import logging
 from dataclasses import dataclass
@@ -54,8 +52,10 @@ class SecurityLimits:
     )
 
     # ZIP compression security settings
-    max_compression_ratio: int = 100  # Maximum allowed expansion ratio (e.g., 100:1)
-    max_uncompressed_size: int = 1024 * 1024 * 1024  # 1GB max uncompressed size
+    # Maximum allowed expansion ratio (e.g., 100:1)
+    max_compression_ratio: int = 100
+    # 1GB max uncompressed size
+    max_uncompressed_size: int = 1024 * 1024 * 1024
     max_individual_file_size: int = (
         500 * 1024 * 1024
     )  # 500MB max per individual file in ZIP
@@ -68,10 +68,14 @@ class SecurityLimits:
     max_zip_depth: int = 10  # Maximum nesting depth for directories in ZIP
     max_filename_length: int = 255  # Maximum length for individual file names
     max_path_length: int = 1024  # Maximum length for full file paths
-    max_number_files_same_type: int = 1000  # Maximum number of files of the same type
-    allow_nested_archives: bool = False  # Whether to allow nested archive files
-    allow_symlinks: bool = False  # Whether to allow symbolic links in ZIP
-    allow_absolute_paths: bool = False  # Whether to allow absolute paths in ZIP
+    # Maximum number of files of the same type
+    max_number_files_same_type: int = 1000
+    # Whether to allow nested archive files
+    allow_nested_archives: bool = False
+    # Whether to allow symbolic links in ZIP
+    allow_symlinks: bool = False
+    # Whether to allow absolute paths in ZIP
+    allow_absolute_paths: bool = False
     scan_zip_content: bool = True  # Whether to perform deep content inspection
 
 
@@ -164,7 +168,9 @@ class FileSecurityConfig:
 
     # Compound dangerous file extensions (multi-part extensions)
     # These are checked as complete strings, not individual parts
-    COMPOUND_BLOCKED_EXTENSIONS: set[str] = _generate_compound_blocked_extensions()
+    COMPOUND_BLOCKED_EXTENSIONS: set[str] = (
+        _generate_compound_blocked_extensions()
+    )
 
     # Dangerous Unicode characters that can be used for filename attacks
     # These characters can disguise file extensions or cause rendering issues
@@ -201,7 +207,7 @@ class FileSecurityConfig:
     @classmethod
     def __init_subclass__(cls, **kwargs):
         """
-        Hook for subclass creation to validate configuration.
+        Validate configuration on subclass creation.
 
         Args:
             **kwargs: Subclass initialization arguments.
@@ -244,7 +250,9 @@ class FileSecurityConfig:
         return category.value.copy()
 
     @classmethod
-    def get_unicode_chars_by_category(cls, category: UnicodeAttackCategory) -> set[int]:
+    def get_unicode_chars_by_category(
+        cls, category: UnicodeAttackCategory
+    ) -> set[int]:
         """
         Return Unicode code points for an attack category.
 
@@ -292,7 +300,9 @@ class FileSecurityConfig:
         return None
 
     @classmethod
-    def validate_configuration(cls, strict: bool = True) -> list[ConfigValidationError]:
+    def validate_configuration(
+        cls, strict: bool = True
+    ) -> list[ConfigValidationError]:
         """
         Run all configuration validation routines.
 
@@ -342,7 +352,9 @@ class FileSecurityConfig:
                     message="max_image_size must be greater than 0",
                     severity="error",
                     component="file_sizes",
-                    recommendation="Set max_image_size to a positive value (e.g., 20MB)",
+                    recommendation=(
+                        "Set max_image_size to a positive value (e.g., 20MB)"
+                    ),
                 )
             )
 
@@ -350,10 +362,18 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_size_limit",
-                    message=f"max_image_size ({cls.limits.max_image_size // (1024*1024)}MB) is very large",
+                    message=(
+                        "max_image_size"
+                        f" ({cls.limits.max_image_size // (1024 * 1024)}"
+                        "MB) is very large"
+                    ),
                     severity="warning",
                     component="file_sizes",
-                    recommendation="Consider reducing image size limit to prevent resource exhaustion",
+                    recommendation=(
+                        "Consider reducing image size"
+                        " limit to prevent resource"
+                        " exhaustion"
+                    ),
                 )
             )
 
@@ -365,7 +385,9 @@ class FileSecurityConfig:
                     message="max_zip_size must be greater than 0",
                     severity="error",
                     component="file_sizes",
-                    recommendation="Set max_zip_size to a positive value (e.g., 500MB)",
+                    recommendation=(
+                        "Set max_zip_size to a positive value (e.g., 500MB)"
+                    ),
                 )
             )
 
@@ -373,10 +395,18 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_size_limit",
-                    message=f"max_zip_size ({cls.limits.max_zip_size // (1024*1024)}MB) is very large",
+                    message=(
+                        "max_zip_size"
+                        f" ({cls.limits.max_zip_size // (1024 * 1024)}"
+                        "MB) is very large"
+                    ),
                     severity="warning",
                     component="file_sizes",
-                    recommendation="Consider reducing ZIP size limit to prevent resource exhaustion",
+                    recommendation=(
+                        "Consider reducing ZIP size"
+                        " limit to prevent resource"
+                        " exhaustion"
+                    ),
                 )
             )
 
@@ -385,10 +415,17 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="inconsistent_size_limits",
-                    message="max_zip_size should typically be larger than max_image_size",
+                    message=(
+                        "max_zip_size should typically be"
+                        " larger than max_image_size"
+                    ),
                     severity="warning",
                     component="file_sizes",
-                    recommendation="ZIP files usually contain multiple files and should have higher limits",
+                    recommendation=(
+                        "ZIP files usually contain"
+                        " multiple files and should"
+                        " have higher limits"
+                    ),
                 )
             )
 
@@ -422,10 +459,18 @@ class FileSecurityConfig:
                 errors.append(
                     ConfigValidationError(
                         error_type="invalid_image_mime",
-                        message=f"Image MIME type '{mime_type}' should start with 'image/'",
+                        message=(
+                            "Image MIME type"
+                            f" '{mime_type}' should"
+                            " start with 'image/'"
+                        ),
                         severity="warning",
                         component="mime_types",
-                        recommendation="Use standard image MIME types like 'image/jpeg', 'image/png'",
+                        recommendation=(
+                            "Use standard image MIME"
+                            " types like 'image/jpeg',"
+                            " 'image/png'"
+                        ),
                     )
                 )
 
@@ -443,7 +488,7 @@ class FileSecurityConfig:
 
         # Check for duplicate MIME types
         all_mimes = list(cls.ALLOWED_IMAGE_MIMES) + list(cls.ALLOWED_ZIP_MIMES)
-        duplicates = set([mime for mime in all_mimes if all_mimes.count(mime) > 1])
+        duplicates = {mime for mime in all_mimes if all_mimes.count(mime) > 1}
         if duplicates:
             errors.append(
                 ConfigValidationError(
@@ -451,7 +496,9 @@ class FileSecurityConfig:
                     message=f"Duplicate MIME types found: {duplicates}",
                     severity="warning",
                     component="mime_types",
-                    recommendation="Remove duplicate MIME types to avoid confusion",
+                    recommendation=(
+                        "Remove duplicate MIME types to avoid confusion"
+                    ),
                 )
             )
 
@@ -479,7 +526,9 @@ class FileSecurityConfig:
                         message=f"{ext_set_name} cannot be empty",
                         severity="error",
                         component="extensions",
-                        recommendation=f"Add at least one extension to {ext_set_name}",
+                        recommendation=(
+                            f"Add at least one extension to {ext_set_name}"
+                        ),
                     )
                 )
 
@@ -488,10 +537,16 @@ class FileSecurityConfig:
                     errors.append(
                         ConfigValidationError(
                             error_type="invalid_extension_format",
-                            message=f"Extension '{ext}' in {ext_set_name} should start with '.'",
+                            message=(
+                                f"Extension '{ext}'"
+                                f" in {ext_set_name}"
+                                " should start with '.'"
+                            ),
                             severity="error",
                             component="extensions",
-                            recommendation="Use format '.ext' for file extensions",
+                            recommendation=(
+                                "Use format '.ext' for file extensions"
+                            ),
                         )
                     )
 
@@ -503,7 +558,9 @@ class FileSecurityConfig:
                     message="BLOCKED_EXTENSIONS is empty - security risk",
                     severity="error",
                     component="extensions",
-                    recommendation="Ensure dangerous extensions are properly blocked",
+                    recommendation=(
+                        "Ensure dangerous extensions are properly blocked"
+                    ),
                 )
             )
 
@@ -515,22 +572,38 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="extension_conflict",
-                    message=f"Image extensions {image_blocked} are both allowed and blocked",
+                    message=(
+                        f"Image extensions {image_blocked}"
+                        " are both allowed and blocked"
+                    ),
                     severity="error",
                     component="extensions",
-                    recommendation="Remove conflicts between allowed and blocked extensions",
+                    recommendation=(
+                        "Remove conflicts between"
+                        " allowed and blocked"
+                        " extensions"
+                    ),
                 )
             )
 
-        zip_blocked = cls.ALLOWED_ZIP_EXTENSIONS.intersection(cls.BLOCKED_EXTENSIONS)
+        zip_blocked = cls.ALLOWED_ZIP_EXTENSIONS.intersection(
+            cls.BLOCKED_EXTENSIONS
+        )
         if zip_blocked:
             errors.append(
                 ConfigValidationError(
                     error_type="extension_conflict",
-                    message=f"ZIP extensions {zip_blocked} are both allowed and blocked",
+                    message=(
+                        f"ZIP extensions {zip_blocked}"
+                        " are both allowed and blocked"
+                    ),
                     severity="error",
                     component="extensions",
-                    recommendation="Remove conflicts between allowed and blocked extensions",
+                    recommendation=(
+                        "Remove conflicts between"
+                        " allowed and blocked"
+                        " extensions"
+                    ),
                 )
             )
 
@@ -542,10 +615,18 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="compound_extension_overlap",
-                    message=f"Extensions {compound_overlap} appear in both blocked and compound blocked lists",
+                    message=(
+                        f"Extensions {compound_overlap}"
+                        " appear in both blocked and"
+                        " compound blocked lists"
+                    ),
                     severity="warning",
                     component="extensions",
-                    recommendation="Compound extensions should only be in COMPOUND_BLOCKED_EXTENSIONS",
+                    recommendation=(
+                        "Compound extensions should"
+                        " only be in"
+                        " COMPOUND_BLOCKED_EXTENSIONS"
+                    ),
                 )
             )
 
@@ -569,7 +650,10 @@ class FileSecurityConfig:
                     message="max_compression_ratio must be greater than 0",
                     severity="error",
                     component="compression",
-                    recommendation="Set a reasonable compression ratio limit (e.g., 100:1)",
+                    recommendation=(
+                        "Set a reasonable compression"
+                        " ratio limit (e.g., 100:1)"
+                    ),
                 )
             )
 
@@ -577,10 +661,18 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="too_strict_compression",
-                    message=f"max_compression_ratio ({cls.limits.max_compression_ratio}) is very strict",
+                    message=(
+                        "max_compression_ratio"
+                        f" ({cls.limits.max_compression_ratio})"
+                        " is very strict"
+                    ),
                     severity="warning",
                     component="compression",
-                    recommendation="Consider allowing higher compression ratios for legitimate files",
+                    recommendation=(
+                        "Consider allowing higher"
+                        " compression ratios for"
+                        " legitimate files"
+                    ),
                 )
             )
 
@@ -588,10 +680,18 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="too_permissive_compression",
-                    message=f"max_compression_ratio ({cls.limits.max_compression_ratio}) may allow zip bombs",
+                    message=(
+                        "max_compression_ratio"
+                        f" ({cls.limits.max_compression_ratio})"
+                        " may allow zip bombs"
+                    ),
                     severity="warning",
                     component="compression",
-                    recommendation="Reduce compression ratio limit to prevent zip bomb attacks",
+                    recommendation=(
+                        "Reduce compression ratio"
+                        " limit to prevent zip bomb"
+                        " attacks"
+                    ),
                 )
             )
 
@@ -615,20 +715,34 @@ class FileSecurityConfig:
                     message="max_individual_file_size must be greater than 0",
                     severity="error",
                     component="compression",
-                    recommendation="Set a reasonable individual file size limit",
+                    recommendation=(
+                        "Set a reasonable individual file size limit"
+                    ),
                 )
             )
 
         # Check individual file size doesn't exceed total uncompressed size
-        if cls.limits.max_individual_file_size > cls.limits.max_uncompressed_size:
+        if cls.limits.max_individual_file_size > (
+            cls.limits.max_uncompressed_size
+        ):
+            ind_mb = cls.limits.max_individual_file_size // (1024 * 1024)
+            uncomp_mb = cls.limits.max_uncompressed_size // (1024 * 1024)
             errors.append(
                 ConfigValidationError(
                     error_type="inconsistent_size_limits",
-                    message=f"max_individual_file_size ({cls.limits.max_individual_file_size // (1024*1024)}MB) "
-                    f"exceeds max_uncompressed_size ({cls.limits.max_uncompressed_size // (1024*1024)}MB)",
+                    message=(
+                        "max_individual_file_size"
+                        f" ({ind_mb}MB) exceeds"
+                        " max_uncompressed_size"
+                        f" ({uncomp_mb}MB)"
+                    ),
                     severity="warning",
                     component="compression",
-                    recommendation="Individual file size limit should not exceed total uncompressed size limit",
+                    recommendation=(
+                        "Individual file size limit"
+                        " should not exceed total"
+                        " uncompressed size limit"
+                    ),
                 )
             )
 
@@ -640,7 +754,9 @@ class FileSecurityConfig:
                     message="max_zip_entries must be greater than 0",
                     severity="error",
                     component="compression",
-                    recommendation="Set a reasonable limit for ZIP file entries",
+                    recommendation=(
+                        "Set a reasonable limit for ZIP file entries"
+                    ),
                 )
             )
 
@@ -648,7 +764,11 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_zip_entries",
-                    message=f"max_zip_entries ({cls.limits.max_zip_entries}) is very high",
+                    message=(
+                        "max_zip_entries"
+                        f" ({cls.limits.max_zip_entries})"
+                        " is very high"
+                    ),
                     severity="warning",
                     component="compression",
                     recommendation="High entry limits may impact performance",
@@ -671,7 +791,11 @@ class FileSecurityConfig:
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_timeout",
-                    message=f"zip_analysis_timeout ({cls.limits.zip_analysis_timeout}s) is very long",
+                    message=(
+                        "zip_analysis_timeout"
+                        f" ({cls.limits.zip_analysis_timeout}s)"
+                        " is very long"
+                    ),
                     severity="warning",
                     component="compression",
                     recommendation="Long timeouts may impact user experience",
@@ -699,7 +823,11 @@ class FileSecurityConfig:
                         message=f"Extension category {category.name} is empty",
                         severity="warning",
                         component="enums",
-                        recommendation=f"Add extensions to {category.name} or remove unused category",
+                        recommendation=(
+                            "Add extensions to"
+                            f" {category.name} or remove"
+                            " unused category"
+                        ),
                     )
                 )
 
@@ -708,10 +836,18 @@ class FileSecurityConfig:
                 errors.append(
                     ConfigValidationError(
                         error_type="empty_enum_category",
-                        message=f"Compound extension category {category.name} is empty",
+                        message=(
+                            "Compound extension"
+                            " category"
+                            f" {category.name} is empty"
+                        ),
                         severity="warning",
                         component="enums",
-                        recommendation=f"Add extensions to {category.name} or remove unused category",
+                        recommendation=(
+                            "Add extensions to"
+                            f" {category.name} or remove"
+                            " unused category"
+                        ),
                     )
                 )
 
@@ -720,10 +856,16 @@ class FileSecurityConfig:
                 errors.append(
                     ConfigValidationError(
                         error_type="empty_enum_category",
-                        message=f"Unicode attack category {category.name} is empty",
+                        message=(
+                            f"Unicode attack category {category.name} is empty"
+                        ),
                         severity="warning",
                         component="enums",
-                        recommendation=f"Add Unicode characters to {category.name} or remove unused category",
+                        recommendation=(
+                            "Add Unicode characters to"
+                            f" {category.name} or remove"
+                            " unused category"
+                        ),
                     )
                 )
 
@@ -740,10 +882,19 @@ class FileSecurityConfig:
                         errors.append(
                             ConfigValidationError(
                                 error_type="category_overlap",
-                                message=f"Categories {cat1_name} and {cat2_name} share extensions: {overlap}",
+                                message=(
+                                    f"Categories {cat1_name}"
+                                    f" and {cat2_name}"
+                                    " share extensions:"
+                                    f" {overlap}"
+                                ),
                                 severity="info",
                                 component="enums",
-                                recommendation="Consider if extensions should belong to multiple categories",
+                                recommendation=(
+                                    "Consider if extensions"
+                                    " should belong to"
+                                    " multiple categories"
+                                ),
                             )
                         )
 
@@ -765,10 +916,18 @@ class FileSecurityConfig:
                 errors.append(
                     ConfigValidationError(
                         error_type="case_sensitive_reserved_name",
-                        message=f"Windows reserved name '{name}' should be lowercase",
+                        message=(
+                            "Windows reserved name"
+                            f" '{name}' should be"
+                            " lowercase"
+                        ),
                         severity="warning",
                         component="reserved_names",
-                        recommendation="Use lowercase for consistent case-insensitive matching",
+                        recommendation=(
+                            "Use lowercase for"
+                            " consistent"
+                            " case-insensitive matching"
+                        ),
                     )
                 )
 
@@ -778,7 +937,11 @@ class FileSecurityConfig:
                 errors.append(
                     ConfigValidationError(
                         error_type="invalid_unicode_char",
-                        message=f"Unicode character code {char_code} is not an integer",
+                        message=(
+                            "Unicode character code"
+                            f" {char_code} is not"
+                            " an integer"
+                        ),
                         severity="error",
                         component="unicode",
                         recommendation="Use integer Unicode code points",
@@ -788,10 +951,16 @@ class FileSecurityConfig:
                 errors.append(
                     ConfigValidationError(
                         error_type="invalid_unicode_range",
-                        message=f"Unicode character code {char_code} is outside valid range",
+                        message=(
+                            "Unicode character code"
+                            f" {char_code} is outside"
+                            " valid range"
+                        ),
                         severity="error",
                         component="unicode",
-                        recommendation="Use valid Unicode code points (0-0x10FFFF)",
+                        recommendation=(
+                            "Use valid Unicode code points (0-0x10FFFF)"
+                        ),
                     )
                 )
 
@@ -850,5 +1019,5 @@ class FileSecurityConfig:
         # Raise exception if there are errors and strict mode is enabled
         if error_list and strict:
             raise FileSecurityConfigurationError(error_list)
-        elif (error_list or warning_list) and strict:
+        if (error_list or warning_list) and strict:
             raise FileSecurityConfigurationError(error_list + warning_list)

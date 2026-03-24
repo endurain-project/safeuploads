@@ -22,9 +22,7 @@ class TestResourceMonitorInit:
 
     def test_custom_values(self):
         """Test custom initialization values."""
-        monitor = ResourceMonitor(
-            max_time_seconds=5.0, max_memory_mb=128
-        )
+        monitor = ResourceMonitor(max_time_seconds=5.0, max_memory_mb=128)
         assert monitor.max_time_seconds == 5.0
         assert monitor.max_memory_bytes == 128 * 1024 * 1024
 
@@ -34,42 +32,38 @@ class TestResourceMonitorTime:
 
     def test_passes_within_time_limit(self):
         """Test that fast operations pass without error."""
-        with ResourceMonitor(
-            max_time_seconds=5.0, max_memory_mb=512
-        ):
+        with ResourceMonitor(max_time_seconds=5.0, max_memory_mb=512):
             pass  # Immediate exit
 
     def test_raises_on_time_exceeded_at_exit(self):
         """Test that exceeding time limit raises at exit."""
-        with pytest.raises(ResourceLimitError) as exc_info:
-            with ResourceMonitor(
+        with (
+            pytest.raises(ResourceLimitError) as exc_info,
+            ResourceMonitor(
                 max_time_seconds=0.05,
                 max_memory_mb=512,
-            ):
-                time.sleep(0.1)
+            ),
+        ):
+            time.sleep(0.1)
 
-        assert (
-            exc_info.value.error_code
-            == ErrorCode.RESOURCE_TIME_EXCEEDED
-        )
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
         assert exc_info.value.elapsed_seconds is not None
         assert exc_info.value.elapsed_seconds >= 0.05
         assert "time limit" in str(exc_info.value).lower()
 
     def test_check_time_raises_mid_operation(self):
         """Test mid-operation time check raises."""
-        with pytest.raises(ResourceLimitError) as exc_info:
-            with ResourceMonitor(
+        with (  # noqa: PT012
+            pytest.raises(ResourceLimitError) as exc_info,
+            ResourceMonitor(
                 max_time_seconds=0.05,
                 max_memory_mb=512,
-            ) as monitor:
-                time.sleep(0.1)
-                monitor.check_time()
+            ) as monitor,
+        ):
+            time.sleep(0.1)
+            monitor.check_time()
 
-        assert (
-            exc_info.value.error_code
-            == ErrorCode.RESOURCE_TIME_EXCEEDED
-        )
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
 
     def test_check_time_passes_within_limit(self):
         """Test mid-operation check passes within limit."""
@@ -82,13 +76,15 @@ class TestResourceMonitorTime:
         self,
     ):
         """Test monitor does not mask existing exceptions."""
-        with pytest.raises(ValueError, match="test error"):
-            with ResourceMonitor(
+        with (  # noqa: PT012
+            pytest.raises(ValueError, match="test error"),
+            ResourceMonitor(
                 max_time_seconds=0.01,
                 max_memory_mb=512,
-            ):
-                time.sleep(0.05)
-                raise ValueError("test error")
+            ),
+        ):
+            time.sleep(0.05)
+            raise ValueError("test error")
 
 
 class TestResourceMonitorMemory:
@@ -96,9 +92,7 @@ class TestResourceMonitorMemory:
 
     def test_passes_within_memory_limit(self):
         """Test that small operations pass without error."""
-        with ResourceMonitor(
-            max_time_seconds=30.0, max_memory_mb=512
-        ):
+        with ResourceMonitor(max_time_seconds=30.0, max_memory_mb=512):
             _ = b"x" * 1024  # Tiny allocation
 
     def test_get_rss_bytes_returns_positive(self):
@@ -149,10 +143,7 @@ class TestResourceLimitErrorAttributes:
         )
         assert err.elapsed_seconds == 5.5
         assert err.memory_bytes is None
-        assert (
-            err.error_code
-            == ErrorCode.RESOURCE_TIME_EXCEEDED
-        )
+        assert err.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
 
     def test_memory_exceeded_error_attributes(self):
         """Test error attributes for memory exceeded."""
@@ -163,10 +154,7 @@ class TestResourceLimitErrorAttributes:
         )
         assert err.memory_bytes == 1024 * 1024 * 600
         assert err.elapsed_seconds is None
-        assert (
-            err.error_code
-            == ErrorCode.RESOURCE_MEMORY_EXCEEDED
-        )
+        assert err.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
 
     def test_generic_resource_limit_error(self):
         """Test generic resource limit error."""
@@ -174,10 +162,7 @@ class TestResourceLimitErrorAttributes:
             message="Resource limit",
             error_code=ErrorCode.RESOURCE_LIMIT_EXCEEDED,
         )
-        assert (
-            err.error_code
-            == ErrorCode.RESOURCE_LIMIT_EXCEEDED
-        )
+        assert err.error_code == ErrorCode.RESOURCE_LIMIT_EXCEEDED
         assert err.elapsed_seconds is None
         assert err.memory_bytes is None
 
@@ -215,16 +200,15 @@ class TestResourceMonitorMemoryExceeded:
             ResourceMonitor, "_get_rss_bytes", staticmethod(_fake_rss)
         )
 
-        with pytest.raises(ResourceLimitError) as exc_info:
-            with ResourceMonitor(
+        with (
+            pytest.raises(ResourceLimitError) as exc_info,
+            ResourceMonitor(
                 max_time_seconds=30.0,
                 max_memory_mb=512,
-            ):
-                pass  # Immediate exit
+            ),
+        ):
+            pass  # Immediate exit
 
-        assert (
-            exc_info.value.error_code
-            == ErrorCode.RESOURCE_MEMORY_EXCEEDED
-        )
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
         assert exc_info.value.memory_bytes is not None
         assert "memory limit" in str(exc_info.value).lower()

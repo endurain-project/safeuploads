@@ -1,7 +1,8 @@
 """
-File Security Module
+File Security Module.
 
-A comprehensive file security system for validating uploads and preventing attacks.
+A comprehensive file security system for
+validating uploads and preventing attacks.
 """
 
 # Core classes and configurations
@@ -81,6 +82,7 @@ __all__ = [
     "FileProcessingError",
     "ResourceLimitError",
     # Enums
+    "BinaryFileCategory",
     "DangerousExtensionCategory",
     "CompoundExtensionCategory",
     "UnicodeAttackCategory",

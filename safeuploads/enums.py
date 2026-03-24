@@ -478,3 +478,62 @@ class ZipThreatCategory(Enum):
 
     # Algorithmic complexity exploits
     COMPLEXITY_ATTACK = {"complexity_attack"}
+
+
+class MalwareSignatureCategory(Enum):
+    """
+    Byte-level signatures for embedded malware detection.
+
+    Attributes:
+        PE_EXECUTABLE: Windows PE/MZ executable headers.
+        ELF_EXECUTABLE: Linux ELF executable headers.
+        MACHO_EXECUTABLE: macOS Mach-O executable headers.
+        JAVA_CLASS: Java class file headers.
+        WINDOWS_SHORTCUT: Windows .lnk shortcut headers.
+        WEBSHELL_PATTERNS: Common web shell script markers.
+        POLYGLOT_SIGNATURES: Multi-format file signatures.
+    """
+
+    # Windows PE executables
+    PE_EXECUTABLE = {
+        b"MZ",
+        b"PE\x00\x00",
+    }
+
+    # Linux ELF executables
+    ELF_EXECUTABLE = {
+        b"\x7fELF",
+    }
+
+    # macOS Mach-O executables (32/64, big/little endian)
+    MACHO_EXECUTABLE = {
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe",
+        b"\xcf\xfa\xed\xfe",
+    }
+
+    # Java class files
+    JAVA_CLASS = {
+        b"\xca\xfe\xba\xbe",
+    }
+
+    # Windows shortcuts (.lnk)
+    WINDOWS_SHORTCUT = {
+        b"L\x00\x00\x00",
+    }
+
+    # Common web shell / script injection markers
+    WEBSHELL_PATTERNS = {
+        b"<?php",
+        b"<%",
+        b"<script",
+    }
+
+    # Polyglot detection: secondary format signatures
+    # that should not appear in image/activity files
+    POLYGLOT_SIGNATURES = {
+        b"PK\x03\x04",  # ZIP/JAR inside image (GIFAR)
+        b"\xca\xfe\xba\xbe",  # Java class inside image
+        b"Rar!\x1a\x07",  # RAR inside image
+    }

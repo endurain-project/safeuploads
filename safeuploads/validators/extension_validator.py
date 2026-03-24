@@ -31,6 +31,13 @@ class ExtensionSecurityValidator(BaseValidator):
             config: File security configuration settings.
         """
         super().__init__(config)
+        # Pre-compile as frozensets for O(1) lookup
+        self._blocked: frozenset[str] = frozenset(
+            config.BLOCKED_EXTENSIONS
+        )
+        self._compound_blocked: tuple[str, ...] = tuple(
+            config.COMPOUND_BLOCKED_EXTENSIONS
+        )
 
     def validate_extensions(self, filename: str) -> None:
         """
@@ -46,7 +53,7 @@ class ExtensionSecurityValidator(BaseValidator):
         # Check for compound dangerous extensions first
         # (e.g., .tar.xz, .user.js)
         filename_lower = filename.lower()
-        for compound_ext in self.config.COMPOUND_BLOCKED_EXTENSIONS:
+        for compound_ext in self._compound_blocked:
             if filename_lower.endswith(compound_ext):
                 logger.warning(
                     "Dangerous compound extension detected",
@@ -73,7 +80,7 @@ class ExtensionSecurityValidator(BaseValidator):
         if len(parts) > 1:
             for i in range(1, len(parts)):
                 ext = f".{parts[i].lower()}"
-                if ext in self.config.BLOCKED_EXTENSIONS:
+                if ext in self._blocked:
                     logger.warning(
                         "Dangerous extension detected",
                         extra={

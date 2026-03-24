@@ -46,6 +46,31 @@ class ZipContentInspector:
             enabled=config.limits.enable_audit_logging
         )
 
+        # Pre-compile pattern sets for O(1) lookups
+        self._traversal_patterns: tuple[str, ...] = tuple(
+            p.lower()
+            for p in SuspiciousFilePattern.DIRECTORY_TRAVERSAL.value
+        )
+        self._suspicious_names: frozenset[str] = frozenset(
+            n.lower()
+            for n in SuspiciousFilePattern.SUSPICIOUS_NAMES.value
+        )
+        self._suspicious_paths: tuple[str, ...] = tuple(
+            p.lower()
+            for p in SuspiciousFilePattern.SUSPICIOUS_PATHS.value
+        )
+        self._nested_archive_exts: frozenset[str] = frozenset(
+            ZipThreatCategory.NESTED_ARCHIVES.value
+        )
+        self._binary_exts: frozenset[str] = frozenset(
+            ext
+            for cat in BinaryFileCategory
+            for ext in cat.value
+        )
+        self._exec_signatures: tuple[bytes, ...] = tuple(
+            SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value
+        )
+
     def inspect_zip_content(self, file_obj: SeekableFile) -> None:
         """
         Inspect ZIP archive for potential security threats.
@@ -292,11 +317,9 @@ class ZipContentInspector:
         """
         filename_lower = filename.lower()
 
-        for category in SuspiciousFilePattern:
-            if category == SuspiciousFilePattern.DIRECTORY_TRAVERSAL:
-                for pattern in category.value:
-                    if pattern.lower() in filename_lower:
-                        return True
+        for pattern in self._traversal_patterns:
+            if pattern in filename_lower:
+                return True
 
         # Additional checks for normalized paths
         normalized = os.path.normpath(filename)
@@ -349,14 +372,14 @@ class ZipContentInspector:
         basename = os.path.basename(filename_lower)
 
         # Check suspicious names
-        for pattern in SuspiciousFilePattern.SUSPICIOUS_NAMES.value:
-            if basename == pattern.lower():
+        for pattern in self._suspicious_names:
+            if basename == pattern:
                 threats.append(f"Suspicious filename pattern: '{filename}'")
                 break
 
         # Check suspicious path components
-        for pattern in SuspiciousFilePattern.SUSPICIOUS_PATHS.value:
-            if pattern.lower() in filename_lower:
+        for pattern in self._suspicious_paths:
+            if pattern in filename_lower:
                 threats.append(
                     "Suspicious path component:"
                     f" '{filename}' contains"
@@ -377,12 +400,7 @@ class ZipContentInspector:
             True if nested archive detected.
         """
         ext = os.path.splitext(filename)[1].lower()
-
-        for category in ZipThreatCategory:
-            if category == ZipThreatCategory.NESTED_ARCHIVES:
-                return ext in category.value
-
-        return False
+        return ext in self._nested_archive_exts
 
     def _inspect_entry_content(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
@@ -405,9 +423,7 @@ class ZipContentInspector:
                 content_sample = file.read(512)  # Read first 512 bytes
 
                 # Check for executable signatures
-                for (
-                    signature
-                ) in SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value:
+                for signature in self._exec_signatures:
                     if content_sample.startswith(signature):
                         threats.append(
                             "Executable content"
@@ -416,12 +432,8 @@ class ZipContentInspector:
                         )
                         break
 
-                binary_exts = set()
-                for category in BinaryFileCategory:
-                    binary_exts.update(category.value)
-
                 ext = os.path.splitext(entry.filename)[1].lower()
-                if ext not in binary_exts and self._contains_script_patterns(
+                if ext not in self._binary_exts and self._contains_script_patterns(
                     content_sample, entry.filename
                 ):
                     threats.append(

@@ -187,3 +187,44 @@ class TestResourceLimitErrorAttributes:
 
         err = ResourceLimitError(message="test")
         assert isinstance(err, FileProcessingError)
+
+
+class TestResourceMonitorMemoryExceeded:
+    """Test memory limit enforcement via mocked RSS."""
+
+    def test_memory_exceeded_raises_at_exit(self, monkeypatch):
+        """
+        Test that exceeding memory limit raises at exit.
+
+        Uses monkeypatch to fake RSS growth, making the
+        memory check deterministic.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        _calls = {"n": 0}
+
+        def _fake_rss() -> int:
+            _calls["n"] += 1
+            if _calls["n"] == 1:
+                return 100 * 1024 * 1024  # 100 MB at entry
+            # 700 MB at exit → delta = 600 MB
+            return 700 * 1024 * 1024
+
+        monkeypatch.setattr(
+            ResourceMonitor, "_get_rss_bytes", staticmethod(_fake_rss)
+        )
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            with ResourceMonitor(
+                max_time_seconds=30.0,
+                max_memory_mb=512,
+            ):
+                pass  # Immediate exit
+
+        assert (
+            exc_info.value.error_code
+            == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+        )
+        assert exc_info.value.memory_bytes is not None
+        assert "memory limit" in str(exc_info.value).lower()

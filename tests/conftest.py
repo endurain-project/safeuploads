@@ -187,33 +187,4 @@ def dangerous_unicode_filename() -> str:
     return "document\u202Etxt.exe"
 
 
-@pytest.fixture
-def dangerous_extensions() -> list[str]:
-    """
-    Provide list of dangerous file extensions.
 
-    Returns:
-        List of extensions that should be blocked.
-    """
-    return [
-        ".exe",
-        ".bat",
-        ".cmd",
-        ".sh",
-        ".js",
-        ".vbs",
-        ".dll",
-        ".scr",
-        ".msi",
-    ]
-
-
-@pytest.fixture
-def compound_dangerous_extensions() -> list[str]:
-    """
-    Provide list of compound dangerous extensions.
-
-    Returns:
-        List of compound extensions that should be blocked.
-    """
-    return [".tar.gz", ".tar.xz", ".user.js", ".html.js"]

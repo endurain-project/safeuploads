@@ -33,7 +33,7 @@ class SeekableFile(Protocol):
         Returns:
             Bytes read from the file.
         """
-        ...
+        ...  # pragma: no cover
 
     def seek(self, offset: int, whence: int = 0) -> int:
         """
@@ -47,7 +47,7 @@ class SeekableFile(Protocol):
         Returns:
             New absolute position in the file.
         """
-        ...
+        ...  # pragma: no cover
 
     def tell(self) -> int:
         """
@@ -56,7 +56,7 @@ class SeekableFile(Protocol):
         Returns:
             Current position in the file.
         """
-        ...
+        ...  # pragma: no cover
 
 
 @runtime_checkable
@@ -86,7 +86,7 @@ class UploadFileProtocol(Protocol):
         Returns:
             Bytes read from the file.
         """
-        ...
+        ...  # pragma: no cover
 
     async def seek(self, offset: int) -> int:
         """
@@ -98,4 +98,4 @@ class UploadFileProtocol(Protocol):
         Returns:
             New position in the file.
         """
-        ...
+        ...  # pragma: no cover

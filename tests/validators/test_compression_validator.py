@@ -311,9 +311,9 @@ class TestCompressionSecurityValidator:
         """
         Test timeout protection raises ZipBombError via mocked time.
 
-        Uses unittest.mock.patch to make time.time() immediately
-        report that the timeout has been exceeded, so the result is
-        deterministic regardless of host speed.
+        Uses unittest.mock.patch to make time.monotonic()
+        immediately report that the timeout has been exceeded,
+        so the result is deterministic regardless of host speed.
 
         Returns:
             None
@@ -330,25 +330,30 @@ class TestCompressionSecurityValidator:
                 zf.writestr(f"file{i}.txt", b"content")
         zip_bytes = zip_buffer.getvalue()
 
-        # First call returns start_time; subsequent calls return a
-        # value that already exceeds the configured timeout.
+        # First call returns start_time; subsequent calls
+        # return a value that already exceeds the timeout.
         _start = 1_000_000.0
         _calls = {"n": 0}
 
-        def _mock_time() -> float:
+        def _mock_monotonic() -> float:
             _calls["n"] += 1
             if _calls["n"] == 1:
                 return _start
-            return _start + config.limits.zip_analysis_timeout + 1.0
+            return (
+                _start
+                + config.limits.zip_analysis_timeout
+                + 1.0
+            )
 
         target = (
             "safeuploads.validators"
-            ".compression_validator.time.time"
+            ".compression_validator.time.monotonic"
         )
-        with patch(target, side_effect=_mock_time):
+        with patch(target, side_effect=_mock_monotonic):
             with pytest.raises(ZipBombError) as exc_info:
                 validator.validate_zip_compression_ratio(
-                    io.BytesIO(zip_bytes), len(zip_bytes)
+                    io.BytesIO(zip_bytes),
+                    len(zip_bytes),
                 )
 
         assert "timeout" in str(exc_info.value).lower()
@@ -569,63 +574,47 @@ class TestCompressionSecurityValidator:
 
             assert "validation failed" in str(exc_info.value).lower()
 
-    def test_overall_compression_ratio_exceeded(self, default_config) -> None:
+    def test_overall_compression_ratio_exceeded(self) -> None:
         """
-        Test that overall compression ratio check triggers ZipBombError.
+        Test overall compression ratio check triggers ZipBombError.
 
-        Tests lines 205-213 in compression_validator.py.
+        The overall ratio is ``total_uncompressed / compressed_size``
+        where ``compressed_size`` is the archive-level parameter
+        passed by the caller. By passing a deliberately small
+        ``compressed_size`` we can trigger the overall ratio
+        check without triggering the per-entry check.
+
+        Returns:
+            None
         """
-        # Create config with very low compression ratio limit
-        # but make individual file limit very high so it's the overall
-        # ratio that triggers, not the individual file ratio
+        # Use stored files so per-entry compress_size == file_size.
+        # An individual ratio of 1:1 will not trigger the per-entry
+        # check, but the overall ratio can be made to exceed the
+        # limit by passing a tiny ``compressed_size`` to the method.
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
-            max_compression_ratio=2000,  # High individual file limit
+            max_compression_ratio=10,
             max_uncompressed_size=100 * 1024 * 1024,
             max_individual_file_size=50 * 1024 * 1024,
         )
         validator = CompressionSecurityValidator(config)
 
-        # Create multiple highly compressible files
-        # Each file alone is within the individual limit,
-        # but together they exceed the overall compression ratio
-        # Use smaller files that won't trigger individual limits
-        small_data = b"\x00" * (500 * 1024)  # 500KB of zeros
+        content = b"A" * 10_000  # 10 KB stored uncompressed
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Add multiple files to accumulate compression
-            for i in range(10):
-                zf.writestr(f"zeros{i}.txt", small_data)
+        with zipfile.ZipFile(
+            zip_buffer, "w", zipfile.ZIP_STORED
+        ) as zf:
+            zf.writestr("data.txt", content)
 
         zip_bytes = zip_buffer.getvalue()
-        compressed_size = len(zip_bytes)
 
-        # Calculate what the overall ratio should be
-        total_uncompressed = 10 * len(small_data)
-        expected_ratio = total_uncompressed / compressed_size
-
-        # Verify the overall ratio will be very high
-        # Reduce the max_compression_ratio to ensure it triggers
-        config.limits = SecurityLimits(
-            max_compression_ratio=2000,  # Keep individual high
-            max_uncompressed_size=100 * 1024 * 1024,
-            max_individual_file_size=50 * 1024 * 1024,
-        )
-
-        # Adjust to a value that will definitely be exceeded
-        if expected_ratio < 100:
-            # If ratio isn't high enough, skip this test path
-            # and just verify the code is there by checking individual
-            pytest.skip("Compression ratio not high enough to test overall limit")
-
-        # Set overall limit lower than expected ratio
-        config.limits.max_compression_ratio = int(expected_ratio / 2)
-
-        # This should trigger the overall compression ratio check
+        # Pass a fake tiny compressed_size so overall ratio
+        # is 10_000 / 100 = 100 > max_compression_ratio (10).
         with pytest.raises(ZipBombError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), compressed_size)
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), 100
+            )
 
-        # Check error message - might be either individual or overall
         error_msg = str(exc_info.value).lower()
-        assert "compression ratio" in error_msg or "excessive" in error_msg
+        assert "overall compression ratio" in error_msg

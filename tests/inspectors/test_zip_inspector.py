@@ -463,26 +463,57 @@ class TestZipContentInspector:
         assert "Invalid or corrupted" in str(exc_info.value)
 
     def test_timeout_protection(self):
-        """Test timeout protection during ZIP inspection."""
+        """
+        Test timeout protection during ZIP inspection.
+
+        Uses deterministic mocking of time.monotonic to
+        guarantee the timeout path triggers regardless of
+        host speed.
+
+        Returns:
+            None
+        """
+        from unittest.mock import patch
+
         config = FileSecurityConfig()
-        config.limits = SecurityLimits(zip_analysis_timeout=0.001)
+        config.limits = SecurityLimits(
+            zip_analysis_timeout=5.0,
+        )
         inspector = ZipContentInspector(config)
 
-        # Create ZIP with many files to trigger timeout
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            for i in range(1000):
+            for i in range(5):
                 zf.writestr(f"file{i}.txt", b"content")
 
-        # Timeout behavior is system-dependent
-        try:
-            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
-        except ZipContentError as e:
-            if "timeout" in str(e).lower():
-                assert e.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
-        except Exception:
-            # May also fail for other reasons due to many files
-            pass
+        _start = 1_000_000.0
+        _calls = {"n": 0}
+
+        def _mock_monotonic() -> float:
+            _calls["n"] += 1
+            if _calls["n"] == 1:
+                return _start
+            return (
+                _start
+                + config.limits.zip_analysis_timeout
+                + 1.0
+            )
+
+        target = (
+            "safeuploads.inspectors"
+            ".zip_inspector.time.monotonic"
+        )
+        with patch(target, side_effect=_mock_monotonic):
+            with pytest.raises(ZipContentError) as exc_info:
+                inspector.inspect_zip_content(
+                    io.BytesIO(zip_buffer.getvalue())
+                )
+
+        assert "timeout" in str(exc_info.value).lower()
+        assert (
+            exc_info.value.error_code
+            == ErrorCode.ZIP_ANALYSIS_TIMEOUT
+        )
 
     def test_multiple_threats_detected(self, default_config):
         """Test that multiple threats are all detected and reported."""

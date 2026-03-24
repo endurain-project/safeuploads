@@ -1,5 +1,6 @@
 """Main file validator coordinating all security validations."""
 
+import functools
 import logging
 import mimetypes
 import os
@@ -131,9 +132,24 @@ class FileValidator:
         # Fallback to filename-based detection
         if not detected_mime:
             logger.info("Fallback to filename-based MIME detection")
-            detected_mime, _ = mimetypes.guess_type(filename)
+            detected_mime = self._guess_mime_by_name(filename)
 
         return detected_mime or "application/octet-stream"
+
+    @staticmethod
+    @functools.lru_cache(maxsize=256)
+    def _guess_mime_by_name(filename: str) -> str | None:
+        """
+        Cached filename-based MIME type guess.
+
+        Args:
+            filename: Filename to guess MIME type for.
+
+        Returns:
+            Guessed MIME type or None.
+        """
+        mime, _ = mimetypes.guess_type(filename)
+        return mime
 
     def _validate_file_signature(
         self, file_content: bytes, expected_type: str

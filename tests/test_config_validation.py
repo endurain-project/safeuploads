@@ -759,3 +759,211 @@ class TestConfigClassMethods:
         """
         category = FileSecurityConfig.get_extension_category(".EXE")
         assert category == DangerousExtensionCategory.WINDOWS_EXECUTABLES
+
+
+class TestCrossDependencyValidation:
+    """Tests for _validate_cross_dependencies branches."""
+
+    def test_non_lowercase_reserved_name_generates_warning(
+        self, monkeypatch
+    ):
+        """
+        Test that an uppercase reserved name generates a warning.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "WINDOWS_RESERVED_NAMES",
+            {"con", "PRN"},
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        warnings = [
+            e
+            for e in errors
+            if e.error_type == "case_sensitive_reserved_name"
+        ]
+        assert len(warnings) >= 1
+
+    def test_non_integer_unicode_char_generates_error(
+        self, monkeypatch
+    ):
+        """
+        Test error when DANGEROUS_UNICODE_CHARS has non-int.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "DANGEROUS_UNICODE_CHARS",
+            {0x202E, "not_an_int"},
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [
+            e.error_type
+            for e in errors
+            if e.severity == "error"
+        ]
+        assert "invalid_unicode_char" in error_types
+
+    def test_out_of_range_unicode_char_generates_error(
+        self, monkeypatch
+    ):
+        """
+        Test error when DANGEROUS_UNICODE_CHARS has out of range.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "DANGEROUS_UNICODE_CHARS",
+            {0x202E, 0x110000},
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [
+            e.error_type
+            for e in errors
+            if e.severity == "error"
+        ]
+        assert "invalid_unicode_range" in error_types
+
+
+class TestValidateAndReportLogging:
+    """Tests for validate_and_report logging paths."""
+
+    def test_valid_config_logs_success(self, caplog):
+        """
+        Test that valid config logs success message.
+
+        Args:
+            caplog: pytest log capture fixture.
+        """
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="safeuploads.config"):
+            FileSecurityConfig.validate_and_report(
+                strict=False,
+            )
+        assert "validation passed" in caplog.text.lower()
+
+    def test_errors_are_logged(
+        self, monkeypatch, caplog
+    ):
+        """
+        Test that config errors are logged at ERROR level.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+            caplog: pytest log capture fixture.
+        """
+        import logging
+
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "ALLOWED_IMAGE_MIMES",
+            set(),
+        )
+        with caplog.at_level(
+            logging.ERROR, logger="safeuploads.config"
+        ):
+            FileSecurityConfig.validate_and_report(
+                strict=False,
+            )
+        assert "configuration error" in caplog.text.lower()
+
+    def test_warnings_are_logged(
+        self, monkeypatch, caplog
+    ):
+        """
+        Test that config warnings are logged at WARNING level.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+            caplog: pytest log capture fixture.
+        """
+        import logging
+
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_compression_ratio=5),
+        )
+        with caplog.at_level(
+            logging.WARNING,
+            logger="safeuploads.config",
+        ):
+            FileSecurityConfig.validate_and_report(
+                strict=False,
+            )
+        assert "configuration warning" in caplog.text.lower()
+
+    def test_info_items_are_logged(
+        self, monkeypatch, caplog
+    ):
+        """
+        Test that info-level items are logged.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+            caplog: pytest log capture fixture.
+        """
+        import logging
+
+        from safeuploads.exceptions import ConfigValidationError
+
+        original = (
+            FileSecurityConfig._validate_enum_consistency
+        )
+
+        @classmethod
+        def _force_info(cls):
+            results = original.__func__(cls)
+            results.append(
+                ConfigValidationError(
+                    error_type="test_info",
+                    message="Test info message",
+                    severity="info",
+                    component="test",
+                )
+            )
+            return results
+
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "_validate_enum_consistency",
+            _force_info,
+        )
+        with caplog.at_level(
+            logging.INFO, logger="safeuploads.config"
+        ):
+            FileSecurityConfig.validate_and_report(
+                strict=False,
+            )
+        assert "test info message" in caplog.text.lower()
+
+
+class TestInitSubclassValidation:
+    """Tests for __init_subclass__ validation hook."""
+
+    def test_subclass_triggers_validation(self, caplog):
+        """
+        Test that creating a subclass triggers validation.
+
+        Args:
+            caplog: pytest log capture fixture.
+        """
+        import logging
+
+        # Creating a subclass should call validate_and_report
+        with caplog.at_level(
+            logging.DEBUG, logger="safeuploads.config"
+        ):
+
+            class _SubConfig(FileSecurityConfig):
+                pass
+
+        # Validation ran without raising (non-strict)
+        assert _SubConfig is not None

@@ -476,8 +476,10 @@ class TestValidateImageFile:
             await validator.validate_image_file(file)
 
     @pytest.mark.asyncio
-    async def test_validate_image_wrong_signature(self, mock_upload_file):
-        """Test validation fails with wrong file signature."""
+    async def test_validate_image_text_content_rejected_by_mime(
+        self, mock_upload_file
+    ):
+        """Test MIME detection rejects text disguised as image."""
         validator = FileValidator()
         # Text content with image extension - MIME type will catch this first
         file = mock_upload_file(filename="fake.jpg", content=b"This is just text")
@@ -987,3 +989,107 @@ class TestResourceMonitorIntegration:
 
         with pytest.raises(ResourceLimitError):
             await validator.validate_image_file(file)
+
+
+class TestDetectMimeTypeMagicException:
+    """Tests for _detect_mime_type when magic raises."""
+
+    def test_magic_from_buffer_exception_falls_back(
+        self, monkeypatch, valid_jpeg_bytes
+    ):
+        """
+        Test MIME fallback when magic.from_buffer raises.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+            valid_jpeg_bytes: Valid JPEG bytes fixture.
+        """
+        validator = FileValidator()
+        assert validator.magic_available is True
+
+        def _explode(_content):
+            raise RuntimeError("magic failed")
+
+        monkeypatch.setattr(
+            validator.magic_mime, "from_buffer", _explode
+        )
+
+        mime = validator._detect_mime_type(
+            valid_jpeg_bytes, "photo.jpg"
+        )
+        # Falls back to mimetypes guess from filename
+        assert mime == "image/jpeg"
+
+
+class TestValidateFileSignatureEdgeCases:
+    """Tests for _validate_file_signature edge cases."""
+
+    def test_signature_too_small_file(self):
+        """
+        Test that files smaller than 4 bytes are rejected.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+
+        with pytest.raises(
+            FileSignatureError, match="too small"
+        ):
+            validator._validate_file_signature(
+                b"\xff\xd8", "image"
+            )
+
+    def test_signature_one_byte_file(self):
+        """
+        Test that single byte files are rejected.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+
+        with pytest.raises(FileSignatureError):
+            validator._validate_file_signature(b"X", "zip")
+
+    def test_signature_empty_content(self):
+        """
+        Test that empty content is rejected.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+
+        with pytest.raises(FileSignatureError):
+            validator._validate_file_signature(b"", "image")
+
+
+class TestSanitizeFilenameEdgeCases:
+    """Tests for _sanitize_filename edge cases."""
+
+    def test_sanitize_removes_null_bytes(self):
+        """
+        Test explicit null byte removal from filename.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+        result = validator._sanitize_filename(
+            "file\x00.txt\x00"
+        )
+        assert "\x00" not in result
+        assert result == "file.txt"
+
+    def test_sanitize_whitespace_only_name_part(self):
+        """
+        Test that whitespace-only name generates timestamp.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+        result = validator._sanitize_filename("   .jpg")
+        assert result.startswith("file_")
+        assert result.endswith(".jpg")

@@ -29,9 +29,14 @@ class UnicodeSecurityValidator(BaseValidator):
         Initialize the Unicode validator.
 
         Args:
-            config: Runtime configuration that controls file security rules.
+            config: Runtime configuration that controls
+                file security rules.
         """
         super().__init__(config)
+        # Pre-compile as frozenset for O(1) code point lookup
+        self._dangerous_chars: frozenset[int] = frozenset(
+            config.DANGEROUS_UNICODE_CHARS
+        )
 
     def validate_unicode_security(self, filename: str) -> str:
         """
@@ -54,7 +59,7 @@ class UnicodeSecurityValidator(BaseValidator):
         dangerous_chars_found = []
         for i, char in enumerate(filename):
             char_code = ord(char)
-            if char_code in self.config.DANGEROUS_UNICODE_CHARS:
+            if char_code in self._dangerous_chars:
                 dangerous_chars_found.append((char, char_code, i))
 
         # If dangerous characters found, reject the file entirely
@@ -112,7 +117,7 @@ class UnicodeSecurityValidator(BaseValidator):
         # them)
         for char in normalized_filename:
             char_code = ord(char)
-            if char_code in self.config.DANGEROUS_UNICODE_CHARS:
+            if char_code in self._dangerous_chars:
                 char_name = unicodedata.name(char, f"U+{char_code:04X}")
                 logger.error(
                     "Unicode normalization resulted in dangerous character",

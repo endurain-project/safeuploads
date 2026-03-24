@@ -142,71 +142,72 @@ class FileSecurityConfig:
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod
-    def _generate_blocked_extensions() -> set[str]:
+    def _generate_blocked_extensions() -> frozenset[str]:
         """
         Aggregate all dangerous extension categories.
 
         Returns:
-            Combined set of blocked file extensions.
+            Combined frozenset of blocked file extensions.
         """
-        blocked_extensions = set()
+        blocked_extensions: set[str] = set()
 
         # Combine all dangerous extension categories
         for category in DangerousExtensionCategory:
             blocked_extensions.update(category.value)
 
-        return blocked_extensions
+        return frozenset(blocked_extensions)
 
-    # Generate compound dangerous file extensions from categorized enums
+    # Generate compound dangerous file extensions
     @staticmethod
-    def _generate_compound_blocked_extensions() -> set[str]:
+    def _generate_compound_blocked_extensions() -> frozenset[str]:
         """
         Aggregate all compound extension categories.
 
         Returns:
-            Combined set of blocked compound file extensions.
+            Combined frozenset of blocked compound extensions.
         """
-        compound_extensions = set()
+        compound_extensions: set[str] = set()
 
         # Combine all compound extension categories
         for category in CompoundExtensionCategory:
             compound_extensions.update(category.value)
 
-        return compound_extensions
+        return frozenset(compound_extensions)
 
     # Generate dangerous Unicode characters from categorized enums
     @staticmethod
-    def _generate_dangerous_unicode_chars() -> set[int]:
+    def _generate_dangerous_unicode_chars() -> frozenset[int]:
         """
         Aggregate all dangerous Unicode code points.
 
         Returns:
-            Combined set of dangerous Unicode code points.
+            Combined frozenset of dangerous Unicode code points.
         """
-        dangerous_chars = set()
+        dangerous_chars: set[int] = set()
 
         # Combine all Unicode attack categories
         for category in UnicodeAttackCategory:
             dangerous_chars.update(category.value)
 
-        return dangerous_chars
+        return frozenset(dangerous_chars)
 
-    # Dangerous file extensions to explicitly block (generated from enums)
-    BLOCKED_EXTENSIONS: set[str] = _generate_blocked_extensions()
+    # Dangerous file extensions (generated from enums)
+    BLOCKED_EXTENSIONS: frozenset[str] = (
+        _generate_blocked_extensions()
+    )
 
-    # Compound dangerous file extensions (multi-part extensions)
-    # These are checked as complete strings, not individual parts
-    COMPOUND_BLOCKED_EXTENSIONS: set[str] = (
+    # Compound dangerous extensions (multi-part)
+    COMPOUND_BLOCKED_EXTENSIONS: frozenset[str] = (
         _generate_compound_blocked_extensions()
     )
 
-    # Dangerous Unicode characters that can be used for filename attacks
-    # These characters can disguise file extensions or cause rendering issues
-    DANGEROUS_UNICODE_CHARS: set[int] = _generate_dangerous_unicode_chars()
+    # Dangerous Unicode characters for filename attacks
+    DANGEROUS_UNICODE_CHARS: frozenset[int] = (
+        _generate_dangerous_unicode_chars()
+    )
 
-    # Windows reserved names that cannot be used as filenames
-    # These names are reserved by Windows regardless of extension
-    WINDOWS_RESERVED_NAMES: set[str] = {
+    # Windows reserved names
+    WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset({
         "con",
         "prn",
         "aux",
@@ -229,7 +230,7 @@ class FileSecurityConfig:
         "lpt7",
         "lpt8",
         "lpt9",
-    }
+    })
 
     # Configuration validation trigger
     @classmethod

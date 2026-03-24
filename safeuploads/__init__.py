@@ -19,6 +19,7 @@ from .enums import (
     BinaryFileCategory,
     CompoundExtensionCategory,
     DangerousExtensionCategory,
+    MalwareSignatureCategory,
     SuspiciousFilePattern,
     UnicodeAttackCategory,
     ZipThreatCategory,
@@ -47,7 +48,11 @@ from .exceptions import (
 from .file_validator import FileValidator
 
 # Inspectors
-from .inspectors import GzipContentInspector, ZipContentInspector
+from .inspectors import (
+    ContentSecurityInspector,
+    GzipContentInspector,
+    ZipContentInspector,
+)
 from .protocols import SeekableFile
 from .utils import ResourceMonitor
 
@@ -97,6 +102,7 @@ __all__ = [
     "UnicodeAttackCategory",
     "SuspiciousFilePattern",
     "ZipThreatCategory",
+    "MalwareSignatureCategory",
     # Main validator
     "FileValidator",
     # Specialized validators
@@ -109,6 +115,7 @@ __all__ = [
     # Inspectors
     "ZipContentInspector",
     "GzipContentInspector",
+    "ContentSecurityInspector",
     # Utilities
     "ResourceMonitor",
     # Audit logging

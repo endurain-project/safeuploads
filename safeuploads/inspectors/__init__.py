@@ -5,7 +5,12 @@ This package provides inspectors that analyze the internal structure
 and contents of uploaded files to detect potential security threats.
 """
 
+from .content_inspector import ContentSecurityInspector
 from .gzip_inspector import GzipContentInspector
 from .zip_inspector import ZipContentInspector
 
-__all__ = ["ZipContentInspector", "GzipContentInspector"]
+__all__ = [
+    "ZipContentInspector",
+    "GzipContentInspector",
+    "ContentSecurityInspector",
+]

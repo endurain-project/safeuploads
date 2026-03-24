@@ -700,3 +700,27 @@ class TestCompressionSecurityValidator:
 
         error_msg = str(exc_info.value).lower()
         assert "overall compression ratio" in error_msg
+
+    def test_complexity_attack_entry_count(self):
+        """Test rejection when entries exceed recursive limit."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_zip_entries=100000,
+            max_total_entries_recursive=5,
+        )
+        validator = CompressionSecurityValidator(config)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for i in range(10):
+                zf.writestr(f"f{i}.txt", b"x")
+        zip_bytes = buf.getvalue()
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
+        assert (
+            exc_info.value.error_code
+            == ErrorCode.ZIP_COMPLEXITY_ATTACK
+        )

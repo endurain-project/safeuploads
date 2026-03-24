@@ -682,3 +682,201 @@ class TestZipContentInspector:
         # Should handle decode errors gracefully without raising
         # The decode error is caught and logged but doesn't cause failure
         inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+
+class TestRecursiveZipDetection:
+    """Tests for recursive/quine/complexity ZIP detection."""
+
+    def test_detect_deeply_nested_zip(self):
+        """Test detection of excessive nesting depth."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=1,
+        )
+        inspector = ZipContentInspector(config)
+
+        # Create a 3-level nested ZIP (exceeds depth 1)
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("deep.txt", b"deep content")
+        inner_bytes = inner.getvalue()
+
+        mid = io.BytesIO()
+        with zipfile.ZipFile(mid, "w") as zf:
+            zf.writestr("inner.zip", inner_bytes)
+        mid_bytes = mid.getvalue()
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr("mid.zip", mid_bytes)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(
+                io.BytesIO(outer.getvalue())
+            )
+        assert (
+            exc_info.value.error_code
+            == ErrorCode.ZIP_RECURSIVE_STRUCTURE
+        )
+
+    def test_detect_quine_zip(self):
+        """Test detection of quine ZIP via seen hashes."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=5,
+        )
+        inspector = ZipContentInspector(config)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("data.txt", b"content")
+        zip_bytes = buf.getvalue()
+
+        import hashlib
+
+        h = hashlib.sha256(zip_bytes).hexdigest()
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(
+                io.BytesIO(zip_bytes),
+                seen_hashes={h},
+            )
+        assert (
+            exc_info.value.error_code
+            == ErrorCode.ZIP_QUINE_DETECTED
+        )
+
+    def test_detect_complexity_attack(self):
+        """Test detection of excessive total entries."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=10,
+            max_total_entries_recursive=5,
+        )
+        inspector = ZipContentInspector(config)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for i in range(10):
+                zf.writestr(f"file{i}.txt", b"x")
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(
+                io.BytesIO(buf.getvalue())
+            )
+        assert (
+            exc_info.value.error_code
+            == ErrorCode.ZIP_COMPLEXITY_ATTACK
+        )
+
+    def test_nested_inspection_passes_safe_archive(self):
+        """Test that safe nested archive passes."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=5,
+            max_total_entries_recursive=50000,
+        )
+        inspector = ZipContentInspector(config)
+
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("inner.txt", b"safe content")
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr("safe.zip", inner.getvalue())
+            zf.writestr("readme.txt", b"hello")
+
+        inspector.inspect_nested_archives(
+            io.BytesIO(outer.getvalue())
+        )
+
+    def test_inspect_zip_content_triggers_recursive(self):
+        """Test inspect_zip_content calls recursive check."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=5,
+            max_total_entries_recursive=50000,
+        )
+        inspector = ZipContentInspector(config)
+
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("inner.txt", b"content")
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr("nested.zip", inner.getvalue())
+
+        inspector.inspect_zip_content(
+            io.BytesIO(outer.getvalue())
+        )
+
+    def test_timeout_during_recursive_inspection(self):
+        """Test timeout enforcement during recursion."""
+        import time
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=10,
+            zip_analysis_timeout=0.001,
+            max_total_entries_recursive=50000,
+        )
+        inspector = ZipContentInspector(config)
+
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as zf:
+            for i in range(100):
+                zf.writestr(f"f{i}.txt", b"x")
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr("big.zip", inner.getvalue())
+
+        try:
+            inspector.inspect_nested_archives(
+                io.BytesIO(outer.getvalue()),
+                start_time=time.monotonic() - 1.0,
+            )
+        except ZipContentError as e:
+            assert (
+                e.error_code
+                == ErrorCode.ZIP_ANALYSIS_TIMEOUT
+            )
+
+    def test_non_zip_nested_archive_ignored(self):
+        """Test that invalid nested archives are skipped."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=5,
+        )
+        inspector = ZipContentInspector(config)
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr("fake.zip", b"not a zip")
+            zf.writestr("data.txt", b"hello")
+
+        inspector.inspect_nested_archives(
+            io.BytesIO(outer.getvalue())
+        )
+
+    def test_compute_archive_hash(self):
+        """Test archive hash computation."""
+        config = FileSecurityConfig()
+        inspector = ZipContentInspector(config)
+
+        buf = io.BytesIO(b"test data")
+        h1 = inspector._compute_archive_hash(buf)
+        h2 = inspector._compute_archive_hash(buf)
+
+        assert h1 == h2
+        assert len(h1) == 64
+        assert buf.tell() == 0

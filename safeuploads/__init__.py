@@ -5,6 +5,14 @@ A comprehensive file security system for
 validating uploads and preventing attacks.
 """
 
+from .audit import (
+    AuditEvent,
+    AuditEventType,
+    SecurityAuditLogger,
+    get_correlation_id,
+    set_correlation_id,
+)
+
 # Core classes and configurations
 from .config import FileSecurityConfig, SecurityLimits
 from .enums import (
@@ -103,4 +111,10 @@ __all__ = [
     "GzipContentInspector",
     # Utilities
     "ResourceMonitor",
+    # Audit logging
+    "SecurityAuditLogger",
+    "AuditEvent",
+    "AuditEventType",
+    "get_correlation_id",
+    "set_correlation_id",
 ]

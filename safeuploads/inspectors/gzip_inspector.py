@@ -14,6 +14,7 @@ from ..exceptions import (
     FileProcessingError,
     ZipBombError,
 )
+from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -43,6 +44,9 @@ class GzipContentInspector:
             config: File security configuration.
         """
         self.config = config
+        self._audit = SecurityAuditLogger(
+            enabled=config.limits.enable_audit_logging
+        )
 
     def inspect_gzip_content(
         self,
@@ -86,7 +90,15 @@ class GzipContentInspector:
                             "%dMB > %dMB",
                             total_uncompressed // (1024 * 1024),
                             max_uncompressed // (1024 * 1024),
+                            extra=log_extra(),
                         )
+                        cid = get_correlation_id()
+                        if cid:
+                            self._audit.threat(
+                                "", cid,
+                                "Gzip decompression bomb"
+                                " — size exceeded",
+                            )
                         raise ZipBombError(
                             message=(
                                 "Gzip uncompressed size too"
@@ -115,7 +127,15 @@ class GzipContentInspector:
                                 " %.1f:1 > %d:1",
                                 ratio,
                                 max_ratio,
+                                extra=log_extra(),
                             )
+                            cid = get_correlation_id()
+                            if cid:
+                                self._audit.threat(
+                                    "", cid,
+                                    "Gzip decompression bomb"
+                                    " — ratio exceeded",
+                                )
                             raise ZipBombError(
                                 message=(
                                     "Gzip compression ratio"

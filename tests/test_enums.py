@@ -6,7 +6,6 @@ expected extension, pattern, or code point values so that regressions
 in the definitions are caught immediately.
 """
 
-
 from safeuploads.enums import (
     BinaryFileCategory,
     CompoundExtensionCategory,
@@ -199,8 +198,7 @@ class TestDangerousExtensionCategory:
         for category in DangerousExtensionCategory:
             for ext in category.value:
                 assert ext.startswith("."), (
-                    f"Extension '{ext}' in {category.name} "
-                    f"must start with '.'"
+                    f"Extension '{ext}' in {category.name} must start with '.'"
                 )
 
 
@@ -214,10 +212,7 @@ class TestCompoundExtensionCategory:
         Returns:
             None
         """
-        assert (
-            ".tar.gz"
-            in CompoundExtensionCategory.COMPRESSED_ARCHIVES.value
-        )
+        assert ".tar.gz" in CompoundExtensionCategory.COMPRESSED_ARCHIVES.value
 
     def test_compressed_archives_contains_tar_bz2(self):
         """
@@ -227,8 +222,7 @@ class TestCompoundExtensionCategory:
             None
         """
         assert (
-            ".tar.bz2"
-            in CompoundExtensionCategory.COMPRESSED_ARCHIVES.value
+            ".tar.bz2" in CompoundExtensionCategory.COMPRESSED_ARCHIVES.value
         )
 
     def test_javascript_variants_contains_user_js(self):
@@ -239,8 +233,7 @@ class TestCompoundExtensionCategory:
             None
         """
         assert (
-            ".user.js"
-            in CompoundExtensionCategory.JAVASCRIPT_VARIANTS.value
+            ".user.js" in CompoundExtensionCategory.JAVASCRIPT_VARIANTS.value
         )
 
     def test_web_content_contains_min_css(self):
@@ -275,10 +268,7 @@ class TestUnicodeAttackCategory:
         Returns:
             None
         """
-        assert (
-            0x202E
-            in UnicodeAttackCategory.DIRECTIONAL_OVERRIDES.value
-        )
+        assert 0x202E in UnicodeAttackCategory.DIRECTIONAL_OVERRIDES.value
 
     def test_directional_overrides_contains_lro(self):
         """
@@ -287,10 +277,7 @@ class TestUnicodeAttackCategory:
         Returns:
             None
         """
-        assert (
-            0x202D
-            in UnicodeAttackCategory.DIRECTIONAL_OVERRIDES.value
-        )
+        assert 0x202D in UnicodeAttackCategory.DIRECTIONAL_OVERRIDES.value
 
     def test_zero_width_characters_contains_zwsp(self):
         """
@@ -299,10 +286,7 @@ class TestUnicodeAttackCategory:
         Returns:
             None
         """
-        assert (
-            0x200B
-            in UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS.value
-        )
+        assert 0x200B in UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS.value
 
     def test_zero_width_characters_contains_bom(self):
         """
@@ -311,10 +295,7 @@ class TestUnicodeAttackCategory:
         Returns:
             None
         """
-        assert (
-            0xFEFF
-            in UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS.value
-        )
+        assert 0xFEFF in UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS.value
 
     def test_confusing_punctuation_contains_fullwidth_stop(self):
         """
@@ -323,10 +304,7 @@ class TestUnicodeAttackCategory:
         Returns:
             None
         """
-        assert (
-            0xFF0E
-            in UnicodeAttackCategory.CONFUSING_PUNCTUATION.value
-        )
+        assert 0xFF0E in UnicodeAttackCategory.CONFUSING_PUNCTUATION.value
 
     def test_all_code_points_are_valid_integers(self):
         """
@@ -378,10 +356,7 @@ class TestSuspiciousFilePattern:
         Returns:
             None
         """
-        assert (
-            "%2e%2e%2f"
-            in SuspiciousFilePattern.DIRECTORY_TRAVERSAL.value
-        )
+        assert "%2e%2e%2f" in SuspiciousFilePattern.DIRECTORY_TRAVERSAL.value
 
     def test_suspicious_names_contains_autorun_inf(self):
         """
@@ -390,9 +365,7 @@ class TestSuspiciousFilePattern:
         Returns:
             None
         """
-        assert (
-            "autorun.inf" in SuspiciousFilePattern.SUSPICIOUS_NAMES.value
-        )
+        assert "autorun.inf" in SuspiciousFilePattern.SUSPICIOUS_NAMES.value
 
     def test_suspicious_names_contains_htaccess(self):
         """
@@ -401,9 +374,7 @@ class TestSuspiciousFilePattern:
         Returns:
             None
         """
-        assert (
-            ".htaccess" in SuspiciousFilePattern.SUSPICIOUS_NAMES.value
-        )
+        assert ".htaccess" in SuspiciousFilePattern.SUSPICIOUS_NAMES.value
 
     def test_executable_signatures_contains_mz_header(self):
         """
@@ -412,9 +383,7 @@ class TestSuspiciousFilePattern:
         Returns:
             None
         """
-        assert (
-            b"MZ" in SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value
-        )
+        assert b"MZ" in SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value
 
     def test_executable_signatures_contains_elf_header(self):
         """
@@ -423,10 +392,7 @@ class TestSuspiciousFilePattern:
         Returns:
             None
         """
-        assert (
-            b"\x7fELF"
-            in SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value
-        )
+        assert b"\x7fELF" in SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value
 
     def test_suspicious_paths_contains_etc(self):
         """

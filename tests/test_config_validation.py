@@ -22,9 +22,7 @@ from safeuploads.exceptions import (
 class TestFileSizeLimitValidation:
     """Tests for _validate_file_size_limits validation branches."""
 
-    def test_negative_image_size_generates_error(
-        self, monkeypatch
-    ):
+    def test_negative_image_size_generates_error(self, monkeypatch):
         """
         Test that a non-positive image size limit generates an error.
 
@@ -37,14 +35,10 @@ class TestFileSizeLimitValidation:
             SecurityLimits(max_image_size=-1),
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_size_limit" in error_types
 
-    def test_excessive_image_size_generates_warning(
-        self, monkeypatch
-    ):
+    def test_excessive_image_size_generates_warning(self, monkeypatch):
         """
         Test that an oversized image limit generates a warning.
 
@@ -54,9 +48,7 @@ class TestFileSizeLimitValidation:
         monkeypatch.setattr(
             FileSecurityConfig,
             "limits",
-            SecurityLimits(
-                max_image_size=200 * 1024 * 1024
-            ),  # 200 MB
+            SecurityLimits(max_image_size=200 * 1024 * 1024),  # 200 MB
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
@@ -67,9 +59,7 @@ class TestFileSizeLimitValidation:
         ]
         assert len(warnings) >= 1
 
-    def test_negative_zip_size_generates_error(
-        self, monkeypatch
-    ):
+    def test_negative_zip_size_generates_error(self, monkeypatch):
         """
         Test that a non-positive ZIP size limit generates an error.
 
@@ -82,14 +72,10 @@ class TestFileSizeLimitValidation:
             SecurityLimits(max_zip_size=-1),
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_size_limit" in error_types
 
-    def test_excessive_zip_size_generates_warning(
-        self, monkeypatch
-    ):
+    def test_excessive_zip_size_generates_warning(self, monkeypatch):
         """
         Test that an oversized ZIP limit generates a warning.
 
@@ -99,9 +85,7 @@ class TestFileSizeLimitValidation:
         monkeypatch.setattr(
             FileSecurityConfig,
             "limits",
-            SecurityLimits(
-                max_zip_size=3 * 1024 * 1024 * 1024
-            ),  # 3 GB
+            SecurityLimits(max_zip_size=3 * 1024 * 1024 * 1024),  # 3 GB
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
@@ -112,9 +96,7 @@ class TestFileSizeLimitValidation:
         ]
         assert len(warnings) >= 1
 
-    def test_zip_smaller_than_image_generates_warning(
-        self, monkeypatch
-    ):
+    def test_zip_smaller_than_image_generates_warning(self, monkeypatch):
         """
         Test warning when ZIP size limit is smaller than image limit.
 
@@ -126,14 +108,12 @@ class TestFileSizeLimitValidation:
             "limits",
             SecurityLimits(
                 max_image_size=100 * 1024 * 1024,  # 100 MB
-                max_zip_size=50 * 1024 * 1024,      # 50 MB
+                max_zip_size=50 * 1024 * 1024,  # 50 MB
             ),
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
-            e
-            for e in errors
-            if e.error_type == "inconsistent_size_limits"
+            e for e in errors if e.error_type == "inconsistent_size_limits"
         ]
         assert len(warnings) >= 1
 
@@ -141,22 +121,16 @@ class TestFileSizeLimitValidation:
 class TestMimeConfigurationValidation:
     """Tests for _validate_mime_configurations validation branches."""
 
-    def test_empty_allowed_image_mimes_generates_error(
-        self, monkeypatch
-    ):
+    def test_empty_allowed_image_mimes_generates_error(self, monkeypatch):
         """
         Test that empty ALLOWED_IMAGE_MIMES generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(
-            FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set()
-        )
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set())
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "empty_mime_set" in error_types
 
     def test_non_image_mime_generates_warning(self, monkeypatch):
@@ -172,34 +146,22 @@ class TestMimeConfigurationValidation:
             {"application/pdf"},
         )
         errors = FileSecurityConfig.validate_configuration()
-        warnings = [
-            e
-            for e in errors
-            if e.error_type == "invalid_image_mime"
-        ]
+        warnings = [e for e in errors if e.error_type == "invalid_image_mime"]
         assert len(warnings) >= 1
 
-    def test_empty_allowed_zip_mimes_generates_error(
-        self, monkeypatch
-    ):
+    def test_empty_allowed_zip_mimes_generates_error(self, monkeypatch):
         """
         Test that empty ALLOWED_ZIP_MIMES generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(
-            FileSecurityConfig, "ALLOWED_ZIP_MIMES", set()
-        )
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_ZIP_MIMES", set())
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "empty_mime_set" in error_types
 
-    def test_duplicate_mime_across_sets_generates_warning(
-        self, monkeypatch
-    ):
+    def test_duplicate_mime_across_sets_generates_warning(self, monkeypatch):
         """
         Test warning when a MIME type appears in both allowed sets.
 
@@ -219,9 +181,7 @@ class TestMimeConfigurationValidation:
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
-            e
-            for e in errors
-            if e.error_type == "duplicate_mime_types"
+            e for e in errors if e.error_type == "duplicate_mime_types"
         ]
         assert len(warnings) >= 1
 
@@ -229,9 +189,7 @@ class TestMimeConfigurationValidation:
 class TestExtensionConfigurationValidation:
     """Tests for _validate_extension_configurations branches."""
 
-    def test_empty_image_extensions_generates_error(
-        self, monkeypatch
-    ):
+    def test_empty_image_extensions_generates_error(self, monkeypatch):
         """
         Test that empty ALLOWED_IMAGE_EXTENSIONS generates an error.
 
@@ -242,14 +200,10 @@ class TestExtensionConfigurationValidation:
             FileSecurityConfig, "ALLOWED_IMAGE_EXTENSIONS", set()
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "empty_extension_set" in error_types
 
-    def test_extension_without_dot_generates_error(
-        self, monkeypatch
-    ):
+    def test_extension_without_dot_generates_error(self, monkeypatch):
         """
         Test that an extension without a leading dot generates an error.
 
@@ -262,32 +216,22 @@ class TestExtensionConfigurationValidation:
             {"jpg"},  # Missing leading dot
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_extension_format" in error_types
 
-    def test_empty_blocked_extensions_generates_error(
-        self, monkeypatch
-    ):
+    def test_empty_blocked_extensions_generates_error(self, monkeypatch):
         """
         Test that empty BLOCKED_EXTENSIONS generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(
-            FileSecurityConfig, "BLOCKED_EXTENSIONS", set()
-        )
+        monkeypatch.setattr(FileSecurityConfig, "BLOCKED_EXTENSIONS", set())
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "empty_blocked_extensions" in error_types
 
-    def test_allowed_extension_in_blocked_generates_error(
-        self, monkeypatch
-    ):
+    def test_allowed_extension_in_blocked_generates_error(self, monkeypatch):
         """
         Test error when an allowed image extension is also blocked.
 
@@ -301,9 +245,7 @@ class TestExtensionConfigurationValidation:
             original_blocked | {".jpg"},
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "extension_conflict" in error_types
 
     def test_compound_extension_in_blocked_generates_warning(
@@ -323,9 +265,7 @@ class TestExtensionConfigurationValidation:
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
-            e
-            for e in errors
-            if e.error_type == "compound_extension_overlap"
+            e for e in errors if e.error_type == "compound_extension_overlap"
         ]
         assert len(warnings) >= 1
 
@@ -333,9 +273,7 @@ class TestExtensionConfigurationValidation:
 class TestCompressionSettingsValidation:
     """Tests for _validate_compression_settings branches."""
 
-    def test_zero_compression_ratio_generates_error(
-        self, monkeypatch
-    ):
+    def test_zero_compression_ratio_generates_error(self, monkeypatch):
         """
         Test that a zero compression ratio limit generates an error.
 
@@ -348,9 +286,7 @@ class TestCompressionSettingsValidation:
             SecurityLimits(max_compression_ratio=0),
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_compression_ratio" in error_types
 
     def test_very_strict_compression_ratio_generates_warning(
@@ -369,9 +305,7 @@ class TestCompressionSettingsValidation:
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
-            e
-            for e in errors
-            if e.error_type == "too_strict_compression"
+            e for e in errors if e.error_type == "too_strict_compression"
         ]
         assert len(warnings) >= 1
 
@@ -391,15 +325,11 @@ class TestCompressionSettingsValidation:
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
-            e
-            for e in errors
-            if e.error_type == "too_permissive_compression"
+            e for e in errors if e.error_type == "too_permissive_compression"
         ]
         assert len(warnings) >= 1
 
-    def test_zero_uncompressed_size_generates_error(
-        self, monkeypatch
-    ):
+    def test_zero_uncompressed_size_generates_error(self, monkeypatch):
         """
         Test that a zero uncompressed size limit generates an error.
 
@@ -412,14 +342,10 @@ class TestCompressionSettingsValidation:
             SecurityLimits(max_uncompressed_size=0),
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_uncompressed_size" in error_types
 
-    def test_zero_individual_file_size_generates_error(
-        self, monkeypatch
-    ):
+    def test_zero_individual_file_size_generates_error(self, monkeypatch):
         """
         Test that a zero individual file size limit generates an error.
 
@@ -432,9 +358,7 @@ class TestCompressionSettingsValidation:
             SecurityLimits(max_individual_file_size=0),
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_individual_file_size" in error_types
 
     def test_individual_file_exceeds_total_generates_warning(
@@ -450,7 +374,7 @@ class TestCompressionSettingsValidation:
             FileSecurityConfig,
             "limits",
             SecurityLimits(
-                max_uncompressed_size=100 * 1024 * 1024,     # 100 MB
+                max_uncompressed_size=100 * 1024 * 1024,  # 100 MB
                 max_individual_file_size=200 * 1024 * 1024,  # 200 MB
             ),
         )
@@ -476,14 +400,10 @@ class TestCompressionSettingsValidation:
             SecurityLimits(max_zip_entries=0),
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_zip_entries" in error_types
 
-    def test_excessive_zip_entries_generates_warning(
-        self, monkeypatch
-    ):
+    def test_excessive_zip_entries_generates_warning(self, monkeypatch):
         """
         Test that an excessive zip entries limit generates a warning.
 
@@ -497,9 +417,7 @@ class TestCompressionSettingsValidation:
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
-            e
-            for e in errors
-            if e.error_type == "excessive_zip_entries"
+            e for e in errors if e.error_type == "excessive_zip_entries"
         ]
         assert len(warnings) >= 1
 
@@ -516,9 +434,7 @@ class TestCompressionSettingsValidation:
             SecurityLimits(zip_analysis_timeout=0),
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type for e in errors if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_timeout" in error_types
 
     def test_excessive_timeout_generates_warning(self, monkeypatch):
@@ -534,33 +450,25 @@ class TestCompressionSettingsValidation:
             SecurityLimits(zip_analysis_timeout=60.0),
         )
         errors = FileSecurityConfig.validate_configuration()
-        warnings = [
-            e for e in errors if e.error_type == "excessive_timeout"
-        ]
+        warnings = [e for e in errors if e.error_type == "excessive_timeout"]
         assert len(warnings) >= 1
 
 
 class TestValidateAndReport:
     """Tests for validate_and_report method branches."""
 
-    def test_strict_raises_on_configuration_errors(
-        self, monkeypatch
-    ):
+    def test_strict_raises_on_configuration_errors(self, monkeypatch):
         """
         Test strict mode raises FileSecurityConfigurationError on errors.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(
-            FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set()
-        )
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set())
         with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileSecurityConfig.validate_and_report(strict=True)
         assert len(exc_info.value.errors) >= 1
-        assert all(
-            e.severity == "error" for e in exc_info.value.errors
-        )
+        assert all(e.severity == "error" for e in exc_info.value.errors)
 
     def test_strict_raises_on_warnings_only(self, monkeypatch):
         """
@@ -587,15 +495,11 @@ class TestValidateAndReport:
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(
-            FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set()
-        )
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set())
         try:
             FileSecurityConfig.validate_and_report(strict=False)
         except FileSecurityConfigurationError:
-            pytest.fail(
-                "validate_and_report(strict=False) must not raise"
-            )
+            pytest.fail("validate_and_report(strict=False) must not raise")
 
     def test_valid_default_config_passes_strict_validation(self):
         """
@@ -607,9 +511,7 @@ class TestValidateAndReport:
         try:
             FileSecurityConfig.validate_and_report(strict=True)
         except FileSecurityConfigurationError:
-            pytest.fail(
-                "Default config must pass strict validation"
-            )
+            pytest.fail("Default config must pass strict validation")
 
 
 class TestConfigClassMethods:
@@ -666,7 +568,9 @@ class TestConfigClassMethods:
             CompoundExtensionCategory.JAVASCRIPT_VARIANTS
         )
         exts.discard(".user.js")
-        assert ".user.js" in CompoundExtensionCategory.JAVASCRIPT_VARIANTS.value
+        assert (
+            ".user.js" in CompoundExtensionCategory.JAVASCRIPT_VARIANTS.value
+        )
 
     def test_get_unicode_chars_by_category(self):
         """
@@ -764,9 +668,7 @@ class TestConfigClassMethods:
 class TestCrossDependencyValidation:
     """Tests for _validate_cross_dependencies branches."""
 
-    def test_non_lowercase_reserved_name_generates_warning(
-        self, monkeypatch
-    ):
+    def test_non_lowercase_reserved_name_generates_warning(self, monkeypatch):
         """
         Test that an uppercase reserved name generates a warning.
 
@@ -780,15 +682,11 @@ class TestCrossDependencyValidation:
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
-            e
-            for e in errors
-            if e.error_type == "case_sensitive_reserved_name"
+            e for e in errors if e.error_type == "case_sensitive_reserved_name"
         ]
         assert len(warnings) >= 1
 
-    def test_non_integer_unicode_char_generates_error(
-        self, monkeypatch
-    ):
+    def test_non_integer_unicode_char_generates_error(self, monkeypatch):
         """
         Test error when DANGEROUS_UNICODE_CHARS has non-int.
 
@@ -801,16 +699,10 @@ class TestCrossDependencyValidation:
             {0x202E, "not_an_int"},
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type
-            for e in errors
-            if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_unicode_char" in error_types
 
-    def test_out_of_range_unicode_char_generates_error(
-        self, monkeypatch
-    ):
+    def test_out_of_range_unicode_char_generates_error(self, monkeypatch):
         """
         Test error when DANGEROUS_UNICODE_CHARS has out of range.
 
@@ -823,11 +715,7 @@ class TestCrossDependencyValidation:
             {0x202E, 0x110000},
         )
         errors = FileSecurityConfig.validate_configuration()
-        error_types = [
-            e.error_type
-            for e in errors
-            if e.severity == "error"
-        ]
+        error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_unicode_range" in error_types
 
 
@@ -849,9 +737,7 @@ class TestValidateAndReportLogging:
             )
         assert "validation passed" in caplog.text.lower()
 
-    def test_errors_are_logged(
-        self, monkeypatch, caplog
-    ):
+    def test_errors_are_logged(self, monkeypatch, caplog):
         """
         Test that config errors are logged at ERROR level.
 
@@ -866,17 +752,13 @@ class TestValidateAndReportLogging:
             "ALLOWED_IMAGE_MIMES",
             set(),
         )
-        with caplog.at_level(
-            logging.ERROR, logger="safeuploads.config"
-        ):
+        with caplog.at_level(logging.ERROR, logger="safeuploads.config"):
             FileSecurityConfig.validate_and_report(
                 strict=False,
             )
         assert "configuration error" in caplog.text.lower()
 
-    def test_warnings_are_logged(
-        self, monkeypatch, caplog
-    ):
+    def test_warnings_are_logged(self, monkeypatch, caplog):
         """
         Test that config warnings are logged at WARNING level.
 
@@ -900,9 +782,7 @@ class TestValidateAndReportLogging:
             )
         assert "configuration warning" in caplog.text.lower()
 
-    def test_info_items_are_logged(
-        self, monkeypatch, caplog
-    ):
+    def test_info_items_are_logged(self, monkeypatch, caplog):
         """
         Test that info-level items are logged.
 
@@ -914,9 +794,7 @@ class TestValidateAndReportLogging:
 
         from safeuploads.exceptions import ConfigValidationError
 
-        original = (
-            FileSecurityConfig._validate_enum_consistency
-        )
+        original = FileSecurityConfig._validate_enum_consistency
 
         @classmethod
         def _force_info(cls):
@@ -936,9 +814,7 @@ class TestValidateAndReportLogging:
             "_validate_enum_consistency",
             _force_info,
         )
-        with caplog.at_level(
-            logging.INFO, logger="safeuploads.config"
-        ):
+        with caplog.at_level(logging.INFO, logger="safeuploads.config"):
             FileSecurityConfig.validate_and_report(
                 strict=False,
             )
@@ -958,9 +834,7 @@ class TestInitSubclassValidation:
         import logging
 
         # Creating a subclass should call validate_and_report
-        with caplog.at_level(
-            logging.DEBUG, logger="safeuploads.config"
-        ):
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.config"):
 
             class _SubConfig(FileSecurityConfig):
                 pass

@@ -33,7 +33,38 @@ line-length = 79
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "S",      # flake8-bandit (security)
+    "SIM",    # flake8-simplify
+    "RET",    # flake8-return
+    "C4",     # flake8-comprehensions
+    "PIE",    # flake8-pie
+    "PT",     # flake8-pytest-style
+    "D",      # pydocstyle
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",   # assert is expected in tests
+    "D",      # no docstring enforcement in tests
+]
+"tests/conftest.py" = [
+    "S101",
+    "D",
+]
+"examples/**/*.py" = [
+    "D",      # no docstring enforcement in examples
+    "T201",   # print is expected in examples
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
 
 [tool.ruff.format]
 quote-style = "double"

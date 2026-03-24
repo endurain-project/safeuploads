@@ -44,7 +44,8 @@ class WindowsSecurityValidator(BaseValidator):
             WindowsReservedNameError: If filename matches a Windows
                 reserved device name.
         """
-        # Check iteratively by removing extensions to handle compound extensions
+        # Check iteratively by removing extensions
+        # to handle compound extensions
         # e.g., "CON.tar.gz" -> check "con.tar" and "con"
         current_name = filename
 
@@ -54,7 +55,8 @@ class WindowsSecurityValidator(BaseValidator):
 
             # Normalize: lowercase, strip whitespace
             name_to_check = name_without_ext.lower().strip()
-            # Remove leading dots to handle hidden files like ".CON.jpg"
+            # Remove leading dots for hidden files
+            # like ".CON.jpg"
             name_to_check = name_to_check.lstrip(".")
             # Remove trailing dots to handle cases like "con." or "con.."
             name_to_check = name_to_check.rstrip(".")
@@ -69,8 +71,17 @@ class WindowsSecurityValidator(BaseValidator):
                     },
                 )
                 raise WindowsReservedNameError(
-                    message=f"Filename '{filename}' uses Windows reserved name '{name_to_check.upper()}'. "
-                    f"Reserved names: {', '.join(sorted(self.config.WINDOWS_RESERVED_NAMES)).upper()}",
+                    message=(
+                        f"Filename '{filename}' uses"
+                        f" Windows reserved name"
+                        f" '{name_to_check.upper()}'."
+                        f" Reserved names:"
+                        " {}".format(
+                            ", ".join(
+                                sorted(self.config.WINDOWS_RESERVED_NAMES)
+                            ).upper()
+                        )
+                    ),
                     filename=filename,
                     reserved_name=name_to_check.upper(),
                 )

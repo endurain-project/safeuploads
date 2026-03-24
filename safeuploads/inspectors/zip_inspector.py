@@ -75,11 +75,17 @@ class ZipContentInspector:
                             "ZIP content inspection timeout",
                             extra={
                                 "error_type": "zip_analysis_timeout",
-                                "timeout": self.config.limits.zip_analysis_timeout,
+                                "timeout": (
+                                    self.config.limits.zip_analysis_timeout
+                                ),
                             },
                         )
                         raise ZipContentError(
-                            message=f"ZIP content inspection timeout after {self.config.limits.zip_analysis_timeout}s",
+                            message=(
+                                "ZIP content inspection"
+                                " timeout after"
+                                f" {self.config.limits.zip_analysis_timeout}s"
+                            ),
                             threats=["Analysis timeout - potential zip bomb"],
                             error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
                         )
@@ -103,7 +109,11 @@ class ZipContentInspector:
                         },
                     )
                     raise ZipContentError(
-                        message=f"ZIP content threats detected: {'; '.join(threats_found)}",
+                        message=(
+                            "ZIP content threats"
+                            " detected:"
+                            f" {'; '.join(threats_found)}"
+                        ),
                         threats=threats_found,
                     )
 
@@ -116,7 +126,9 @@ class ZipContentInspector:
             # Re-raise our own exceptions
             raise
         except zipfile.BadZipFile as err:
-            logger.error("Invalid or corrupted ZIP file structure", exc_info=True)
+            logger.error(
+                "Invalid or corrupted ZIP file structure", exc_info=True
+            )
             raise FileProcessingError(
                 message="Invalid or corrupted ZIP file structure",
                 original_error=err,
@@ -150,17 +162,16 @@ class ZipContentInspector:
 
         # 1. Check for null bytes (truncation attacks)
         if "\x00" in filename:
-            threats.append(
-                f"Null byte in filename: '{filename}'"
-            )
+            threats.append(f"Null byte in filename: '{filename}'")
 
         # 2. Check for directory traversal attacks
         if self._has_directory_traversal(filename):
             threats.append(f"Directory traversal attack in '{filename}'")
 
         # 3. Check for absolute paths
-        if not self.config.limits.allow_absolute_paths and self._has_absolute_path(
-            filename
+        if (
+            not self.config.limits.allow_absolute_paths
+            and self._has_absolute_path(filename)
         ):
             threats.append(f"Absolute path detected in '{filename}'")
 
@@ -169,22 +180,30 @@ class ZipContentInspector:
             threats.append(f"Symbolic link detected: '{filename}'")
 
         # 5. Check filename length limits
-        if len(os.path.basename(filename)) > self.config.limits.max_filename_length:
+        if (
+            len(os.path.basename(filename))
+            > self.config.limits.max_filename_length
+        ):
             threats.append(
-                f"Filename too long: '{filename}' ({len(os.path.basename(filename))} chars)"
+                f"Filename too long: '{filename}'"
+                f" ({len(os.path.basename(filename))}"
+                " chars)"
             )
 
         # 6. Check path length limits
         if len(filename) > self.config.limits.max_path_length:
-            threats.append(f"Path too long: '{filename}' ({len(filename)} chars)")
+            threats.append(
+                f"Path too long: '{filename}' ({len(filename)} chars)"
+            )
 
         # 7. Check for suspicious filename patterns
         suspicious_patterns = self._check_suspicious_patterns(filename)
         threats.extend(suspicious_patterns)
 
         # 8. Check for nested archives
-        if not self.config.limits.allow_nested_archives and self._is_nested_archive(
-            filename
+        if (
+            not self.config.limits.allow_nested_archives
+            and self._is_nested_archive(filename)
         ):
             threats.append(f"Nested archive detected: '{filename}'")
 
@@ -199,7 +218,9 @@ class ZipContentInspector:
 
         return threats
 
-    def _inspect_zip_structure(self, entries: list[zipfile.ZipInfo]) -> list[str]:
+    def _inspect_zip_structure(
+        self, entries: list[zipfile.ZipInfo]
+    ) -> list[str]:
         """
         Inspect ZIP structure for anomalies.
 
@@ -219,7 +240,8 @@ class ZipContentInspector:
 
         if max_depth > self.config.limits.max_zip_depth:
             threats.append(
-                f"Excessive directory depth: {max_depth} (max: {self.config.limits.max_zip_depth})"
+                f"Excessive directory depth: {max_depth}"
+                f" (max: {self.config.limits.max_zip_depth})"
             )
 
         # Check for suspicious file distribution
@@ -233,7 +255,8 @@ class ZipContentInspector:
         for ext, count in file_types.items():
             if count > self.config.limits.max_number_files_same_type:
                 threats.append(
-                    f"Excessive number of {ext} files: {self.config.limits.max_number_files_same_type}"
+                    f"Excessive number of {ext} files:"
+                    f" {self.config.limits.max_number_files_same_type}"
                 )
 
         return threats
@@ -258,10 +281,11 @@ class ZipContentInspector:
 
         # Additional checks for normalized paths
         normalized = os.path.normpath(filename)
-        if normalized.startswith("..") or "/.." in normalized or "\\.." in normalized:
-            return True
-
-        return False
+        return (
+            normalized.startswith("..")
+            or "/.." in normalized
+            or "\\.." in normalized
+        )
 
     def _has_absolute_path(self, filename: str) -> bool:
         """
@@ -274,8 +298,7 @@ class ZipContentInspector:
             True if absolute path detected.
         """
         return (
-            filename.startswith("/")  # Unix absolute path
-            or filename.startswith("\\")  # Windows UNC path
+            filename.startswith(("/", "\\"))  # Unix/Windows path
             or (len(filename) > 1 and filename[1] == ":")  # Windows drive path
         )
 
@@ -316,7 +339,9 @@ class ZipContentInspector:
         for pattern in SuspiciousFilePattern.SUSPICIOUS_PATHS.value:
             if pattern.lower() in filename_lower:
                 threats.append(
-                    f"Suspicious path component: '{filename}' contains '{pattern}'"
+                    "Suspicious path component:"
+                    f" '{filename}' contains"
+                    f" '{pattern}'"
                 )
                 break
 
@@ -361,10 +386,14 @@ class ZipContentInspector:
                 content_sample = file.read(512)  # Read first 512 bytes
 
                 # Check for executable signatures
-                for signature in SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value:
+                for (
+                    signature
+                ) in SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value:
                     if content_sample.startswith(signature):
                         threats.append(
-                            f"Executable content detected in '{entry.filename}'"
+                            "Executable content"
+                            f" detected in"
+                            f" '{entry.filename}'"
                         )
                         break
 
@@ -373,10 +402,12 @@ class ZipContentInspector:
                     binary_exts.update(category.value)
 
                 ext = os.path.splitext(entry.filename)[1].lower()
-                if ext not in binary_exts:
-                    # Check for script content patterns
-                    if self._contains_script_patterns(content_sample, entry.filename):
-                        threats.append(f"Script content detected in '{entry.filename}'")
+                if ext not in binary_exts and self._contains_script_patterns(
+                    content_sample, entry.filename
+                ):
+                    threats.append(
+                        f"Script content detected in '{entry.filename}'"
+                    )
 
         except Exception as err:
             logger.warning(
@@ -425,6 +456,9 @@ class ZipContentInspector:
 
         except Exception:
             # If we can't decode as text, it's probably binary
-            pass
+            logger.debug(
+                "Could not decode content of '%s' as text",
+                filename,
+            )
 
         return False

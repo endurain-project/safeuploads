@@ -47,9 +47,7 @@ app = FastAPI(
 if SLOWAPI_AVAILABLE:
     limiter = Limiter(key_func=get_remote_address)
     app.state.limiter = limiter
-    app.add_exception_handler(
-        RateLimitExceeded, _rate_limit_exceeded_handler
-    )
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Create custom security limits for stricter validation
 strict_limits = SecurityLimits(
@@ -112,7 +110,12 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
             "error_code": exc.error_code,
         }
     elif isinstance(
-        exc, (UnicodeSecurityError, ExtensionSecurityError, WindowsReservedNameError)
+        exc,
+        (
+            UnicodeSecurityError,
+            ExtensionSecurityError,
+            WindowsReservedNameError,
+        ),
     ):
         detail = {
             "error": "filename_security_violation",
@@ -268,13 +271,17 @@ async def get_config():
         "default": {
             "max_image_size": default_validator.config.limits.max_image_size,
             "max_zip_size": default_validator.config.limits.max_zip_size,
-            "max_compression_ratio": default_validator.config.limits.max_compression_ratio,
+            "max_compression_ratio": (
+                default_validator.config.limits.max_compression_ratio
+            ),
             "max_zip_entries": default_validator.config.limits.max_zip_entries,
         },
         "strict": {
             "max_image_size": strict_validator.config.limits.max_image_size,
             "max_zip_size": strict_validator.config.limits.max_zip_size,
-            "max_compression_ratio": strict_validator.config.limits.max_compression_ratio,
+            "max_compression_ratio": (
+                strict_validator.config.limits.max_compression_ratio
+            ),
             "max_zip_entries": strict_validator.config.limits.max_zip_entries,
         },
     }
@@ -291,7 +298,9 @@ async def root():
             "POST /upload/image/strict": "Upload image with strict validation",
             "POST /upload/zip": "Upload and validate ZIP archive",
             "POST /upload/multiple": "Upload multiple files",
-            "POST /upload/image/rate-limited": "Rate-limited image upload (requires slowapi)",
+            "POST /upload/image/rate-limited": (
+                "Rate-limited image upload (requires slowapi)"
+            ),
             "GET /config": "View validator configurations",
         },
     }
@@ -304,9 +313,7 @@ if SLOWAPI_AVAILABLE:
 
     @app.post("/upload/image/rate-limited")
     @limiter.limit("10/minute")
-    async def upload_image_rate_limited(
-        request: Request, file: UploadFile
-    ):
+    async def upload_image_rate_limited(request: Request, file: UploadFile):
         """
         Upload image with per-IP rate limiting.
 

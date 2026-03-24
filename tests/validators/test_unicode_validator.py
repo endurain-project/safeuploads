@@ -189,8 +189,10 @@ class TestUnicodeSecurityValidator:
         # Create a filename that will pass the initial check
         filename = "file!important.txt"
 
-        # Mock unicodedata.normalize to return a string with a dangerous character
-        # We'll make it return a string containing U+202E (RLO) which IS dangerous
+        # Mock unicodedata.normalize to return a
+        # string with a dangerous character
+        # We'll make it return a string containing
+        # U+202E (RLO) which IS dangerous
         def mock_normalize(form, text):
             if form == "NFC" and text == filename:
                 # Return text with a dangerous RLO character inserted

@@ -141,7 +141,8 @@ class TestZipContentInspector:
             # Use absolute path that's not suspicious
             zf.writestr("/data/config.txt", b"allowed content")
 
-        # Should not raise when absolute paths allowed (and path not suspicious)
+        # Should not raise when absolute paths allowed
+        # (and path not suspicious)
         inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_reject_symlink(self, default_config):
@@ -445,7 +446,9 @@ class TestZipContentInspector:
         large_content = b"MZ\x90\x00" + b"\x00" * (2 * 1024 * 1024)
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_STORED) as zf:
+        with zipfile.ZipFile(
+            zip_buffer, "w", compression=zipfile.ZIP_STORED
+        ) as zf:
             zf.writestr("large.bin", large_content)
 
         # Should not raise even with executable signature in large file
@@ -493,27 +496,17 @@ class TestZipContentInspector:
             _calls["n"] += 1
             if _calls["n"] == 1:
                 return _start
-            return (
-                _start
-                + config.limits.zip_analysis_timeout
-                + 1.0
-            )
+            return _start + config.limits.zip_analysis_timeout + 1.0
 
-        target = (
-            "safeuploads.inspectors"
-            ".zip_inspector.time.monotonic"
-        )
-        with patch(target, side_effect=_mock_monotonic):
-            with pytest.raises(ZipContentError) as exc_info:
-                inspector.inspect_zip_content(
-                    io.BytesIO(zip_buffer.getvalue())
-                )
+        target = "safeuploads.inspectors.zip_inspector.time.monotonic"
+        with (
+            patch(target, side_effect=_mock_monotonic),
+            pytest.raises(ZipContentError) as exc_info,
+        ):
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "timeout" in str(exc_info.value).lower()
-        assert (
-            exc_info.value.error_code
-            == ErrorCode.ZIP_ANALYSIS_TIMEOUT
-        )
+        assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
 
     def test_multiple_threats_detected(self, default_config):
         """Test that multiple threats are all detected and reported."""
@@ -591,7 +584,7 @@ class TestZipContentInspector:
         inspector = ZipContentInspector(default_config)
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w") as zf:
+        with zipfile.ZipFile(zip_buffer, "w") as _zf:
             pass  # Empty ZIP
 
         # Should not raise for empty ZIP
@@ -615,9 +608,13 @@ class TestZipContentInspector:
         inspector = ZipContentInspector(default_config)
 
         # Create invalid ZIP data
-        corrupted_zip = b"PK\x03\x04" + b"corrupted data that is not a valid ZIP"
+        corrupted_zip = (
+            b"PK\x03\x04" + b"corrupted data that is not a valid ZIP"
+        )
 
-        with pytest.raises(FileProcessingError, match="Invalid or corrupted ZIP"):
+        with pytest.raises(
+            FileProcessingError, match="Invalid or corrupted ZIP"
+        ):
             inspector.inspect_zip_content(io.BytesIO(corrupted_zip))
 
     def test_generic_exception_during_content_inspection(
@@ -635,10 +632,14 @@ class TestZipContentInspector:
         def mock_inspect_content(*args, **kwargs):
             raise RuntimeError("Unexpected error during inspection")
 
-        monkeypatch.setattr(inspector, "_inspect_entry_content", mock_inspect_content)
+        monkeypatch.setattr(
+            inspector, "_inspect_entry_content", mock_inspect_content
+        )
 
         # Should catch and wrap the exception
-        with pytest.raises(FileProcessingError, match="ZIP content inspection failed"):
+        with pytest.raises(
+            FileProcessingError, match="ZIP content inspection failed"
+        ):
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_content_inspection_warning_on_read_error(
@@ -653,8 +654,6 @@ class TestZipContentInspector:
             zf.writestr("test.txt", b"content")
 
         # Mock read to raise an exception
-        original_read = zipfile.ZipFile.read
-
         def mock_read(self, name, pwd=None):
             raise RuntimeError("Cannot read file")
 

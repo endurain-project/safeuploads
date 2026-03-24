@@ -148,7 +148,8 @@ def create_zip_file():
     """
 
     def _create_zip(
-        files: dict[str, bytes] | None = None, compression: int = zipfile.ZIP_STORED
+        files: dict[str, bytes] | None = None,
+        compression: int = zipfile.ZIP_STORED,
     ) -> bytes:
         """
         Create a ZIP file with specified content.
@@ -184,7 +185,4 @@ def dangerous_unicode_filename() -> str:
         Filename containing right-to-left override character.
     """
     # Right-to-left override (U+202E) - can disguise file extensions
-    return "document\u202Etxt.exe"
-
-
-
+    return "document\u202etxt.exe"

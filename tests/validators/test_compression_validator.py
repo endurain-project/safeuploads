@@ -39,16 +39,25 @@ class TestCompressionSecurityValidator:
         )
 
         # Should not raise any exception
-        validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
 
-    def test_validate_method_delegates_correctly(self, default_config, create_zip_file):
-        """Test that validate() method delegates to validate_zip_compression_ratio()."""
+    def test_validate_method_delegates_correctly(
+        self, default_config, create_zip_file
+    ):
+        """
+        Test that validate() method delegates to
+        validate_zip_compression_ratio().
+        """
         validator = CompressionSecurityValidator(default_config)
         zip_bytes = create_zip_file()
 
         # Both methods should work identically
         validator.validate(io.BytesIO(zip_bytes), len(zip_bytes))
-        validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
 
     def test_reject_corrupted_zip(self, default_config):
         """Test rejection of corrupted ZIP files."""
@@ -58,26 +67,37 @@ class TestCompressionSecurityValidator:
         corrupted_zip = b"PK\x03\x04corrupted data"
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(corrupted_zip), len(corrupted_zip))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(corrupted_zip), len(corrupted_zip)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
         assert "Invalid or corrupted" in str(exc_info.value)
 
-    def test_reject_excessive_compression_ratio_individual_file(self, default_config):
-        """Test rejection of individual file with excessive compression ratio."""
+    def test_reject_excessive_compression_ratio_individual_file(
+        self, default_config
+    ):
+        """
+        Test rejection of individual file with
+        excessive compression ratio.
+        """
         validator = CompressionSecurityValidator(default_config)
 
         # Create a highly compressible file (repeated zeros)
         highly_compressible = b"\x00" * (20 * 1024 * 1024)  # 20MB of zeros
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(
+            zip_buffer, "w", compression=zipfile.ZIP_DEFLATED
+        ) as zf:
             zf.writestr("zeros.bin", highly_compressible)
 
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(ZipBombError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert "Excessive compression ratio" in str(exc_info.value)
         assert exc_info.value.compression_ratio > 0
@@ -93,14 +113,18 @@ class TestCompressionSecurityValidator:
         highly_compressible = b"\x00" * (5 * 1024 * 1024)  # 5MB of zeros
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(
+            zip_buffer, "w", compression=zipfile.ZIP_DEFLATED
+        ) as zf:
             zf.writestr("zeros1.bin", highly_compressible)
             zf.writestr("zeros2.bin", highly_compressible)
 
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(ZipBombError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert "compression ratio" in str(exc_info.value).lower()
 
@@ -118,13 +142,17 @@ class TestCompressionSecurityValidator:
         large_file = b"A" * (2 * 1024 * 1024)  # 2MB uncompressed
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_STORED) as zf:
+        with zipfile.ZipFile(
+            zip_buffer, "w", compression=zipfile.ZIP_STORED
+        ) as zf:
             zf.writestr("large.bin", large_file)
 
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(ZipBombError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert "Total uncompressed size too large" in str(exc_info.value)
         assert exc_info.value.uncompressed_size is not None
@@ -146,7 +174,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_TOO_MANY_ENTRIES
         assert "too many files" in str(exc_info.value)
@@ -168,7 +198,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = outer_zip.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
         assert "Nested archives" in str(exc_info.value)
@@ -184,7 +216,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
@@ -199,7 +233,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
@@ -214,7 +250,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
@@ -229,12 +267,17 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
     def test_reject_individual_file_too_large(self):
-        """Test rejection of ZIP containing individual file exceeding size limit."""
+        """
+        Test rejection of ZIP containing individual
+        file exceeding size limit.
+        """
         # Use custom config with low individual file size limit
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
@@ -248,13 +291,17 @@ class TestCompressionSecurityValidator:
         large_file = b"X" * (1024 * 1024)  # 1MB file
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_STORED) as zf:
+        with zipfile.ZipFile(
+            zip_buffer, "w", compression=zipfile.ZIP_STORED
+        ) as zf:
             zf.writestr("large.bin", large_file)
 
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
         assert "Individual file too large" in str(exc_info.value)
@@ -274,7 +321,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         # Should not raise - directories should be skipped in size calculations
-        validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
 
     def test_handle_zero_compressed_size(self, default_config):
         """Test handling of entries with zero compressed size."""
@@ -282,20 +331,29 @@ class TestCompressionSecurityValidator:
 
         # Create ZIP with stored (uncompressed) small file
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_STORED) as zf:
+        with zipfile.ZipFile(
+            zip_buffer, "w", compression=zipfile.ZIP_STORED
+        ) as zf:
             zf.writestr("empty.txt", b"")
 
         zip_bytes = zip_buffer.getvalue()
 
         # Should handle gracefully without division by zero
-        validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
 
     def test_case_insensitive_nested_archive_detection(self, default_config):
         """Test nested archive detection is case-insensitive."""
         validator = CompressionSecurityValidator(default_config)
 
         # Test various case combinations
-        for filename in ["ARCHIVE.ZIP", "File.RAR", "data.Tar.Gz", "backup.7Z"]:
+        for filename in [
+            "ARCHIVE.ZIP",
+            "File.RAR",
+            "data.Tar.Gz",
+            "backup.7Z",
+        ]:
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zf:
                 zf.writestr(filename, b"fake content")
@@ -303,7 +361,9 @@ class TestCompressionSecurityValidator:
             zip_bytes = zip_buffer.getvalue()
 
             with pytest.raises(CompressionSecurityError) as exc_info:
-                validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+                validator.validate_zip_compression_ratio(
+                    io.BytesIO(zip_bytes), len(zip_bytes)
+                )
 
             assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
@@ -339,22 +399,17 @@ class TestCompressionSecurityValidator:
             _calls["n"] += 1
             if _calls["n"] == 1:
                 return _start
-            return (
-                _start
-                + config.limits.zip_analysis_timeout
-                + 1.0
-            )
+            return _start + config.limits.zip_analysis_timeout + 1.0
 
-        target = (
-            "safeuploads.validators"
-            ".compression_validator.time.monotonic"
-        )
-        with patch(target, side_effect=_mock_monotonic):
-            with pytest.raises(ZipBombError) as exc_info:
-                validator.validate_zip_compression_ratio(
-                    io.BytesIO(zip_bytes),
-                    len(zip_bytes),
-                )
+        target = "safeuploads.validators.compression_validator.time.monotonic"
+        with (
+            patch(target, side_effect=_mock_monotonic),
+            pytest.raises(ZipBombError) as exc_info,
+        ):
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes),
+                len(zip_bytes),
+            )
 
         assert "timeout" in str(exc_info.value).lower()
 
@@ -363,20 +418,23 @@ class TestCompressionSecurityValidator:
         validator = CompressionSecurityValidator(default_config)
 
         # Mock zipfile.ZipFile to raise MemoryError
-        original_zipfile = zipfile.ZipFile
-
         def mock_zipfile(*args, **kwargs):
             raise MemoryError("Simulated memory error")
 
         monkeypatch.setattr(zipfile, "ZipFile", mock_zipfile)
 
         with pytest.raises(ZipBombError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(b"fake zip"), 100)
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(b"fake zip"), 100
+            )
 
         assert "memory" in str(exc_info.value).lower()
 
     def test_exception_preservation(self, default_config):
-        """Test that ZipBombError and CompressionSecurityError are re-raised."""
+        """
+        Test that ZipBombError and
+        CompressionSecurityError are re-raised.
+        """
         validator = CompressionSecurityValidator(default_config)
 
         # Create a ZIP that will trigger too many entries error
@@ -393,7 +451,9 @@ class TestCompressionSecurityValidator:
 
         # Should raise CompressionSecurityError, not FileProcessingError
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_TOO_MANY_ENTRIES
 
@@ -403,7 +463,9 @@ class TestCompressionSecurityValidator:
 
         # Create ZIP with multiple reasonable files
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(
+            zip_buffer, "w", compression=zipfile.ZIP_DEFLATED
+        ) as zf:
             for i in range(10):
                 # Small files with some repetition but not extreme
                 content = f"File {i} content. " * 100
@@ -412,7 +474,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         # Should pass validation
-        validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
 
     def test_mixed_compression_methods(self, default_config):
         """Test ZIP with mixed compression methods."""
@@ -423,7 +487,9 @@ class TestCompressionSecurityValidator:
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             # Stored (no compression)
             zf.writestr(
-                "stored.txt", b"Stored content", compress_type=zipfile.ZIP_STORED
+                "stored.txt",
+                b"Stored content",
+                compress_type=zipfile.ZIP_STORED,
             )
             # Deflated (compressed)
             zf.writestr(
@@ -435,7 +501,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         # Should handle mixed compression gracefully
-        validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
 
     def test_error_includes_details(self):
         """Test that errors include helpful details."""
@@ -452,7 +520,9 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         error_msg = str(exc_info.value)
         # Should include both actual count and limit
@@ -470,12 +540,16 @@ class TestCompressionSecurityValidator:
         zip_bytes = zip_buffer.getvalue()
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
         assert "data.bz2" in str(exc_info.value)
 
-    def test_corrupted_zip_file_badzipfile_exception(self, default_config) -> None:
+    def test_corrupted_zip_file_badzipfile_exception(
+        self, default_config
+    ) -> None:
         """
         Test handling of corrupted ZIP file (BadZipFile exception).
 
@@ -487,7 +561,9 @@ class TestCompressionSecurityValidator:
         invalid_zip = b"PK\x03\x04" + b"corrupted data not valid zip"
 
         with pytest.raises(CompressionSecurityError) as exc_info:
-            validator.validate_zip_compression_ratio(io.BytesIO(invalid_zip), len(invalid_zip))
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(invalid_zip), len(invalid_zip)
+            )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
         assert "corrupted" in str(exc_info.value).lower()
@@ -518,7 +594,9 @@ class TestCompressionSecurityValidator:
             mock_zipfile.side_effect = zipfile.LargeZipFile("File too large")
 
             with pytest.raises(CompressionSecurityError) as exc_info:
-                validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+                validator.validate_zip_compression_ratio(
+                    io.BytesIO(zip_bytes), len(zip_bytes)
+                )
 
             assert exc_info.value.error_code == ErrorCode.ZIP_TOO_LARGE
             assert "too large" in str(exc_info.value).lower()
@@ -544,12 +622,16 @@ class TestCompressionSecurityValidator:
             mock_zipfile.side_effect = MemoryError("Out of memory")
 
             with pytest.raises(ZipBombError) as exc_info:
-                validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+                validator.validate_zip_compression_ratio(
+                    io.BytesIO(zip_bytes), len(zip_bytes)
+                )
 
             assert "memory" in str(exc_info.value).lower()
             assert "zip bomb" in str(exc_info.value).lower()
 
-    def test_generic_exception_during_zip_validation(self, default_config) -> None:
+    def test_generic_exception_during_zip_validation(
+        self, default_config
+    ) -> None:
         """
         Test handling of unexpected exceptions during validation.
 
@@ -570,7 +652,9 @@ class TestCompressionSecurityValidator:
             mock_zipfile.side_effect = RuntimeError("Unexpected error")
 
             with pytest.raises(FileProcessingError) as exc_info:
-                validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), len(zip_bytes))
+                validator.validate_zip_compression_ratio(
+                    io.BytesIO(zip_bytes), len(zip_bytes)
+                )
 
             assert "validation failed" in str(exc_info.value).lower()
 
@@ -602,9 +686,7 @@ class TestCompressionSecurityValidator:
         content = b"A" * 10_000  # 10 KB stored uncompressed
 
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(
-            zip_buffer, "w", zipfile.ZIP_STORED
-        ) as zf:
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_STORED) as zf:
             zf.writestr("data.txt", content)
 
         zip_bytes = zip_buffer.getvalue()

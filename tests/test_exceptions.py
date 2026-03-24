@@ -1,6 +1,5 @@
 """Tests for exception classes and error codes."""
 
-
 from safeuploads.exceptions import (
     CompressionSecurityError,
     ConfigValidationError,
@@ -306,7 +305,9 @@ class TestMimeTypeError:
 
     def test_custom_error_code(self):
         """Test custom error code."""
-        error = MimeTypeError("MIME mismatch", error_code=ErrorCode.MIME_TYPE_MISMATCH)
+        error = MimeTypeError(
+            "MIME mismatch", error_code=ErrorCode.MIME_TYPE_MISMATCH
+        )
         assert error.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     def test_inheritance(self):
@@ -444,7 +445,9 @@ class TestFileProcessingError:
     def test_initialization_with_original_error(self):
         """Test initialization with original error."""
         original = ValueError("Original error")
-        error = FileProcessingError("Processing failed", original_error=original)
+        error = FileProcessingError(
+            "Processing failed", original_error=original
+        )
         assert error.original_error == original
 
     def test_error_code(self):

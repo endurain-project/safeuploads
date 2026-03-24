@@ -82,7 +82,10 @@ class TestExtensionSecurityValidator:
         assert error.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
 
     def test_compound_extension_checked_before_single(self, default_config):
-        """Test that compound extensions are checked before single extensions."""
+        """
+        Test that compound extensions are checked
+        before single extensions.
+        """
         validator = ExtensionSecurityValidator(default_config)
 
         # .tar.gz should be caught as compound extension first
@@ -92,7 +95,9 @@ class TestExtensionSecurityValidator:
         error = exc_info.value
         assert error.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
 
-    def test_reject_multiple_extensions_with_dangerous_one(self, default_config):
+    def test_reject_multiple_extensions_with_dangerous_one(
+        self, default_config
+    ):
         """Test rejection when multiple extensions include dangerous one."""
         validator = ExtensionSecurityValidator(default_config)
 

@@ -39,6 +39,7 @@ class FileSecurityConfigurationError(Exception):
     """
 
     def __init__(self, errors: list[ConfigValidationError]):
+        """Initialize with validation errors."""
         self.errors = errors
         error_messages = [
             f"{error.severity.upper()}: {error.message}" for error in errors
@@ -140,6 +141,7 @@ class FileSecurityError(Exception):
     """
 
     def __init__(self, message: str, error_code: str | None = None):
+        """Initialize with message and error code."""
         self.message = message
         self.error_code = error_code
         super().__init__(message)
@@ -169,6 +171,7 @@ class FileValidationError(FileSecurityError):
         filename: str | None = None,
         error_code: str | None = None,
     ):
+        """Initialize with message and filename."""
         self.filename = filename
         super().__init__(message, error_code)
 
@@ -180,8 +183,6 @@ class FileValidationError(FileSecurityError):
 
 class FilenameSecurityError(FileValidationError):
     """Filename failed security checks."""
-
-    pass
 
 
 class UnicodeSecurityError(FilenameSecurityError):
@@ -204,6 +205,7 @@ class UnicodeSecurityError(FilenameSecurityError):
         filename: str | None = None,
         dangerous_chars: list[tuple[str, int, int]] | None = None,
     ):
+        """Initialize with dangerous characters."""
         self.dangerous_chars = dangerous_chars or []
         super().__init__(
             message,
@@ -234,6 +236,7 @@ class ExtensionSecurityError(FilenameSecurityError):
         extension: str | None = None,
         error_code: str | None = None,
     ):
+        """Initialize with blocked extension."""
         self.extension = extension
         super().__init__(
             message,
@@ -261,6 +264,7 @@ class WindowsReservedNameError(FilenameSecurityError):
         filename: str | None = None,
         reserved_name: str | None = None,
     ):
+        """Initialize with reserved name."""
         self.reserved_name = reserved_name
         super().__init__(
             message,
@@ -296,6 +300,7 @@ class FileSizeError(FileValidationError):
         size: int | None = None,
         max_size: int | None = None,
     ):
+        """Initialize with size details."""
         self.size = size
         self.max_size = max_size
         super().__init__(
@@ -328,6 +333,7 @@ class MimeTypeError(FileValidationError):
         allowed_mimes: list[str] | None = None,
         error_code: str | None = None,
     ):
+        """Initialize with MIME type details."""
         self.detected_mime = detected_mime
         self.allowed_mimes = allowed_mimes or []
         super().__init__(
@@ -356,6 +362,7 @@ class FileSignatureError(FileValidationError):
         filename: str | None = None,
         expected_type: str | None = None,
     ):
+        """Initialize with expected type."""
         self.expected_type = expected_type
         super().__init__(
             message,
@@ -382,8 +389,6 @@ class CompressionSecurityError(FileValidationError):
     Attributes:
         None beyond inherited FileValidationError attributes.
     """
-
-    pass
 
 
 class ZipBombError(CompressionSecurityError):
@@ -414,6 +419,7 @@ class ZipBombError(CompressionSecurityError):
         max_ratio: float | None = None,
         max_size: int | None = None,
     ):
+        """Initialize with compression details."""
         self.compression_ratio = compression_ratio
         self.uncompressed_size = uncompressed_size
         self.max_ratio = max_ratio
@@ -447,6 +453,7 @@ class ZipContentError(CompressionSecurityError):
         threats: list[str] | None = None,
         error_code: str | None = None,
     ):
+        """Initialize with threat details."""
         self.threats = threats or []
         super().__init__(
             message,
@@ -468,6 +475,7 @@ class FileProcessingError(FileSecurityError):
     """
 
     def __init__(self, message: str, original_error: Exception | None = None):
+        """Initialize with original error."""
         self.original_error = original_error
         super().__init__(message, error_code=ErrorCode.PROCESSING_ERROR)
 
@@ -501,9 +509,8 @@ class ResourceLimitError(FileProcessingError):
         memory_bytes: int | None = None,
         original_error: Exception | None = None,
     ):
+        """Initialize with resource limit details."""
         self.elapsed_seconds = elapsed_seconds
         self.memory_bytes = memory_bytes
-        super().__init__(
-            message, original_error=original_error
-        )
+        super().__init__(message, original_error=original_error)
         self.error_code = error_code

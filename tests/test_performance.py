@@ -6,6 +6,7 @@ validation operations. Run with: pytest tests/test_performance.py -v
 """
 
 import asyncio
+import contextlib
 import io
 import time
 import zipfile
@@ -90,7 +91,9 @@ class TestFilenameSanitizationPerformance:
     """Performance tests for filename sanitization."""
 
     @pytest.mark.parametrize("filename_length", [10, 50, 100, 200])
-    async def test_sanitize_simple_filename_performance(self, filename_length: int):
+    async def test_sanitize_simple_filename_performance(
+        self, filename_length: int
+    ):
         """
         Test filename sanitization performance with various lengths.
 
@@ -106,13 +109,9 @@ class TestFilenameSanitizationPerformance:
 
         assert result is not None
         assert elapsed < 0.05, (
-            f"Sanitization took {elapsed:.4f}s"
-            f" (expected < 0.05s)"
+            f"Sanitization took {elapsed:.4f}s (expected < 0.05s)"
         )
-        print(
-            f"\nFilename length {filename_length}:"
-            f" {elapsed*1000:.2f}ms"
-        )
+        print(f"\nFilename length {filename_length}: {elapsed * 1000:.2f}ms")
 
     async def test_sanitize_unicode_filename_performance(self):
         """Test filename sanitization with Unicode characters."""
@@ -129,8 +128,9 @@ class TestFilenameSanitizationPerformance:
         avg_time = elapsed / iterations
         assert avg_time < 0.01, f"Average sanitization took {avg_time:.4f}s"
         print(
-            f"\nUnicode sanitization ({iterations} iterations): {elapsed*1000:.2f}ms "
-            f"({avg_time*1000:.2f}ms avg)"
+            f"\nUnicode sanitization ({iterations}"
+            f" iterations): {elapsed * 1000:.2f}ms "
+            f"({avg_time * 1000:.2f}ms avg)"
         )
 
     async def test_sanitize_windows_reserved_performance(self):
@@ -151,17 +151,15 @@ class TestFilenameSanitizationPerformance:
 
         start_time = time.perf_counter()
         for name in reserved_names:
-            try:
+            with contextlib.suppress(WindowsReservedNameError):
                 validator._sanitize_filename(name)
-            except WindowsReservedNameError:
-                pass  # Expected - just measuring detection speed
         elapsed = time.perf_counter() - start_time
 
         avg_time = elapsed / len(reserved_names)
         assert avg_time < 0.01, f"Average took {avg_time:.4f}s"
         print(
             f"\nWindows reserved names ({len(reserved_names)} names): "
-            f"{elapsed*1000:.2f}ms ({avg_time*1000:.2f}ms avg)"
+            f"{elapsed * 1000:.2f}ms ({avg_time * 1000:.2f}ms avg)"
         )
 
 
@@ -201,14 +199,13 @@ class TestImageValidationPerformance:
             5000: 0.50,  # 500ms for 5MB
         }
 
-        assert (
-            elapsed < expected_max[size_kb]
-        ), f"Validation took {elapsed:.4f}s (expected < {expected_max[size_kb]}s)"
-        print(f"\n{size_kb}KB image validation: {elapsed*1000:.2f}ms")
+        assert elapsed < expected_max[size_kb], (
+            f"Validation took {elapsed:.4f}s "
+            f"(expected < {expected_max[size_kb]}s)"
+        )
+        print(f"\n{size_kb}KB image validation: {elapsed * 1000:.2f}ms")
 
-    async def test_batch_image_validation_throughput(
-        self, mock_upload_file
-    ):
+    async def test_batch_image_validation_throughput(self, mock_upload_file):
         """Test throughput for batch image validation."""
         validator = FileValidator()
         num_files = 10
@@ -225,11 +222,11 @@ class TestImageValidationPerformance:
         elapsed = time.perf_counter() - start_time
 
         throughput = num_files / elapsed
-        assert (
-            throughput > 20
-        ), f"Throughput was {throughput:.1f} files/s (expected > 20)"
+        assert throughput > 20, (
+            f"Throughput was {throughput:.1f} files/s (expected > 20)"
+        )
         print(
-            f"\nBatch validation: {num_files} files in {elapsed*1000:.2f}ms "
+            f"\nBatch validation: {num_files} files in {elapsed * 1000:.2f}ms "
             f"({throughput:.1f} files/s)"
         )
 
@@ -270,10 +267,11 @@ class TestZipValidationPerformance:
             500: 2.00,  # 2s for 500 files
         }
 
-        assert (
-            elapsed < expected_max[num_files]
-        ), f"Validation took {elapsed:.4f}s (expected < {expected_max[num_files]}s)"
-        print(f"\n{num_files} files ZIP validation: {elapsed*1000:.2f}ms")
+        assert elapsed < expected_max[num_files], (
+            f"Validation took {elapsed:.4f}s "
+            f"(expected < {expected_max[num_files]}s)"
+        )
+        print(f"\n{num_files} files ZIP validation: {elapsed * 1000:.2f}ms")
 
     @pytest.mark.parametrize(
         "compression_ratio_target", [5, 10, 50], ids=["5x", "10x", "50x"]
@@ -310,8 +308,13 @@ class TestZipValidationPerformance:
         elapsed = time.perf_counter() - start_time
 
         actual_ratio = len(content) / len(zip_content)
-        assert elapsed < 0.20, f"Validation took {elapsed:.4f}s (expected < 0.20s)"
-        print(f"\n{actual_ratio:.1f}x compression ZIP validation: {elapsed*1000:.2f}ms")
+        assert elapsed < 0.20, (
+            f"Validation took {elapsed:.4f}s (expected < 0.20s)"
+        )
+        print(
+            f"\n{actual_ratio:.1f}x compression "
+            f"ZIP validation: {elapsed * 1000:.2f}ms"
+        )
 
 
 @pytest.mark.asyncio
@@ -320,7 +323,10 @@ class TestMemoryUsage:
     """Memory usage tests for large file handling."""
 
     async def test_large_image_streaming(self, mock_upload_file):
-        """Test that large images are handled efficiently without loading all into memory."""
+        """
+        Test that large images are handled efficiently
+        without loading all into memory.
+        """
         validator = FileValidator()
         # Create a 10MB image
         content = create_test_image(10 * 1024)
@@ -332,7 +338,7 @@ class TestMemoryUsage:
         elapsed = time.perf_counter() - start_time
 
         assert elapsed < 1.0, f"Large image validation took {elapsed:.4f}s"
-        print(f"\n10MB image validation: {elapsed*1000:.2f}ms")
+        print(f"\n10MB image validation: {elapsed * 1000:.2f}ms")
 
     async def test_large_zip_memory_efficiency(self, mock_upload_file):
         """Test ZIP validation with large archive."""
@@ -346,7 +352,7 @@ class TestMemoryUsage:
         elapsed = time.perf_counter() - start_time
 
         assert elapsed < 2.0, f"Large ZIP validation took {elapsed:.4f}s"
-        print(f"\n100-file ZIP validation: {elapsed*1000:.2f}ms")
+        print(f"\n100-file ZIP validation: {elapsed * 1000:.2f}ms")
 
 
 @pytest.mark.asyncio
@@ -386,9 +392,11 @@ class TestConfigurationImpact:
         await strict_validator.validate_zip_file(mock_file_strict)
         strict_elapsed = time.perf_counter() - start_time
 
-        print(f"\nDefault config: {default_elapsed*1000:.2f}ms")
-        print(f"Strict config: {strict_elapsed*1000:.2f}ms")
-        print(f"Difference: {abs(strict_elapsed - default_elapsed)*1000:.2f}ms")
+        print(f"\nDefault config: {default_elapsed * 1000:.2f}ms")
+        print(f"Strict config: {strict_elapsed * 1000:.2f}ms")
+        print(
+            f"Difference: {abs(strict_elapsed - default_elapsed) * 1000:.2f}ms"
+        )
 
         # Both should complete in reasonable time
         assert default_elapsed < 1.0
@@ -400,9 +408,7 @@ class TestConfigurationImpact:
 class TestConcurrentValidation:
     """Test concurrent validation performance."""
 
-    async def test_concurrent_image_validation(
-        self, mock_upload_file
-    ):
+    async def test_concurrent_image_validation(self, mock_upload_file):
         """Test validating multiple images concurrently."""
         validator = FileValidator()
         num_concurrent = 10
@@ -414,22 +420,23 @@ class TestConcurrentValidation:
         ]
 
         start_time = time.perf_counter()
-        tasks = [validator.validate_image_file(mock_file) for mock_file in mock_files]
+        tasks = [
+            validator.validate_image_file(mock_file)
+            for mock_file in mock_files
+        ]
         await asyncio.gather(*tasks)
         elapsed = time.perf_counter() - start_time
 
         throughput = num_concurrent / elapsed
         print(
             f"\nConcurrent validation: {num_concurrent} images in "
-            f"{elapsed*1000:.2f}ms ({throughput:.1f} files/s)"
+            f"{elapsed * 1000:.2f}ms ({throughput:.1f} files/s)"
         )
 
         # Concurrent should be faster than sequential
         assert elapsed < 2.0, f"Concurrent validation took {elapsed:.4f}s"
 
-    async def test_concurrent_zip_validation(
-        self, mock_upload_file
-    ):
+    async def test_concurrent_zip_validation(self, mock_upload_file):
         """Test validating multiple ZIPs concurrently."""
         validator = FileValidator()
         num_concurrent = 5
@@ -443,14 +450,16 @@ class TestConcurrentValidation:
         ]
 
         start_time = time.perf_counter()
-        tasks = [validator.validate_zip_file(mock_file) for mock_file in mock_files]
+        tasks = [
+            validator.validate_zip_file(mock_file) for mock_file in mock_files
+        ]
         await asyncio.gather(*tasks)
         elapsed = time.perf_counter() - start_time
 
         throughput = num_concurrent / elapsed
         print(
             f"\nConcurrent ZIP validation: {num_concurrent} archives in "
-            f"{elapsed*1000:.2f}ms ({throughput:.1f} files/s)"
+            f"{elapsed * 1000:.2f}ms ({throughput:.1f} files/s)"
         )
 
         assert elapsed < 3.0, f"Concurrent validation took {elapsed:.4f}s"
@@ -459,11 +468,12 @@ class TestConcurrentValidation:
 @pytest.mark.asyncio
 @pytest.mark.performance
 class TestPerformanceRegression:
-    """Performance regression tests - fail if performance degrades significantly."""
+    """
+    Performance regression tests - fail if
+    performance degrades significantly.
+    """
 
-    async def test_baseline_image_validation_speed(
-        self, mock_upload_file
-    ):
+    async def test_baseline_image_validation_speed(self, mock_upload_file):
         """
         Baseline test for image validation speed.
 
@@ -493,19 +503,17 @@ class TestPerformanceRegression:
         max_time = max(times)
 
         print("\n1MB image validation baseline:")
-        print(f"  Average: {avg_time*1000:.2f}ms")
-        print(f"  Min: {min_time*1000:.2f}ms")
-        print(f"  Max: {max_time*1000:.2f}ms")
+        print(f"  Average: {avg_time * 1000:.2f}ms")
+        print(f"  Min: {min_time * 1000:.2f}ms")
+        print(f"  Max: {max_time * 1000:.2f}ms")
 
         # Baseline expectation: < 200ms average
         assert avg_time < 0.20, (
-            f"Performance regression detected: avg {avg_time*1000:.2f}ms "
+            f"Performance regression detected: avg {avg_time * 1000:.2f}ms "
             f"(expected < 200ms)"
         )
 
-    async def test_baseline_zip_validation_speed(
-        self, mock_upload_file
-    ):
+    async def test_baseline_zip_validation_speed(self, mock_upload_file):
         """
         Baseline test for ZIP validation speed.
 
@@ -533,12 +541,12 @@ class TestPerformanceRegression:
         max_time = max(times)
 
         print("\n50-file ZIP validation baseline:")
-        print(f"  Average: {avg_time*1000:.2f}ms")
-        print(f"  Min: {min_time*1000:.2f}ms")
-        print(f"  Max: {max_time*1000:.2f}ms")
+        print(f"  Average: {avg_time * 1000:.2f}ms")
+        print(f"  Min: {min_time * 1000:.2f}ms")
+        print(f"  Max: {max_time * 1000:.2f}ms")
 
         # Baseline expectation: < 300ms average
         assert avg_time < 0.30, (
-            f"Performance regression detected: avg {avg_time*1000:.2f}ms "
+            f"Performance regression detected: avg {avg_time * 1000:.2f}ms "
             f"(expected < 300ms)"
         )

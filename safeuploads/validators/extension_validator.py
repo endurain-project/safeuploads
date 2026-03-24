@@ -1,3 +1,5 @@
+"""Validate file extensions against security policies."""
+
 from __future__ import annotations
 
 import logging
@@ -41,7 +43,8 @@ class ExtensionSecurityValidator(BaseValidator):
             ExtensionSecurityError: If blocked compound or single
                 extension detected in filename.
         """
-        # Check for compound dangerous extensions first (e.g., .tar.xz, .user.js)
+        # Check for compound dangerous extensions first
+        # (e.g., .tar.xz, .user.js)
         filename_lower = filename.lower()
         for compound_ext in self.config.COMPOUND_BLOCKED_EXTENSIONS:
             if filename_lower.endswith(compound_ext):
@@ -54,8 +57,12 @@ class ExtensionSecurityValidator(BaseValidator):
                     },
                 )
                 raise ExtensionSecurityError(
-                    message=f"Dangerous compound file extension '{compound_ext}' detected in filename. "
-                    f"Upload rejected for security.",
+                    message=(
+                        f"Dangerous compound file extension"
+                        f" '{compound_ext}' detected"
+                        f" in filename."
+                        f" Upload rejected for security."
+                    ),
                     filename=filename,
                     extension=compound_ext,
                     error_code=ErrorCode.COMPOUND_EXTENSION_BLOCKED,
@@ -76,8 +83,12 @@ class ExtensionSecurityValidator(BaseValidator):
                         },
                     )
                     raise ExtensionSecurityError(
-                        message=f"Dangerous file extension '{ext}' detected in filename. "
-                        f"Upload rejected for security.",
+                        message=(
+                            f"Dangerous file extension"
+                            f" '{ext}' detected"
+                            f" in filename."
+                            f" Upload rejected for security."
+                        ),
                         filename=filename,
                         extension=ext,
                         error_code=ErrorCode.EXTENSION_BLOCKED,

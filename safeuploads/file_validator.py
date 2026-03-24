@@ -27,6 +27,7 @@ from .exceptions import (
     ResourceLimitError,
 )
 from .inspectors import ZipContentInspector
+from .inspectors.gzip_inspector import GzipContentInspector
 from .utils import ResourceMonitor
 from .validators import (
     CompressionSecurityValidator,
@@ -34,6 +35,7 @@ from .validators import (
     UnicodeSecurityValidator,
     WindowsSecurityValidator,
 )
+from .validators.xml_validator import XmlSecurityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,8 @@ class FileValidator:
         self.windows_validator = WindowsSecurityValidator(self.config)
         self.compression_validator = CompressionSecurityValidator(self.config)
         self.zip_inspector = ZipContentInspector(self.config)
+        self.xml_validator = XmlSecurityValidator(self.config)
+        self.gzip_inspector = GzipContentInspector(self.config)
 
         # Initialize python-magic for content-based detection
         try:
@@ -152,6 +156,17 @@ class FileValidator:
                 b"PK\x05\x06",  # Empty ZIP
                 b"PK\x07\x08",  # ZIP with spanning
             ],
+            "gzip": [
+                b"\x1f\x8b",  # gzip magic number
+            ],
+            "activity": [
+                b"<?xml",  # XML header (GPX/TCX)
+                b"\xef\xbb\xbf<?xml",  # XML with BOM
+            ],
+            "fit": [
+                # FIT header: size byte, protocol, profile,
+                # data size (4 bytes), then ".FIT" at byte 8
+            ],
         }
 
         expected_signatures = signatures.get(expected_type, [])
@@ -159,6 +174,11 @@ class FileValidator:
         for signature in expected_signatures:
             if file_content.startswith(signature):
                 return  # Signature matched
+
+        # FIT files: ".FIT" at bytes 8-11
+        if expected_type == "fit":
+            if len(file_content) >= 12 and file_content[8:12] == b".FIT":
+                return
 
         # No matching signature found
         raise FileSignatureError(
@@ -643,5 +663,243 @@ class FileValidator:
             logger.exception("Error during ZIP file validation: %s", err)
             raise FileProcessingError(
                 "File validation failed due to internal error",
+                original_error=err,
+            ) from err
+
+    async def validate_activity_file(
+        self, file: UploadFile
+    ) -> None:
+        """
+        Validate uploaded activity file (GPX, TCX, FIT).
+
+        For XML-based formats (GPX/TCX) performs XXE-safe
+        parsing via ``defusedxml``. For FIT files validates
+        the binary signature.
+
+        Args:
+            file: Uploaded activity file to validate.
+
+        Raises:
+            FilenameSecurityError: Filename fails security.
+            ExtensionSecurityError: Extension not allowed.
+            FileSizeError: File exceeds size limit or empty.
+            MimeTypeError: MIME type not allowed.
+            FileSignatureError: Signature mismatch.
+            FileProcessingError: XML parsing or other error.
+        """
+        try:
+            self._validate_filename(file)
+            self._validate_file_extension(
+                file,
+                self.config.ALLOWED_ACTIVITY_EXTENSIONS,
+            )
+
+            with ResourceMonitor(
+                max_time_seconds=(
+                    self.config.limits
+                    .max_validation_time_seconds
+                ),
+                max_memory_mb=(
+                    self.config.limits
+                    .max_validation_memory_mb
+                ),
+            ):
+                temp_file, file_size = (
+                    await self._stream_to_temp_file(
+                        file,
+                        self.config.limits
+                        .max_activity_file_size,
+                    )
+                )
+
+                try:
+                    header = temp_file.read(8192)
+                    temp_file.seek(0)
+
+                    filename = file.filename or "unknown"
+                    detected_mime = self._detect_mime_type(
+                        header, filename
+                    )
+
+                    _, ext = os.path.splitext(
+                        filename.lower()
+                    )
+                    is_fit = ext == ".fit"
+
+                    # Signature check
+                    sig_type = (
+                        "fit" if is_fit else "activity"
+                    )
+                    try:
+                        self._validate_file_signature(
+                            header, sig_type
+                        )
+                    except FileSignatureError as err:
+                        raise FileSignatureError(
+                            "File content does not match"
+                            f" expected {sig_type} format",
+                            filename=filename,
+                            expected_type=sig_type,
+                        ) from err
+
+                    # MIME check — be lenient for FIT
+                    if not is_fit:
+                        allowed = (
+                            self.config
+                            .ALLOWED_ACTIVITY_MIMES
+                        )
+                        if detected_mime not in allowed:
+                            raise MimeTypeError(
+                                "Invalid file type."
+                                f" Detected: {detected_mime}."
+                                " Expected activity file.",
+                                filename=filename,
+                                detected_mime=detected_mime,
+                                allowed_mimes=list(allowed),
+                            )
+
+                    # XXE-safe XML validation for GPX/TCX
+                    if not is_fit:
+                        self.xml_validator\
+                            .validate_xml_safety(
+                                temp_file
+                            )
+
+                    logger.debug(
+                        "Activity file validation passed:"
+                        " %s (%s, %s bytes)",
+                        filename,
+                        detected_mime,
+                        file_size,
+                    )
+                finally:
+                    temp_file.close()
+        except (FileValidationError, ResourceLimitError):
+            raise
+        except Exception as err:
+            logger.exception(
+                "Error during activity file validation:"
+                " %s",
+                err,
+            )
+            raise FileProcessingError(
+                "File validation failed due to"
+                " internal error",
+                original_error=err,
+            ) from err
+
+    async def validate_gzip_file(
+        self, file: UploadFile
+    ) -> None:
+        """
+        Validate uploaded gzip archive.
+
+        Checks filename, extension, size, MIME type,
+        signature, and performs decompression bomb detection.
+
+        Args:
+            file: Uploaded gzip file to validate.
+
+        Raises:
+            FilenameSecurityError: Filename fails security.
+            ExtensionSecurityError: Extension not allowed.
+            FileSizeError: File exceeds size limit or empty.
+            MimeTypeError: MIME type not allowed.
+            FileSignatureError: Signature mismatch.
+            ZipBombError: Decompression bomb detected.
+            CompressionSecurityError: Invalid gzip structure.
+            FileProcessingError: Unexpected error.
+        """
+        try:
+            self._validate_filename(file)
+            self._validate_file_extension(
+                file,
+                self.config.ALLOWED_GZIP_EXTENSIONS,
+            )
+
+            with ResourceMonitor(
+                max_time_seconds=(
+                    self.config.limits
+                    .max_validation_time_seconds
+                ),
+                max_memory_mb=(
+                    self.config.limits
+                    .max_validation_memory_mb
+                ),
+            ):
+                temp_file, file_size = (
+                    await self._stream_to_temp_file(
+                        file,
+                        self.config.limits.max_gzip_size,
+                    )
+                )
+
+                try:
+                    header = temp_file.read(8192)
+                    temp_file.seek(0)
+
+                    filename = file.filename or "unknown"
+                    detected_mime = self._detect_mime_type(
+                        header, filename
+                    )
+
+                    # Signature check
+                    try:
+                        self._validate_file_signature(
+                            header, "gzip"
+                        )
+                    except FileSignatureError as err:
+                        raise FileSignatureError(
+                            "File content does not match"
+                            " gzip format",
+                            filename=filename,
+                            expected_type="gzip",
+                        ) from err
+
+                    # MIME check — allow octet-stream
+                    allowed = (
+                        self.config.ALLOWED_GZIP_MIMES
+                    )
+                    if detected_mime not in allowed:
+                        if (
+                            detected_mime
+                            != "application/octet-stream"
+                        ):
+                            raise MimeTypeError(
+                                "Invalid file type."
+                                f" Detected:"
+                                f" {detected_mime}."
+                                " Expected gzip file.",
+                                filename=filename,
+                                detected_mime=detected_mime,
+                                allowed_mimes=list(allowed),
+                            )
+
+                    # Decompression bomb check
+                    self.gzip_inspector\
+                        .inspect_gzip_content(
+                            temp_file, file_size
+                        )
+
+                    logger.debug(
+                        "Gzip file validation passed:"
+                        " %s (%s, %s bytes)",
+                        filename,
+                        detected_mime,
+                        file_size,
+                    )
+                finally:
+                    temp_file.close()
+        except (FileValidationError, ResourceLimitError):
+            raise
+        except Exception as err:
+            logger.exception(
+                "Error during gzip file validation:"
+                " %s",
+                err,
+            )
+            raise FileProcessingError(
+                "File validation failed due to"
+                " internal error",
                 original_error=err,
             ) from err

@@ -38,6 +38,8 @@ class SecurityLimits:
     # File size limits (in bytes)
     max_image_size: int = 20 * 1024 * 1024  # 20MB for images
     max_zip_size: int = 500 * 1024 * 1024  # 500MB for ZIP files
+    max_activity_file_size: int = 50 * 1024 * 1024  # 50MB for GPX/TCX/FIT
+    max_gzip_size: int = 500 * 1024 * 1024  # 500MB for gzip files
 
     # Streaming validation settings
     max_memory_buffer_size: int = (
@@ -108,9 +110,27 @@ class FileSecurityConfig:
         "multipart/x-zip",
     }
 
+    # Allowed MIME types for activity files (GPX/TCX/FIT)
+    ALLOWED_ACTIVITY_MIMES: set[str] = {
+        "application/gpx+xml",
+        "application/xml",
+        "text/xml",
+        "application/octet-stream",  # FIT files detected as binary
+    }
+
+    # Allowed MIME types for gzip files
+    ALLOWED_GZIP_MIMES: set[str] = {
+        "application/gzip",
+        "application/x-gzip",
+    }
+
     # Allowed file extensions
     ALLOWED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png"}
     ALLOWED_ZIP_EXTENSIONS: set[str] = {".zip"}
+    ALLOWED_ACTIVITY_EXTENSIONS: set[str] = {
+        ".gpx", ".tcx", ".fit",
+    }
+    ALLOWED_GZIP_EXTENSIONS: set[str] = {".gz"}
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod

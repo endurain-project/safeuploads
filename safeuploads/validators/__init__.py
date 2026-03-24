@@ -12,6 +12,7 @@ from .compression_validator import CompressionSecurityValidator
 from .extension_validator import ExtensionSecurityValidator
 from .unicode_validator import UnicodeSecurityValidator
 from .windows_validator import WindowsSecurityValidator
+from .xml_validator import XmlSecurityValidator
 
 __all__ = [
     "BaseValidator",
@@ -19,4 +20,5 @@ __all__ = [
     "ExtensionSecurityValidator",
     "WindowsSecurityValidator",
     "CompressionSecurityValidator",
+    "XmlSecurityValidator",
 ]

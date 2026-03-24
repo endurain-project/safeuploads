@@ -39,7 +39,7 @@ from .exceptions import (
 from .file_validator import FileValidator
 
 # Inspectors
-from .inspectors import ZipContentInspector
+from .inspectors import GzipContentInspector, ZipContentInspector
 from .protocols import SeekableFile
 from .utils import ResourceMonitor
 
@@ -50,6 +50,7 @@ from .validators import (
     ExtensionSecurityValidator,
     UnicodeSecurityValidator,
     WindowsSecurityValidator,
+    XmlSecurityValidator,
 )
 
 # Perform configuration validation when module is imported
@@ -96,8 +97,10 @@ __all__ = [
     "ExtensionSecurityValidator",
     "WindowsSecurityValidator",
     "CompressionSecurityValidator",
+    "XmlSecurityValidator",
     # Inspectors
     "ZipContentInspector",
+    "GzipContentInspector",
     # Utilities
     "ResourceMonitor",
 ]

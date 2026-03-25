@@ -15,6 +15,7 @@ site/
 # Python
 __pycache__
 .ruff_cache/
+.hypothesis/
 
 # Tests
 .coverage

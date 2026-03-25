@@ -724,3 +724,58 @@ class TestCompressionSecurityValidator:
             exc_info.value.error_code
             == ErrorCode.ZIP_COMPLEXITY_ATTACK
         )
+
+
+class TestCompressionValidatorNestedAllowed:
+
+    def test_nested_zip_allowed_when_configured_passes(
+        self,
+    ):
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+        )
+        validator = CompressionSecurityValidator(config)
+
+        inner_zip = io.BytesIO()
+        with zipfile.ZipFile(inner_zip, "w") as zf:
+            zf.writestr("inner.txt", b"Inner content")
+
+        outer_zip = io.BytesIO()
+        with zipfile.ZipFile(outer_zip, "w") as zf:
+            zf.writestr(
+                "nested.zip", inner_zip.getvalue()
+            )
+
+        zip_bytes = outer_zip.getvalue()
+
+        # Nested archive detected but not rejected
+        # because allow_nested_archives=True covers
+        # the False branch at line 272->306.
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
+
+    def test_empty_entry_skips_ratio_check_nested_allowed(
+        self,
+    ):
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+        )
+        validator = CompressionSecurityValidator(config)
+
+        # A .zip entry that is in nested_archives.
+        outer_zip = io.BytesIO()
+        with zipfile.ZipFile(outer_zip, "w") as zf:
+            zf.writestr("nested.zip", b"small content")
+
+        zip_bytes = outer_zip.getvalue()
+
+        # Passing compressed_size=0 makes total_compressed_size=0,
+        # so line 272 "if total_compressed_size > 0:" is False
+        # and the branch jumps to line 306 (272->306).
+        # allow_nested_archives=True prevents the raise at 306.
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), 0
+        )

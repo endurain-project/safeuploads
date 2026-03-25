@@ -8,6 +8,7 @@ import pytest
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     CompressionSecurityError,
+    ErrorCode,
     FileProcessingError,
     ZipBombError,
 )
@@ -140,3 +141,152 @@ class TestGzipContentInspector:
         with pytest.raises(ZipBombError) as exc_info:
             inspector.inspect_gzip_content(file_obj, 100)
         assert "memory" in str(exc_info.value).lower()
+
+
+class TestGzipInspectorEdgeCases:
+
+    def test_compressed_size_zero_skips_ratio_check(
+        self, default_config
+    ):
+        inspector = GzipContentInspector(default_config)
+        content = b"Hello, World!"
+        buf = io.BytesIO()
+        with gzip.open(buf, "wb") as gz:
+            gz.write(content)
+        compressed = buf.getvalue()
+        # compressed_size=0 bypasses the in-loop
+        # ratio check (line 97) and final ratio
+        # log (line 197) — both False branches.
+        inspector.inspect_gzip_content(
+            io.BytesIO(compressed), 0
+        )
+
+    def test_eof_error_raises_compression_security_error(
+        self, default_config
+    ):
+        inspector = GzipContentInspector(default_config)
+
+        # Create valid gzip then truncate to trigger
+        # EOFError during decompression
+        content = b"A" * 10000
+        buf = io.BytesIO()
+        with gzip.open(buf, "wb") as gz:
+            gz.write(content)
+        full = buf.getvalue()
+        truncated = full[:15]
+
+        with pytest.raises(
+            CompressionSecurityError
+        ) as exc:
+            inspector.inspect_gzip_content(
+                io.BytesIO(truncated), len(truncated)
+            )
+        assert (
+            exc.value.error_code == ErrorCode.ZIP_CORRUPT
+        )
+        assert "Truncated" in str(exc.value)
+
+    def test_generic_exception_raises_file_processing_error(
+        self, default_config, monkeypatch
+    ):
+        inspector = GzipContentInspector(default_config)
+
+        content = b"Hello"
+        buf = io.BytesIO()
+        with gzip.open(buf, "wb") as gz:
+            gz.write(content)
+        compressed = buf.getvalue()
+
+        import safeuploads.inspectors.gzip_inspector as _m
+
+        _original = _m.gzip.open
+
+        def _failing_open(*a, **kw):
+            raise OSError("disk failure")
+
+        monkeypatch.setattr(
+            _m.gzip, "open", _failing_open
+        )
+
+        with pytest.raises(FileProcessingError):
+            inspector.inspect_gzip_content(
+                io.BytesIO(compressed), len(compressed)
+            )
+
+    def test_size_exceeded_with_correlation_id(self):
+        from safeuploads.audit import (
+            reset_correlation_id,
+            set_correlation_id,
+        )
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_compression_ratio=10000,
+            max_uncompressed_size=1024,
+            enable_audit_logging=True,
+        )
+        inspector = GzipContentInspector(config)
+
+        content = b"A" * 2048
+        buf = io.BytesIO()
+        with gzip.open(buf, "wb") as gz:
+            gz.write(content)
+        compressed = buf.getvalue()
+
+        set_correlation_id("test-cid")
+        try:
+            with pytest.raises(ZipBombError):
+                inspector.inspect_gzip_content(
+                    io.BytesIO(compressed),
+                    len(compressed),
+                )
+        finally:
+            reset_correlation_id()
+
+    def test_ratio_exceeded_with_correlation_id(self):
+        """Trigger ratio-exceeded with CID (line 134)."""
+        from safeuploads.audit import (
+            reset_correlation_id,
+            set_correlation_id,
+        )
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_compression_ratio=2,
+            max_uncompressed_size=100 * 1024 * 1024,
+            enable_audit_logging=True,
+        )
+        inspector = GzipContentInspector(config)
+
+        content = b"\x00" * (1024 * 1024)
+        buf = io.BytesIO()
+        with gzip.open(buf, "wb") as gz:
+            gz.write(content)
+        compressed = buf.getvalue()
+
+        set_correlation_id("ratio-cid")
+        try:
+            with pytest.raises(ZipBombError) as exc:
+                inspector.inspect_gzip_content(
+                    io.BytesIO(compressed),
+                    len(compressed),
+                )
+            assert "ratio" in str(exc.value).lower()
+        finally:
+            reset_correlation_id()
+
+    def test_bad_gzip_file_raises_compression_error(
+        self, default_config
+    ):
+        """Trigger gzip.BadGzipFile (lines 156-160)."""
+        inspector = GzipContentInspector(default_config)
+        # Invalid magic byte (\x8a instead of \x8b)
+        bad_magic = b"\x1f\x8a\x08\x00" + b"\x00" * 6
+        with pytest.raises(CompressionSecurityError) as exc:
+            inspector.inspect_gzip_content(
+                io.BytesIO(bad_magic), len(bad_magic)
+            )
+        assert (
+            exc.value.error_code == ErrorCode.ZIP_CORRUPT
+        )
+        assert "corrupted" in str(exc.value).lower()

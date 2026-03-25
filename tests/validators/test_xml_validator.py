@@ -138,3 +138,59 @@ class TestXmlSecurityValidator:
         file_obj = io.BytesIO(b"")
         with pytest.raises(FileProcessingError):
             validator.validate_xml_safety(file_obj)
+
+
+class TestXmlValidatorDefusedxmlBranches:
+    def test_entities_forbidden_raises(
+        self, default_config, monkeypatch
+    ):
+        import safeuploads.validators.xml_validator as _mod
+        from defusedxml import ElementTree as DefusedET
+
+        validator = XmlSecurityValidator(default_config)
+
+        def _raise_entities(*a, **kw):
+            raise DefusedET.EntitiesForbidden(
+                "entity", None, None, None, None, None
+            )
+
+        monkeypatch.setattr(_mod.DefusedET, "parse", _raise_entities)
+        with pytest.raises(
+            FileProcessingError, match="entity"
+        ):
+            validator.validate_xml_safety(io.BytesIO(b"<root/>"))
+
+    def test_external_ref_forbidden_raises(
+        self, default_config, monkeypatch
+    ):
+        import safeuploads.validators.xml_validator as _mod
+        from defusedxml import ElementTree as DefusedET
+
+        validator = XmlSecurityValidator(default_config)
+
+        def _raise_ext(*a, **kw):
+            raise DefusedET.ExternalReferenceForbidden(
+                "ref", None, None, None
+            )
+
+        monkeypatch.setattr(_mod.DefusedET, "parse", _raise_ext)
+        with pytest.raises(
+            FileProcessingError, match="external"
+        ):
+            validator.validate_xml_safety(io.BytesIO(b"<root/>"))
+
+    def test_unexpected_exception_raises(
+        self, default_config, monkeypatch
+    ):
+        import safeuploads.validators.xml_validator as _mod
+
+        validator = XmlSecurityValidator(default_config)
+
+        def _raise_generic(*a, **kw):
+            raise OSError("disk failure")
+
+        monkeypatch.setattr(_mod.DefusedET, "parse", _raise_generic)
+        with pytest.raises(
+            FileProcessingError, match="failed"
+        ):
+            validator.validate_xml_safety(io.BytesIO(b"<root/>"))

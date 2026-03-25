@@ -22,6 +22,7 @@ dev = [
     "pytest-asyncio>=0.23,<1.0",
     "pytest-cov>=4.1,<5.0",
     "ruff>=0.9.0",
+    "hypothesis>=6.100,<7.0",
 ]
 
 
@@ -59,6 +60,10 @@ select = [
     "S101",
     "D",
 ]
+"tests/fuzz/**/*.py" = [
+    "S101",
+    "D",
+]
 "examples/**/*.py" = [
     "D",      # no docstring enforcement in examples
     "T201",   # print is expected in examples
@@ -89,6 +94,7 @@ markers = [
     "integration: Integration tests",
     "slow: Slow running tests",
     "performance: Performance and benchmarking tests",
+    "fuzz: Hypothesis-based fuzzing tests",
 ]
 
 [tool.coverage.run]

@@ -266,3 +266,19 @@ class TestContentAnalysisIntegration:
         )
         # Should pass — analysis disabled
         await validator.validate_image_file(file)
+
+
+class TestContentInspectorActivityPolyglot:
+
+    def test_polyglot_in_activity_file_is_detected(
+        self, default_config
+    ):
+        inspector = ContentSecurityInspector(default_config)
+        sig = _sig(
+            MalwareSignatureCategory.POLYGLOT_SIGNATURES
+        )
+        content = b"\x00" * 20 + sig + b"\x00" * 50
+        threats = inspector.scan_content(
+            content, "run.gpx", "activity"
+        )
+        assert any("Polyglot" in t for t in threats)

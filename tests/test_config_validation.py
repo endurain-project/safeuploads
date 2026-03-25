@@ -841,3 +841,67 @@ class TestInitSubclassValidation:
 
         # Validation ran without raising (non-strict)
         assert _SubConfig is not None
+
+
+class TestValidateAndReportStrictMode:
+    def test_strict_raises_on_errors(self, monkeypatch):
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_image_size=-1),
+        )
+        with pytest.raises(FileSecurityConfigurationError):
+            FileSecurityConfig.validate_and_report(strict=True)
+
+
+class TestCrossDependencyValidation:
+    def test_uppercase_reserved_name_generates_warning(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "WINDOWS_RESERVED_NAMES",
+            frozenset({"con", "PRN"}),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        types = [e.error_type for e in errors]
+        assert "case_sensitive_reserved_name" in types
+
+    def test_non_integer_unicode_char(self, monkeypatch):
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "DANGEROUS_UNICODE_CHARS",
+            frozenset({"not_int"}),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        types = [e.error_type for e in errors]
+        assert "invalid_unicode_char" in types
+
+    def test_unicode_char_out_of_range(self, monkeypatch):
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "DANGEROUS_UNICODE_CHARS",
+            frozenset({0x110001}),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        types = [e.error_type for e in errors]
+        assert "invalid_unicode_range" in types
+
+
+class TestZipExtensionBlockedConflict:
+    def test_zip_ext_in_blocked_generates_error(self, monkeypatch):
+        original_blocked = (
+            FileSecurityConfig.BLOCKED_EXTENSIONS.copy()
+        )
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "BLOCKED_EXTENSIONS",
+            original_blocked | {".zip"},
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        types = [
+            e.error_type
+            for e in errors
+            if e.severity == "error"
+        ]
+        assert "extension_conflict" in types

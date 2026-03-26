@@ -9,26 +9,28 @@
       
       
       
+        <link rel="prev" href="../api/">
       
-        <link rel="next" href="api/">
+      
+        <link rel="next" href="../security/threat-model/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>safeuploads documentation</title>
+        <title>Rate Limiting - safeuploads documentation</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -47,9 +49,9 @@
       
     
     
-      <link rel="stylesheet" href="assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -74,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#safeuploads" class="md-skip">
+        <a href="#rate-limiting" class="md-skip">
           Skip to content
         </a>
       
@@ -90,7 +92,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="safeuploads documentation" class="md-header__button md-logo" aria-label="safeuploads documentation" data-md-component="logo">
+    <a href=".." title="safeuploads documentation" class="md-header__button md-logo" aria-label="safeuploads documentation" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -110,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              Rate Limiting
             
           </span>
         </div>
@@ -186,7 +188,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="safeuploads documentation" class="md-nav__button md-logo" aria-label="safeuploads documentation" data-md-component="logo">
+    <a href=".." title="safeuploads documentation" class="md-nav__button md-logo" aria-label="safeuploads documentation" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -213,6 +215,60 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -232,7 +288,7 @@
   <span class="md-ellipsis">
     
   
-    Home
+    Rate Limiting
   
 
     
@@ -243,14 +299,14 @@
           <span class="md-nav__icon md-icon"></span>
         </label>
       
-      <a href="." class="md-nav__link md-nav__link--active">
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
   <span class="md-ellipsis">
     
   
-    Home
+    Rate Limiting
   
 
     
@@ -276,10 +332,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#why-rate-limiting-matters-for-uploads" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Why Rate Limiting Matters for Uploads
       
     </span>
   </a>
@@ -287,6 +343,29 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#recommended-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fastapi-with-slowapi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FastAPI with SlowApi
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="FastAPI with SlowApi">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
   <a href="#installation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -296,57 +375,12 @@
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quick Start
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#exception-handling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exception Handling
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#current-status" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Current Status
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Current Status">
-      <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#implemented" class="md-nav__link">
+  <a href="#basic-setup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Implemented
+        Basic Setup
       
     </span>
   </a>
@@ -354,10 +388,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#known-limitations" class="md-nav__link">
+  <a href="#per-user-limits-authenticated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Known Limitations
+        Per-User Limits (Authenticated)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-error-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom Error Response
       
     </span>
   </a>
@@ -370,10 +415,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#documentation" class="md-nav__link">
+  <a href="#custom-middleware-no-dependencies" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Documentation
+        Custom Middleware (No Dependencies)
       
     </span>
   </a>
@@ -381,32 +426,60 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#sponsors" class="md-nav__link">
+  <a href="#reverse-proxy-rate-limiting" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sponsors
+        Reverse Proxy Rate Limiting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reverse Proxy Rate Limiting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#nginx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        nginx
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#caddy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        License
+        Caddy
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#contributing" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#traefik" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Contributing
+        Traefik
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#combining-with-safeuploads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combining with safeuploads
       
     </span>
   </a>
@@ -417,60 +490,6 @@
   
 </nav>
       
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="api/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    API
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="rate-limiting/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Rate Limiting
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -529,7 +548,7 @@
   
   
     <li class="md-nav__item">
-      <a href="security/threat-model/" class="md-nav__link">
+      <a href="../security/threat-model/" class="md-nav__link">
         
   
   
@@ -557,7 +576,7 @@
   
   
     <li class="md-nav__item">
-      <a href="security/architecture/" class="md-nav__link">
+      <a href="../security/architecture/" class="md-nav__link">
         
   
   
@@ -585,7 +604,7 @@
   
   
     <li class="md-nav__item">
-      <a href="security/integration-checklist/" class="md-nav__link">
+      <a href="../security/integration-checklist/" class="md-nav__link">
         
   
   
@@ -640,10 +659,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#why-rate-limiting-matters-for-uploads" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Why Rate Limiting Matters for Uploads
       
     </span>
   </a>
@@ -651,6 +670,29 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#recommended-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fastapi-with-slowapi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FastAPI with SlowApi
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="FastAPI with SlowApi">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
   <a href="#installation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -660,57 +702,12 @@
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quick Start
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#exception-handling" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Exception Handling
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#current-status" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Current Status
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Current Status">
-      <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#implemented" class="md-nav__link">
+  <a href="#basic-setup" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Implemented
+        Basic Setup
       
     </span>
   </a>
@@ -718,10 +715,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#known-limitations" class="md-nav__link">
+  <a href="#per-user-limits-authenticated" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Known Limitations
+        Per-User Limits (Authenticated)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-error-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom Error Response
       
     </span>
   </a>
@@ -734,10 +742,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#documentation" class="md-nav__link">
+  <a href="#custom-middleware-no-dependencies" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Documentation
+        Custom Middleware (No Dependencies)
       
     </span>
   </a>
@@ -745,32 +753,60 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#sponsors" class="md-nav__link">
+  <a href="#reverse-proxy-rate-limiting" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sponsors
+        Reverse Proxy Rate Limiting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reverse Proxy Rate Limiting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#nginx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        nginx
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#caddy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        License
+        Caddy
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#contributing" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#traefik" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Contributing
+        Traefik
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#combining-with-safeuploads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combining with safeuploads
       
     </span>
   </a>
@@ -797,129 +833,297 @@
   
 
 
-<h1 id="safeuploads">safeuploads</h1>
-<div>
-    <img src="https://img.shields.io/github/license/endurain-project/safeuploads" alt="License">
-    <a href="https://github.com/endurain-project/safeuploads/releases">
-      <img src="https://img.shields.io/github/v/release/endurain-project/safeuploads" alt="GitHub release">
-    </a>
-    <a href="https://github.com/endurain-project/safeuploads/stargazers">
-      <img src="https://img.shields.io/github/stars/endurain-project/safeuploads.svg?style=social&label=Star" alt="GitHub stars">
-    </a>
-</div>
+<h1 id="rate-limiting">Rate Limiting</h1>
+<p>File upload endpoints are high-value targets for abuse. Without
+rate limiting, attackers can exhaust server resources through
+rapid-fire uploads, even when each individual file passes
+validation. <strong>safeuploads validates file content — rate limiting
+protects the endpoint itself.</strong></p>
+<h2 id="why-rate-limiting-matters-for-uploads">Why Rate Limiting Matters for Uploads</h2>
+<table>
+<thead>
+<tr>
+<th>Threat</th>
+<th>Impact</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Denial of service via bulk uploads</td>
+<td>CPU/memory/disk exhaustion</td>
+<td>Per-IP request limits</td>
+</tr>
+<tr>
+<td>Credential-stuffing with file payloads</td>
+<td>Account compromise</td>
+<td>Per-user throttling</td>
+</tr>
+<tr>
+<td>Storage exhaustion</td>
+<td>Disk full, service outage</td>
+<td>Global upload quotas</td>
+</tr>
+<tr>
+<td>Zip bomb floods</td>
+<td>CPU exhaustion during analysis</td>
+<td>Combined with <code>ResourceMonitor</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="recommended-limits">Recommended Limits</h2>
+<table>
+<thead>
+<tr>
+<th>Endpoint type</th>
+<th>Suggested rate</th>
+<th>Burst</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Image upload</td>
+<td>10 req/min per IP</td>
+<td>3</td>
+</tr>
+<tr>
+<td>ZIP upload</td>
+<td>5 req/min per IP</td>
+<td>2</td>
+</tr>
+<tr>
+<td>Batch upload</td>
+<td>3 req/min per IP</td>
+<td>1</td>
+</tr>
+<tr>
+<td>Authenticated user</td>
+<td>30 req/min per user</td>
+<td>10</td>
+</tr>
+</tbody>
+</table>
+<p>Adjust based on your application's expected traffic patterns.</p>
+<hr />
+<h2 id="fastapi-with-slowapi">FastAPI with SlowApi</h2>
+<p><a href="https://github.com/laurents/slowapi">SlowApi</a> wraps
+<a href="https://limits.readthedocs.io/">limits</a> for use with Starlette
+and FastAPI.</p>
+<h3 id="installation">Installation</h3>
+<pre><code class="language-bash">pip install slowapi
+</code></pre>
+<h3 id="basic-setup">Basic Setup</h3>
+<pre><code class="language-python">from fastapi import FastAPI, Request, UploadFile
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-<p>Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.</p>
-<h2 id="features">Features</h2>
-<ul>
-<li><strong>Framework-agnostic</strong> async validation (FastAPI, generic)</li>
-<li>Filename sanitization and Unicode security checks</li>
-<li>Extension validation with configurable allow/block lists</li>
-<li>ZIP bomb detection, nested archive inspection, and recursive structure protection</li>
-<li>MIME type verification with file signature validation</li>
-<li>Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing</li>
-<li>Gzip archive validation with decompression bomb detection</li>
-<li>Streaming validation for memory-efficient large file processing</li>
-<li>Resource monitoring (CPU time and memory limits)</li>
-<li>Content analysis with malware signature and polyglot detection</li>
-<li>Structured audit logging with correlation IDs</li>
-<li>Rich exception hierarchy with machine-readable error codes</li>
-<li>Zero configuration required—secure defaults out of the box</li>
-</ul>
-<h2 id="installation">Installation</h2>
-<pre><code class="language-bash">pip install safeuploads
-</code></pre>
-<p>For FastAPI integration:</p>
-<pre><code class="language-bash">pip install safeuploads[fastapi]
-</code></pre>
-<h2 id="quick-start">Quick Start</h2>
-<pre><code class="language-python">from fastapi import FastAPI, UploadFile, HTTPException
 from safeuploads import FileValidator
-from safeuploads.exceptions import FileValidationError
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
-validator = FileValidator()
-
-@app.post(&quot;/upload&quot;)
-async def upload_image(file: UploadFile):
-    try:
-        await validator.validate_image_file(file)
-    except FileValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    return {&quot;status&quot;: &quot;success&quot;, &quot;filename&quot;: file.filename}
-</code></pre>
-<h2 id="configuration">Configuration</h2>
-<pre><code class="language-python">from safeuploads import FileValidator, FileSecurityConfig
-
-# Use default secure configuration
-validator = FileValidator()
-
-# Or customize limits
-config = FileSecurityConfig()
-config.limits.max_image_size = 10 * 1024 * 1024  # 10 MiB
-config.limits.max_compression_ratio = 50
-
-validator = FileValidator(config=config)
-</code></pre>
-<h2 id="exception-handling">Exception Handling</h2>
-<pre><code class="language-python">from safeuploads.exceptions import (
-    FileValidationError,      # Base exception
-    FileSizeError,            # File too large
-    ExtensionSecurityError,   # Dangerous extension
-    ZipBombError,             # Compression attack
+app.state.limiter = limiter
+app.add_exception_handler(
+    RateLimitExceeded, _rate_limit_exceeded_handler
 )
 
-try:
+validator = FileValidator()
+
+
+@app.post(&quot;/upload/image&quot;)
+@limiter.limit(&quot;10/minute&quot;)
+async def upload_image(request: Request, file: UploadFile):
     await validator.validate_image_file(file)
-except FileSizeError as err:
-    return {&quot;error&quot;: &quot;File too large&quot;, &quot;max_size&quot;: err.max_size}
-except ExtensionSecurityError as err:
-    return {&quot;error&quot;: &quot;File type not allowed&quot;, &quot;extension&quot;: err.extension}
-except FileValidationError as err:
-    return {&quot;error&quot;: str(err), &quot;code&quot;: err.error_code}
+    return {&quot;filename&quot;: file.filename}
+
+
+@app.post(&quot;/upload/zip&quot;)
+@limiter.limit(&quot;5/minute&quot;)
+async def upload_zip(request: Request, file: UploadFile):
+    await validator.validate_zip_file(file)
+    return {&quot;filename&quot;: file.filename}
 </code></pre>
-<h2 id="current-status">Current Status</h2>
-<h3 id="implemented">Implemented</h3>
+<h3 id="per-user-limits-authenticated">Per-User Limits (Authenticated)</h3>
+<pre><code class="language-python">from fastapi import Depends
+
+
+def get_user_id(request: Request) -&gt; str:
+    &quot;&quot;&quot;Extract user identifier for rate limiting.&quot;&quot;&quot;
+    # Replace with your auth logic
+    user = request.state.user
+    return str(user.id)
+
+
+user_limiter = Limiter(key_func=get_user_id)
+
+
+@app.post(&quot;/upload/image&quot;)
+@user_limiter.limit(&quot;30/minute&quot;)
+async def upload_image_authed(
+    request: Request,
+    file: UploadFile,
+    user=Depends(get_current_user),
+):
+    await validator.validate_image_file(file)
+    return {&quot;filename&quot;: file.filename}
+</code></pre>
+<h3 id="custom-error-response">Custom Error Response</h3>
+<pre><code class="language-python">from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+
+
+async def rate_limit_handler(
+    request: Request, exc: RateLimitExceeded
+):
+    return JSONResponse(
+        status_code=429,
+        content={
+            &quot;error&quot;: &quot;rate_limit_exceeded&quot;,
+            &quot;message&quot;: &quot;Too many upload requests&quot;,
+            &quot;retry_after&quot;: exc.detail,
+        },
+        headers={&quot;Retry-After&quot;: str(exc.detail)},
+    )
+
+
+app.add_exception_handler(
+    RateLimitExceeded, rate_limit_handler
+)
+</code></pre>
+<hr />
+<h2 id="custom-middleware-no-dependencies">Custom Middleware (No Dependencies)</h2>
+<p>If you prefer not to add <code>slowapi</code>, a simple token-bucket
+middleware works for basic per-IP limiting:</p>
+<pre><code class="language-python">import time
+from collections import defaultdict
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+# Token bucket per IP
+_buckets: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT = 10  # requests
+WINDOW = 60  # seconds
+
+
+@app.middleware(&quot;http&quot;)
+async def rate_limit_middleware(request: Request, call_next):
+    if not request.url.path.startswith(&quot;/upload&quot;):
+        return await call_next(request)
+
+    client_ip = request.client.host if request.client else &quot;unknown&quot;
+    now = time.monotonic()
+
+    # Remove expired timestamps
+    _buckets[client_ip] = [
+        ts for ts in _buckets[client_ip]
+        if now - ts &lt; WINDOW
+    ]
+
+    if len(_buckets[client_ip]) &gt;= RATE_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={
+                &quot;error&quot;: &quot;rate_limit_exceeded&quot;,
+                &quot;message&quot;: &quot;Too many upload requests&quot;,
+            },
+        )
+
+    _buckets[client_ip].append(now)
+    return await call_next(request)
+</code></pre>
+<p>!!! warning
+    This in-memory approach does not work across multiple
+    workers or server instances. Use Redis-backed storage
+    (via SlowApi or similar) for production deployments.</p>
+<hr />
+<h2 id="reverse-proxy-rate-limiting">Reverse Proxy Rate Limiting</h2>
+<p>For production, rate limiting at the reverse proxy layer is
+more efficient and protects the application before requests
+reach Python.</p>
+<h3 id="nginx">nginx</h3>
+<pre><code class="language-nginx"># Define a rate limit zone (10 req/min per IP)
+limit_req_zone $binary_remote_addr
+    zone=uploads:10m rate=10r/m;
+
+server {
+    # Apply to upload endpoints
+    location /upload {
+        limit_req zone=uploads burst=3 nodelay;
+        limit_req_status 429;
+
+        # Also limit upload body size
+        client_max_body_size 20m;
+
+        proxy_pass http://app:8000;
+    }
+}
+</code></pre>
+<h3 id="caddy">Caddy</h3>
+<pre><code class="language-caddy">example.com {
+    route /upload/* {
+        rate_limit {
+            zone upload_zone {
+                key {remote_host}
+                events 10
+                window 1m
+            }
+        }
+        reverse_proxy app:8000
+    }
+}
+</code></pre>
+<h3 id="traefik">Traefik</h3>
+<pre><code class="language-yaml"># Dynamic configuration
+http:
+  middlewares:
+    upload-rate-limit:
+      rateLimit:
+        average: 10
+        burst: 3
+        period: 1m
+
+  routers:
+    upload:
+      rule: &quot;PathPrefix(`/upload`)&quot;
+      middlewares:
+        - upload-rate-limit
+      service: app
+</code></pre>
+<hr />
+<h2 id="combining-with-safeuploads">Combining with safeuploads</h2>
+<p>Rate limiting and file validation are complementary layers:</p>
+<pre><code>Client Request
+  │
+  ▼
+┌──────────────────────┐
+│  Reverse Proxy       │  ← nginx/Caddy rate limit + body size
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  Application         │  ← SlowApi per-IP/per-user limits
+│  Rate Limiter        │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│  safeuploads         │  ← File validation + resource limits
+│  FileValidator       │
+└──────────┬───────────┘
+           │
+           ▼
+     File accepted
+</code></pre>
 <ul>
-<li><strong>Filename Security</strong>: Unicode normalization, directory traversal prevention, Windows reserved names blocking</li>
-<li><strong>Extension Validation</strong>: Allow/block lists with configurable rules, dangerous extension detection</li>
-<li><strong>Compression Security</strong>: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits</li>
-<li><strong>Content Inspection</strong>: Deep ZIP content analysis with configurable depth and entry limits</li>
-<li><strong>MIME Type Verification</strong>: Magic number validation for images, ZIP, activity files, and gzip</li>
-<li><strong>Streaming Validation</strong>: Memory-efficient processing via <code>SpooledTemporaryFile</code> for large files</li>
-<li><strong>Resource Monitoring</strong>: CPU time and memory limits enforced via <code>ResourceMonitor</code></li>
-<li><strong>Activity File Support</strong>: GPX, TCX, and FIT file validation with XXE-safe XML parsing</li>
-<li><strong>Gzip Support</strong>: Gzip archive validation with decompression bomb detection</li>
-<li><strong>Content Analysis</strong>: Optional malware signature, web shell, and polyglot file detection</li>
-<li><strong>Audit Logging</strong>: Structured security event logging with correlation IDs via <code>contextvars</code></li>
-<li><strong>Performance Optimizations</strong>: Pre-compiled pattern sets, <code>frozenset</code> lookups, LRU-cached MIME guessing</li>
-<li><strong>Rich Exception System</strong>: Machine-readable error codes with detailed context</li>
-<li><strong>Fuzzing Tests</strong>: Hypothesis-based property testing for filenames, ZIP, images, and config</li>
+<li><strong>Reverse proxy</strong>: Stops floods before they reach Python.</li>
+<li><strong>Application limiter</strong>: Enforces per-user or per-endpoint
+  quotas after authentication.</li>
+<li><strong>safeuploads</strong>: Validates file content, detects attacks,
+  enforces resource limits via <code>ResourceMonitor</code>.</li>
 </ul>
-<h3 id="known-limitations">Known Limitations</h3>
-<ul>
-<li>No built-in rate limiting (application-level concern — see <a href="rate-limiting/">Rate Limiting</a> guide)</li>
-<li>MIME detection covers first 8 KB; advanced polyglot attacks may require <code>enable_content_analysis</code></li>
-<li><code>SpooledTemporaryFile</code> uses the system default temp directory</li>
-</ul>
-<h2 id="documentation">Documentation</h2>
-<ul>
-<li><a href="api/">API Reference</a> — full public API documentation</li>
-<li><a href="rate-limiting/">Rate Limiting</a> — production rate limiting guide</li>
-<li><a href="security/threat-model/">Threat Model</a> — threat categories and mitigations</li>
-<li><a href="security/architecture/">Architecture</a> — validation pipeline and data flow</li>
-<li><a href="security/integration-checklist/">Integration Checklist</a> — production deployment checklist</li>
-</ul>
-<h2 id="sponsors">Sponsors</h2>
-<p>A huge thank you to the project sponsors! Your support helps keep this project going.</p>
-<p>Consider <a href="https://github.com/sponsors/joaovitoriasilva">sponsoring safeuploads on GitHub</a> to ensure continuous development.</p>
-<h2 id="license">License</h2>
-<p>This project is licensed under the MIT License - see the <a href="https://github.com/endurain-project/safeuploads/blob/main/LICENSE.md">LICENSE</a> file for details.</p>
-<h2 id="contributing">Contributing</h2>
-<p>Contributions welcome! See <a href="https://github.com/endurain-project/safeuploads/blob/main/CONTRIBUTING.md">Contributing Guidelines</a> for guidelines.</p>
-<div align="center">
-  <sub>Built with ❤️ from Portugal | Part of the <a href="https://github.com/endurain-project">Endurain</a> ecosystem</sub>
-</div>
+<p>See <a href="https://github.com/endurain-project/safeuploads/blob/main/examples/fastapi_example.py">examples/fastapi_example.py</a>
+for a complete working example with rate limiting integrated.</p>
 
 
 
@@ -969,10 +1173,10 @@ except FileValidationError as err:
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": [], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": [], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>

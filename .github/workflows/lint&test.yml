@@ -82,7 +82,7 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Audit Python dependencies
-        run: uvx pip-audit --require-hashes --disable-pip -r <(uv export --frozen --no-header --no-emit-project)
+        run: uvx pip-audit --require-hashes --disable-pip -r <(uv export --frozen --no-header --no-emit-project --no-dev)
 
       - name: Run tests with coverage
         run: uv run pytest --cov-fail-under=90

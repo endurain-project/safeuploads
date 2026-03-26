@@ -2,6 +2,11 @@
 
 ![License](https://img.shields.io/github/license/endurain-project/safeuploads)
 [![GitHub release](https://img.shields.io/github/v/release/endurain-project/safeuploads)](https://github.com/endurain-project/safeuploads/releases)
+[![CI](https://github.com/endurain-project/safeuploads/actions/workflows/lint%26test.yml/badge.svg)](https://github.com/endurain-project/safeuploads/actions/workflows/lint%26test.yml)
+[![PyPI version](https://img.shields.io/pypi/v/safeuploads)](https://pypi.org/project/safeuploads/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/safeuploads)](https://pypi.org/project/safeuploads/)
+[![Python](https://img.shields.io/pypi/pyversions/safeuploads)](https://pypi.org/project/safeuploads/)
+[![Docs](https://img.shields.io/badge/docs-endurain--project.github.io-blue)](https://endurain-project.github.io/safeuploads/)
 [![GitHub stars](https://img.shields.io/github/stars/endurain-project/safeuploads.svg?style=social&label=Star)](https://github.com/endurain-project/safeuploads/stargazers)
 
 Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.

@@ -1,0 +1,1259 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+      
+        <link rel="prev" href="../threat-model/">
+      
+      
+        <link rel="next" href="../integration-checklist/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Architecture - safeuploads documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="safeuploads documentation" class="md-header__button md-logo" aria-label="safeuploads documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            safeuploads documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/endurain-project/safeuploads" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="safeuploads documentation" class="md-nav__button md-logo" aria-label="safeuploads documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    safeuploads documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/endurain-project/safeuploads" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rate-limiting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rate Limiting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Security
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#component-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Component Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#roles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-pipelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Pipelines
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validation Pipelines">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#image-validation-validate_image_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Image Validation (validate_image_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zip-validation-validate_zip_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ZIP Validation (validate_zip_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#activity-file-validation-validate_activity_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Activity File Validation (validate_activity_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gzip-validation-validate_gzip_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gzip Validation (validate_gzip_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-where-file-content-is-read" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Flow: Where File Content Is Read
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exception-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exception Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audit-event-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit Event Flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integration-checklist/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Integration Checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#component-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component Overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Component Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#roles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-pipelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Pipelines
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validation Pipelines">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#image-validation-validate_image_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Image Validation (validate_image_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zip-validation-validate_zip_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ZIP Validation (validate_zip_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#activity-file-validation-validate_activity_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Activity File Validation (validate_activity_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gzip-validation-validate_gzip_file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gzip Validation (validate_gzip_file)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-where-file-content-is-read" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data Flow: Where File Content Is Read
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exception-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exception Hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audit-event-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit Event Flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="architecture">Architecture</h1>
+<p>This document describes the safeuploads validation pipeline,
+component responsibilities, and data flow for each file type.</p>
+<hr />
+<h2 id="component-overview">Component Overview</h2>
+<pre><code>safeuploads/
+├── file_validator.py          # FileValidator — orchestrator
+├── config.py                  # FileSecurityConfig, SecurityLimits
+├── protocols.py               # SeekableFile, UploadFileProtocol
+├── exceptions.py              # Exception hierarchy, ErrorCode
+├── enums.py                   # Threat categories, patterns
+├── audit.py                   # SecurityAuditLogger, correlation IDs
+├── utils.py                   # ResourceMonitor
+├── validators/
+│   ├── base.py                # BaseValidator interface
+│   ├── unicode_validator.py   # Unicode normalization &amp; checks
+│   ├── extension_validator.py # Extension allow/block rules
+│   ├── windows_validator.py   # Windows reserved name checks
+│   ├── compression_validator.py # ZIP bomb detection
+│   └── xml_validator.py       # XXE-safe XML parsing
+└── inspectors/
+    ├── zip_inspector.py       # Deep ZIP content analysis
+    ├── gzip_inspector.py      # Gzip bomb detection
+    └── content_inspector.py   # Malware/polyglot scanning
+</code></pre>
+<h3 id="roles">Roles</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FileValidator</code></td>
+<td>Orchestrates validation for each file type. Manages streaming, resource monitoring, audit events, and delegates to validators/inspectors.</td>
+</tr>
+<tr>
+<td><code>FileSecurityConfig</code></td>
+<td>Centralizes all configuration: allowed MIME types, extensions, blocked extensions, Unicode characters, and Windows reserved names.</td>
+</tr>
+<tr>
+<td><code>SecurityLimits</code></td>
+<td>Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps.</td>
+</tr>
+<tr>
+<td><code>BaseValidator</code></td>
+<td>Abstract base class; validators inherit and implement <code>validate()</code>.</td>
+</tr>
+<tr>
+<td><code>UnicodeSecurityValidator</code></td>
+<td>NFC normalization, dangerous character detection, null byte rejection.</td>
+</tr>
+<tr>
+<td><code>ExtensionSecurityValidator</code></td>
+<td>Allowlist/blocklist enforcement, compound extension checks.</td>
+</tr>
+<tr>
+<td><code>WindowsSecurityValidator</code></td>
+<td>Rejects Windows reserved device names.</td>
+</tr>
+<tr>
+<td><code>CompressionSecurityValidator</code></td>
+<td>Checks compression ratio, uncompressed size, entry count, and nested archive limits.</td>
+</tr>
+<tr>
+<td><code>XmlSecurityValidator</code></td>
+<td>Parses XML with <code>defusedxml</code>, blocking DTDs and external entities.</td>
+</tr>
+<tr>
+<td><code>ZipContentInspector</code></td>
+<td>Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures.</td>
+</tr>
+<tr>
+<td><code>GzipContentInspector</code></td>
+<td>Streams gzip decompression, checking ratio and size progressively.</td>
+</tr>
+<tr>
+<td><code>ContentSecurityInspector</code></td>
+<td>Scans raw bytes for malware signatures, web shells, and polyglot patterns.</td>
+</tr>
+<tr>
+<td><code>ResourceMonitor</code></td>
+<td>Context manager enforcing wall-clock time and memory limits.</td>
+</tr>
+<tr>
+<td><code>SecurityAuditLogger</code></td>
+<td>Emits structured audit events under <code>safeuploads.audit</code> with correlation IDs.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="validation-pipelines">Validation Pipelines</h2>
+<h3 id="image-validation-validate_image_file">Image Validation (<code>validate_image_file</code>)</h3>
+<pre><code>UploadFile
+  │
+  ▼
+┌─────────────────────────────┐
+│ 1. Audit: VALIDATION_START  │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 2. Filename Validation      │
+│    ├── Unicode normalization │
+│    ├── Extension allowlist   │
+│    ├── Extension blocklist   │
+│    └── Windows reserved name │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 3. File Size Check          │
+│    (chunked progressive)    │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 4. ResourceMonitor START    │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 5. MIME Type Detection      │
+│    (python-magic, first 8KB)│
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 6. File Signature Check     │
+│    (magic bytes)            │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 7. Content Analysis         │
+│    (if enabled)             │
+│    ├── Executable signatures│
+│    ├── Script injection     │
+│    └── Polyglot detection   │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 8. ResourceMonitor END      │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 9. Audit: VALIDATION_SUCCESS│
+└─────────────────────────────┘
+</code></pre>
+<h3 id="zip-validation-validate_zip_file">ZIP Validation (<code>validate_zip_file</code>)</h3>
+<pre><code>UploadFile
+  │
+  ▼
+┌─────────────────────────────┐
+│ 1. Audit: VALIDATION_START  │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 2. Filename Validation      │
+│    (same as image)          │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 3. File Size Check          │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 4. ResourceMonitor START    │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 5. Stream to SpooledTempFile│
+│    (memory &lt; 10MB → disk)   │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 6. MIME + Signature Check   │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 7. Compression Validation   │
+│    ├── Ratio check          │
+│    ├── Uncompressed size    │
+│    ├── Entry count          │
+│    └── Nested archive check │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 8. ZIP Content Inspection   │
+│    ├── Entry name checks    │
+│    │   ├── Null bytes       │
+│    │   ├── Path traversal   │
+│    │   ├── Absolute paths   │
+│    │   └── Symlinks         │
+│    ├── Extension checks     │
+│    ├── Binary signatures    │
+│    ├── Script patterns      │
+│    └── Recursive inspection │
+│        ├── Depth tracking   │
+│        ├── Hash tracking    │
+│        └── Entry count cap  │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 9. Content Analysis         │
+│    (if enabled)             │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 10. ResourceMonitor END     │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 11. Audit: VALIDATION_SUCCESS│
+└──────────────────────────────┘
+</code></pre>
+<h3 id="activity-file-validation-validate_activity_file">Activity File Validation (<code>validate_activity_file</code>)</h3>
+<pre><code>UploadFile (.gpx, .tcx, .fit)
+  │
+  ▼
+┌──────────────────────────────┐
+│ 1. Audit: VALIDATION_START   │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 2. Filename Validation       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 3. File Size Check           │
+│    (max_activity_file_size)  │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 4. ResourceMonitor START     │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 5. MIME + Signature Check    │
+│    ├── FIT: binary signature │
+│    │   (.FIT at bytes 8-11)  │
+│    └── GPX/TCX: XML header   │
+│        (&lt;?xml)               │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 6. XML Security Validation   │
+│    (GPX/TCX only)            │
+│    ├── defusedxml parsing    │
+│    ├── DTD forbidden         │
+│    └── Entity expansion block│
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 7. ResourceMonitor END       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 8. Audit: VALIDATION_SUCCESS │
+└──────────────────────────────┘
+</code></pre>
+<h3 id="gzip-validation-validate_gzip_file">Gzip Validation (<code>validate_gzip_file</code>)</h3>
+<pre><code>UploadFile (.gz)
+  │
+  ▼
+┌──────────────────────────────┐
+│ 1. Audit: VALIDATION_START   │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 2. Filename Validation       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 3. File Size Check           │
+│    (max_gzip_size)           │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 4. ResourceMonitor START     │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 5. MIME + Signature Check    │
+│    (gzip magic: \x1f\x8b)   │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 6. Gzip Content Inspection   │
+│    ├── Chunked decompression │
+│    ├── Progressive ratio chk │
+│    └── Progressive size chk  │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 7. ResourceMonitor END       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 8. Audit: VALIDATION_SUCCESS │
+└──────────────────────────────┘
+</code></pre>
+<hr />
+<h2 id="data-flow-where-file-content-is-read">Data Flow: Where File Content Is Read</h2>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>What is read</th>
+<th>Buffer size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>File size check</td>
+<td>Chunked reads (<code>chunk_size</code>, 64 KB default)</td>
+<td>Progressive, discarded after counting</td>
+</tr>
+<tr>
+<td>Stream to temp</td>
+<td>Chunked reads to <code>SpooledTemporaryFile</code></td>
+<td>In-memory up to <code>max_memory_buffer_size</code> (10 MB), then disk</td>
+</tr>
+<tr>
+<td>MIME detection</td>
+<td>First 8 KB via <code>python-magic</code></td>
+<td>8 KB</td>
+</tr>
+<tr>
+<td>Signature check</td>
+<td>First 4-12 bytes depending on format</td>
+<td>Minimal</td>
+</tr>
+<tr>
+<td>Compression validation</td>
+<td>ZIP central directory (metadata only)</td>
+<td>Metadata</td>
+</tr>
+<tr>
+<td>ZIP content inspection</td>
+<td>Per-entry read for binary/text scan</td>
+<td>Per-entry, bounded by <code>max_individual_file_size</code></td>
+</tr>
+<tr>
+<td>Gzip inspection</td>
+<td>Chunked streaming decompression</td>
+<td><code>chunk_size</code> at a time</td>
+</tr>
+<tr>
+<td>XML validation</td>
+<td>Full XML content parsed by <code>defusedxml</code></td>
+<td>Full file (bounded by <code>max_activity_file_size</code>)</td>
+</tr>
+<tr>
+<td>Content analysis</td>
+<td>Full file byte scan</td>
+<td>Bounded by <code>content_scan_max_size</code> (50 MB)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="exception-hierarchy">Exception Hierarchy</h2>
+<pre><code>Exception
+└── FileSecurityError
+    ├── FileValidationError
+    │   ├── FilenameSecurityError
+    │   ├── UnicodeSecurityError
+    │   ├── ExtensionSecurityError
+    │   ├── WindowsReservedNameError
+    │   ├── FileSizeError
+    │   ├── MimeTypeError
+    │   └── FileSignatureError
+    ├── FileProcessingError
+    │   ├── CompressionSecurityError
+    │   │   └── ZipBombError
+    │   ├── ZipContentError
+    │   └── ResourceLimitError
+    └── FileSecurityConfigurationError
+</code></pre>
+<p>All exceptions carry an <code>error_code</code> from <code>ErrorCode</code> for
+machine-readable classification.</p>
+<hr />
+<h2 id="audit-event-flow">Audit Event Flow</h2>
+<pre><code>FileValidator.validate_*()
+  │
+  ├── set_correlation_id()
+  ├── audit.log(VALIDATION_START)
+  │
+  ├── [validation pipeline]
+  │   │
+  │   ├── ZipContentInspector ──► audit.log(THREAT_DETECTED)
+  │   ├── GzipContentInspector ─► audit.log(THREAT_DETECTED)
+  │   ├── CompressionValidator ─► audit.log(THREAT_DETECTED)
+  │   └── ContentSecurityInspector ► audit.log(THREAT_DETECTED)
+  │
+  ├── On success: audit.log(VALIDATION_SUCCESS)
+  ├── On failure: audit.log(VALIDATION_FAILURE)
+  │
+  └── reset_correlation_id()
+</code></pre>
+<p>All log records include the correlation ID in <code>extra</code> via
+<code>log_extra()</code>, enabling full request-level tracing across
+sub-components.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": [], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

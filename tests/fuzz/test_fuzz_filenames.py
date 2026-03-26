@@ -1,22 +1,18 @@
 """Fuzz tests for filename sanitization."""
 
+import contextlib
+
 import pytest
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from safeuploads.exceptions import (
-    ExtensionSecurityError,
     FileValidationError,
-    UnicodeSecurityError,
-    WindowsReservedNameError,
 )
 from safeuploads.file_validator import FileValidator
 
-
 # Strategy: arbitrary Unicode text including control chars
-_unicode_text = st.text(
-    alphabet=st.characters(), min_size=1, max_size=300
-)
+_unicode_text = st.text(alphabet=st.characters(), min_size=1, max_size=300)
 
 # Strategy: printable filenames with random extensions
 _printable_filename = st.from_regex(
@@ -33,13 +29,11 @@ class TestFuzzFilenameSanitization:
     def test_sanitize_never_crashes(self, filename):
         """Sanitization must not raise unhandled exceptions."""
         validator = FileValidator()
-        try:
-            validator._sanitize_filename(filename)
-        except (
+        with contextlib.suppress(
             ValueError,
             FileValidationError,
         ):
-            pass  # Expected rejections
+            validator._sanitize_filename(filename)
 
     @given(filename=_unicode_text)
     @settings(max_examples=500, deadline=2000)
@@ -87,14 +81,10 @@ class TestFuzzFilenameSanitization:
             min_size=1,
             max_size=50,
         ),
-        ext=st.sampled_from(
-            [".jpg", ".png", ".txt", ".pdf", ".gpx"]
-        ),
+        ext=st.sampled_from([".jpg", ".png", ".txt", ".pdf", ".gpx"]),
     )
     @settings(max_examples=200, deadline=2000)
-    def test_sanitize_preserves_safe_extension(
-        self, name, ext
-    ):
+    def test_sanitize_preserves_safe_extension(self, name, ext):
         """Safe filenames keep their extension."""
         validator = FileValidator()
         filename = name + ext

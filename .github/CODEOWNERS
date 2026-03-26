@@ -1,0 +1,15 @@
+# Default owner for everything in the repository
+* @joaovitoriasilva
+
+# CI/CD and GitHub configuration
+.github/ @joaovitoriasilva
+
+# Core library
+safeuploads/ @joaovitoriasilva
+
+# Tests
+tests/ @joaovitoriasilva
+
+# Documentation
+docs/ @joaovitoriasilva
+mkdocs.yml @joaovitoriasilva

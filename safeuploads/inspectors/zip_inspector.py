@@ -250,12 +250,9 @@ class ZipContentInspector:
         ):
             threats.append(f"Nested archive detected: '{filename}'")
 
-        # 9. Check file content if enabled and entry is small enough
-        if (
-            self.config.limits.scan_zip_content
-            and not entry.is_dir()
-            and entry.file_size < 1024 * 1024
-        ):  # 1MB limit for content scan
+        # 9. Check file content if enabled
+        # Only first 512 bytes are read, so no size gate needed
+        if self.config.limits.scan_zip_content and not entry.is_dir():
             content_threats = self._inspect_entry_content(entry, zip_file)
             threats.extend(content_threats)
 

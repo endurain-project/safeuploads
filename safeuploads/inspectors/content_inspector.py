@@ -221,9 +221,10 @@ class ContentSecurityInspector:
             return []
 
         threats: list[str] = []
-        # Skip first 16 bytes (valid header area)
-        # and search rest for secondary signatures
-        tail = content[16:]
+        # Skip first 8 bytes (longest common header is
+        # PNG at 8 bytes) and search rest for secondary
+        # signatures to detect polyglot files
+        tail = content[8:]
         for sig in self._polyglot_sigs:
             if sig in tail:
                 threats.append(

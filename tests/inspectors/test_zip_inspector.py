@@ -436,13 +436,13 @@ class TestZipContentInspector:
         # Should not raise when content scanning disabled
         inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
-    def test_skip_content_scan_for_large_files(self):
-        """Test that large files skip content scanning."""
+    def test_scan_content_for_large_files(self):
+        """Test that large files are also content-scanned."""
         config = FileSecurityConfig()
         config.limits = SecurityLimits(scan_zip_content=True)
         inspector = ZipContentInspector(config)
 
-        # Large file (> 1MB) should skip content scan
+        # Large file (> 1MB) with executable signature
         large_content = b"MZ\x90\x00" + b"\x00" * (2 * 1024 * 1024)
 
         zip_buffer = io.BytesIO()
@@ -451,8 +451,11 @@ class TestZipContentInspector:
         ) as zf:
             zf.writestr("large.bin", large_content)
 
-        # Should not raise even with executable signature in large file
-        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        # Should detect executable signature regardless of size
+        with pytest.raises(ZipContentError):
+            inspector.inspect_zip_content(
+                io.BytesIO(zip_buffer.getvalue())
+            )
 
     def test_handle_corrupted_zip(self, default_config):
         """Test handling of corrupted ZIP file."""

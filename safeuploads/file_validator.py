@@ -138,10 +138,15 @@ class FileValidator:
         return detected_mime or "application/octet-stream"
 
     @staticmethod
-    @functools.lru_cache(maxsize=256)
+    @functools.lru_cache(maxsize=64)
     def _guess_mime_by_name(filename: str) -> str | None:
         """
-        Guess MIME type from filename with caching.
+        Guess MIME type from filename extension with caching.
+
+        Uses only the file extension as input to
+        ``mimetypes.guess_type`` to keep the cache keyspace
+        small and prevent attacker-controlled filenames from
+        bloating the LRU cache.
 
         Args:
             filename: Filename to guess MIME type for.
@@ -149,7 +154,10 @@ class FileValidator:
         Returns:
             Guessed MIME type or None.
         """
-        mime, _ = mimetypes.guess_type(filename)
+        ext = os.path.splitext(filename)[1].lower()
+        if not ext:
+            return None
+        mime, _ = mimetypes.guess_type(f"file{ext}")
         return mime
 
     def _validate_file_signature(

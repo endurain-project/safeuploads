@@ -1,6 +1,4 @@
-"""
-XXE-safe XML validator for GPX/TCX activity files.
-"""
+"""XXE-safe XML validator for GPX/TCX activity files."""
 
 from __future__ import annotations
 
@@ -10,12 +8,12 @@ from xml.etree.ElementTree import ParseError
 
 from defusedxml import ElementTree as DefusedET
 
-from .base import BaseValidator
 from ..exceptions import FileProcessingError
+from .base import BaseValidator
 
 if TYPE_CHECKING:
-    from ..protocols import SeekableFile
     from ..config import FileSecurityConfig
+    from ..protocols import SeekableFile
 
 
 logger = logging.getLogger(__name__)
@@ -42,9 +40,7 @@ class XmlSecurityValidator(BaseValidator):
         """
         super().__init__(config)
 
-    def validate_xml_safety(
-        self, file_obj: SeekableFile
-    ) -> None:
+    def validate_xml_safety(self, file_obj: SeekableFile) -> None:
         """
         Parse XML with XXE protections and validate structure.
 
@@ -62,37 +58,31 @@ class XmlSecurityValidator(BaseValidator):
             # entity expansion by default.
             # forbid_dtd=True rejects ALL DTD declarations.
             DefusedET.parse(file_obj, forbid_dtd=True)
-        except DefusedET.DTDForbidden:
+        except DefusedET.DTDForbidden as err:
             logger.warning("XML contains forbidden DTD declaration")
             raise FileProcessingError(
                 "XML contains forbidden DTD declaration"
-            )
-        except DefusedET.EntitiesForbidden:
+            ) from err
+        except DefusedET.EntitiesForbidden as err:
             logger.warning("XML contains forbidden entity reference")
             raise FileProcessingError(
                 "XML contains forbidden external entity"
-            )
-        except DefusedET.ExternalReferenceForbidden:
+            ) from err
+        except DefusedET.ExternalReferenceForbidden as err:
             logger.warning("XML contains forbidden external reference")
             raise FileProcessingError(
                 "XML contains forbidden external reference"
-            )
+            ) from err
         except ParseError as err:
             logger.warning("Malformed XML: %s", err)
-            raise FileProcessingError(
-                "Malformed XML content"
-            ) from err
+            raise FileProcessingError("Malformed XML content") from err
         except Exception as err:
             logger.warning("XML validation failed: %s", err)
-            raise FileProcessingError(
-                "XML validation failed"
-            ) from err
+            raise FileProcessingError("XML validation failed") from err
 
         file_obj.seek(0)
 
-    def validate(
-        self, file_obj: SeekableFile
-    ) -> None:
+    def validate(self, file_obj: SeekableFile) -> None:
         """
         Validate XML file for security threats.
 

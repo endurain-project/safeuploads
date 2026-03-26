@@ -26,9 +26,7 @@ from enum import Enum
 # ----------------------------------------------------------------
 
 correlation_id_var: contextvars.ContextVar[str | None] = (
-    contextvars.ContextVar(
-        "safeuploads_correlation_id", default=None
-    )
+    contextvars.ContextVar("safeuploads_correlation_id", default=None)
 )
 
 
@@ -59,9 +57,7 @@ def set_correlation_id(cid: str | None = None) -> str:
 
 
 def reset_correlation_id() -> None:
-    """
-    Clear the current correlation ID.
-    """
+    """Clear the current correlation ID."""
     correlation_id_var.set(None)
 
 
@@ -89,7 +85,7 @@ def log_extra(
 # ----------------------------------------------------------------
 
 
-class AuditEventType(str, Enum):
+class AuditEventType(Enum):
     """
     Types of security audit events.
 
@@ -131,9 +127,7 @@ class AuditEvent:
     details: str = ""
     duration_ms: float = 0.0
     source_ip: str | None = None
-    timestamp: float = field(
-        default_factory=time.monotonic
-    )
+    timestamp: float = field(default_factory=time.monotonic)
 
 
 # ----------------------------------------------------------------
@@ -240,9 +234,7 @@ class SecurityAuditLogger:
         """
         self.log_event(
             AuditEvent(
-                event_type=(
-                    AuditEventType.VALIDATION_SUCCESS
-                ),
+                event_type=(AuditEventType.VALIDATION_SUCCESS),
                 correlation_id=correlation_id,
                 filename=filename,
                 result="passed",
@@ -270,9 +262,7 @@ class SecurityAuditLogger:
         """
         self.log_event(
             AuditEvent(
-                event_type=(
-                    AuditEventType.VALIDATION_FAILURE
-                ),
+                event_type=(AuditEventType.VALIDATION_FAILURE),
                 correlation_id=correlation_id,
                 filename=filename,
                 result=error,

@@ -17,7 +17,6 @@ except ImportError:
 
 from .audit import (
     SecurityAuditLogger,
-    get_correlation_id,
     reset_correlation_id,
     set_correlation_id,
 )
@@ -91,9 +90,7 @@ class FileValidator:
         self.zip_inspector = ZipContentInspector(self.config)
         self.xml_validator = XmlSecurityValidator(self.config)
         self.gzip_inspector = GzipContentInspector(self.config)
-        self.content_inspector = ContentSecurityInspector(
-            self.config
-        )
+        self.content_inspector = ContentSecurityInspector(self.config)
 
         # Initialize audit logger
         self._audit = SecurityAuditLogger(
@@ -144,7 +141,7 @@ class FileValidator:
     @functools.lru_cache(maxsize=256)
     def _guess_mime_by_name(filename: str) -> str | None:
         """
-        Cached filename-based MIME type guess.
+        Guess MIME type from filename with caching.
 
         Args:
             filename: Filename to guess MIME type for.
@@ -207,9 +204,12 @@ class FileValidator:
                 return  # Signature matched
 
         # FIT files: ".FIT" at bytes 8-11
-        if expected_type == "fit":
-            if len(file_content) >= 12 and file_content[8:12] == b".FIT":
-                return
+        if (
+            expected_type == "fit"
+            and len(file_content) >= 12
+            and file_content[8:12] == b".FIT"
+        ):
+            return
 
         # No matching signature found
         raise FileSignatureError(
@@ -579,18 +579,12 @@ class FileValidator:
 
                 # Optional content analysis
                 if self.config.limits.enable_content_analysis:
-                    scan_size = (
-                        self.config.limits
-                        .content_scan_max_size
-                    )
+                    scan_size = self.config.limits.content_scan_max_size
                     sample = file_content[:scan_size]
-                    threats = (
-                        self.content_inspector
-                        .scan_content(
-                            sample,
-                            filename,
-                            "image",
-                        )
+                    threats = self.content_inspector.scan_content(
+                        sample,
+                        filename,
+                        "image",
                     )
                     if threats:
                         raise FileProcessingError(
@@ -614,13 +608,19 @@ class FileValidator:
         ) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, str(exc),
+                filename,
+                cid,
+                ms,
+                str(exc),
             )
             raise
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, "internal_error",
+                filename,
+                cid,
+                ms,
+                "internal_error",
             )
             logger.exception("Error during image file validation: %s", err)
             raise FileProcessingError(
@@ -727,21 +727,13 @@ class FileValidator:
                     # Optional content analysis
                     if self.config.limits.enable_content_analysis:
                         temp_file.seek(0)
-                        scan_size = (
-                            self.config.limits
-                            .content_scan_max_size
-                        )
-                        sample = temp_file.read(
-                            scan_size
-                        )
+                        scan_size = self.config.limits.content_scan_max_size
+                        sample = temp_file.read(scan_size)
                         temp_file.seek(0)
-                        threats = (
-                            self.content_inspector
-                            .scan_content(
-                                sample,
-                                filename,
-                                "zip",
-                            )
+                        threats = self.content_inspector.scan_content(
+                            sample,
+                            filename,
+                            "zip",
                         )
                         if threats:
                             raise FileProcessingError(
@@ -767,13 +759,19 @@ class FileValidator:
         ) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, str(exc),
+                filename,
+                cid,
+                ms,
+                str(exc),
             )
             raise
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, "internal_error",
+                filename,
+                cid,
+                ms,
+                "internal_error",
             )
             logger.exception("Error during ZIP file validation: %s", err)
             raise FileProcessingError(
@@ -783,9 +781,7 @@ class FileValidator:
         finally:
             reset_correlation_id()
 
-    async def validate_activity_file(
-        self, file: UploadFile
-    ) -> None:
+    async def validate_activity_file(self, file: UploadFile) -> None:
         """
         Validate uploaded activity file (GPX, TCX, FIT).
 
@@ -817,20 +813,13 @@ class FileValidator:
 
             with ResourceMonitor(
                 max_time_seconds=(
-                    self.config.limits
-                    .max_validation_time_seconds
+                    self.config.limits.max_validation_time_seconds
                 ),
-                max_memory_mb=(
-                    self.config.limits
-                    .max_validation_memory_mb
-                ),
+                max_memory_mb=(self.config.limits.max_validation_memory_mb),
             ):
-                temp_file, file_size = (
-                    await self._stream_to_temp_file(
-                        file,
-                        self.config.limits
-                        .max_activity_file_size,
-                    )
+                temp_file, file_size = await self._stream_to_temp_file(
+                    file,
+                    self.config.limits.max_activity_file_size,
                 )
 
                 try:
@@ -838,23 +827,15 @@ class FileValidator:
                     temp_file.seek(0)
 
                     filename = file.filename or "unknown"
-                    detected_mime = self._detect_mime_type(
-                        header, filename
-                    )
+                    detected_mime = self._detect_mime_type(header, filename)
 
-                    _, ext = os.path.splitext(
-                        filename.lower()
-                    )
+                    _, ext = os.path.splitext(filename.lower())
                     is_fit = ext == ".fit"
 
                     # Signature check
-                    sig_type = (
-                        "fit" if is_fit else "activity"
-                    )
+                    sig_type = "fit" if is_fit else "activity"
                     try:
-                        self._validate_file_signature(
-                            header, sig_type
-                        )
+                        self._validate_file_signature(header, sig_type)
                     except FileSignatureError as err:
                         raise FileSignatureError(
                             "File content does not match"
@@ -865,10 +846,7 @@ class FileValidator:
 
                     # MIME check — be lenient for FIT
                     if not is_fit:
-                        allowed = (
-                            self.config
-                            .ALLOWED_ACTIVITY_MIMES
-                        )
+                        allowed = self.config.ALLOWED_ACTIVITY_MIMES
                         if detected_mime not in allowed:
                             raise MimeTypeError(
                                 "Invalid file type."
@@ -881,14 +859,10 @@ class FileValidator:
 
                     # XXE-safe XML validation for GPX/TCX
                     if not is_fit:
-                        self.xml_validator\
-                            .validate_xml_safety(
-                                temp_file
-                            )
+                        self.xml_validator.validate_xml_safety(temp_file)
 
                     logger.debug(
-                        "Activity file validation passed:"
-                        " %s (%s, %s bytes)",
+                        "Activity file validation passed: %s (%s, %s bytes)",
                         filename,
                         detected_mime,
                         file_size,
@@ -900,30 +874,32 @@ class FileValidator:
         except (FileValidationError, ResourceLimitError) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, str(exc),
+                filename,
+                cid,
+                ms,
+                str(exc),
             )
             raise
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, "internal_error",
+                filename,
+                cid,
+                ms,
+                "internal_error",
             )
             logger.exception(
-                "Error during activity file validation:"
-                " %s",
+                "Error during activity file validation: %s",
                 err,
             )
             raise FileProcessingError(
-                "File validation failed due to"
-                " internal error",
+                "File validation failed due to internal error",
                 original_error=err,
             ) from err
         finally:
             reset_correlation_id()
 
-    async def validate_gzip_file(
-        self, file: UploadFile
-    ) -> None:
+    async def validate_gzip_file(self, file: UploadFile) -> None:
         """
         Validate uploaded gzip archive.
 
@@ -956,19 +932,13 @@ class FileValidator:
 
             with ResourceMonitor(
                 max_time_seconds=(
-                    self.config.limits
-                    .max_validation_time_seconds
+                    self.config.limits.max_validation_time_seconds
                 ),
-                max_memory_mb=(
-                    self.config.limits
-                    .max_validation_memory_mb
-                ),
+                max_memory_mb=(self.config.limits.max_validation_memory_mb),
             ):
-                temp_file, file_size = (
-                    await self._stream_to_temp_file(
-                        file,
-                        self.config.limits.max_gzip_size,
-                    )
+                temp_file, file_size = await self._stream_to_temp_file(
+                    file,
+                    self.config.limits.max_gzip_size,
                 )
 
                 try:
@@ -976,51 +946,41 @@ class FileValidator:
                     temp_file.seek(0)
 
                     filename = file.filename or "unknown"
-                    detected_mime = self._detect_mime_type(
-                        header, filename
-                    )
+                    detected_mime = self._detect_mime_type(header, filename)
 
                     # Signature check
                     try:
-                        self._validate_file_signature(
-                            header, "gzip"
-                        )
+                        self._validate_file_signature(header, "gzip")
                     except FileSignatureError as err:
                         raise FileSignatureError(
-                            "File content does not match"
-                            " gzip format",
+                            "File content does not match gzip format",
                             filename=filename,
                             expected_type="gzip",
                         ) from err
 
                     # MIME check — allow octet-stream
-                    allowed = (
-                        self.config.ALLOWED_GZIP_MIMES
-                    )
-                    if detected_mime not in allowed:
-                        if (
-                            detected_mime
-                            != "application/octet-stream"
-                        ):
-                            raise MimeTypeError(
-                                "Invalid file type."
-                                f" Detected:"
-                                f" {detected_mime}."
-                                " Expected gzip file.",
-                                filename=filename,
-                                detected_mime=detected_mime,
-                                allowed_mimes=list(allowed),
-                            )
-
-                    # Decompression bomb check
-                    self.gzip_inspector\
-                        .inspect_gzip_content(
-                            temp_file, file_size
+                    allowed = self.config.ALLOWED_GZIP_MIMES
+                    if (
+                        detected_mime not in allowed
+                        and detected_mime != "application/octet-stream"
+                    ):
+                        raise MimeTypeError(
+                            "Invalid file type."
+                            f" Detected:"
+                            f" {detected_mime}."
+                            " Expected gzip file.",
+                            filename=filename,
+                            detected_mime=detected_mime,
+                            allowed_mimes=list(allowed),
                         )
 
+                    # Decompression bomb check
+                    self.gzip_inspector.inspect_gzip_content(
+                        temp_file, file_size
+                    )
+
                     logger.debug(
-                        "Gzip file validation passed:"
-                        " %s (%s, %s bytes)",
+                        "Gzip file validation passed: %s (%s, %s bytes)",
                         filename,
                         detected_mime,
                         file_size,
@@ -1032,22 +992,26 @@ class FileValidator:
         except (FileValidationError, ResourceLimitError) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, str(exc),
+                filename,
+                cid,
+                ms,
+                str(exc),
             )
             raise
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                filename, cid, ms, "internal_error",
+                filename,
+                cid,
+                ms,
+                "internal_error",
             )
             logger.exception(
-                "Error during gzip file validation:"
-                " %s",
+                "Error during gzip file validation: %s",
                 err,
             )
             raise FileProcessingError(
-                "File validation failed due to"
-                " internal error",
+                "File validation failed due to internal error",
                 original_error=err,
             ) from err
         finally:

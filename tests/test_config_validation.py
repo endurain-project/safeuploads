@@ -854,10 +854,8 @@ class TestValidateAndReportStrictMode:
             FileSecurityConfig.validate_and_report(strict=True)
 
 
-class TestCrossDependencyValidation:
-    def test_uppercase_reserved_name_generates_warning(
-        self, monkeypatch
-    ):
+class TestCrossDependencyValidationExtra:
+    def test_uppercase_reserved_name_generates_warning(self, monkeypatch):
         monkeypatch.setattr(
             FileSecurityConfig,
             "WINDOWS_RESERVED_NAMES",
@@ -890,18 +888,12 @@ class TestCrossDependencyValidation:
 
 class TestZipExtensionBlockedConflict:
     def test_zip_ext_in_blocked_generates_error(self, monkeypatch):
-        original_blocked = (
-            FileSecurityConfig.BLOCKED_EXTENSIONS.copy()
-        )
+        original_blocked = FileSecurityConfig.BLOCKED_EXTENSIONS.copy()
         monkeypatch.setattr(
             FileSecurityConfig,
             "BLOCKED_EXTENSIONS",
             original_blocked | {".zip"},
         )
         errors = FileSecurityConfig.validate_configuration()
-        types = [
-            e.error_type
-            for e in errors
-            if e.severity == "error"
-        ]
+        types = [e.error_type for e in errors if e.severity == "error"]
         assert "extension_conflict" in types

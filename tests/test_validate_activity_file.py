@@ -50,7 +50,7 @@ _FIT_CONTENT = (
 
 _XXE_XML = (
     b'<?xml version="1.0"?>'
-    b'<!DOCTYPE foo ['
+    b"<!DOCTYPE foo ["
     b'<!ENTITY xxe SYSTEM "file:///etc/passwd">'
     b"]>"
     b"<gpx>&xxe;</gpx>"
@@ -107,9 +107,7 @@ class TestValidateActivityFileFilenameErrors:
         self, mock_upload_file, dangerous_unicode_filename
     ):
         validator = FileValidator()
-        f = mock_upload_file(
-            dangerous_unicode_filename, _GPX_CONTENT
-        )
+        f = mock_upload_file(dangerous_unicode_filename, _GPX_CONTENT)
         with pytest.raises(UnicodeSecurityError):
             await validator.validate_activity_file(f)
 
@@ -226,9 +224,7 @@ class TestValidateActivityFileExceptionWrapping:
         async def _raise_runtime(*_args, **_kwargs):
             raise RuntimeError("unexpected failure")
 
-        monkeypatch.setattr(
-            validator, "_stream_to_temp_file", _raise_runtime
-        )
+        monkeypatch.setattr(validator, "_stream_to_temp_file", _raise_runtime)
         f = mock_upload_file("track.gpx", _GPX_CONTENT)
         with pytest.raises(FileProcessingError):
             await validator.validate_activity_file(f)
@@ -244,9 +240,7 @@ class TestValidateActivityFileAuditEvents:
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
         f = mock_upload_file("track.gpx", _GPX_CONTENT)
-        with caplog.at_level(
-            logging.INFO, logger="safeuploads.audit"
-        ):
+        with caplog.at_level(logging.INFO, logger="safeuploads.audit"):
             await validator.validate_activity_file(f)
 
         audit_msgs = [
@@ -264,11 +258,11 @@ class TestValidateActivityFileAuditEvents:
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
         f = mock_upload_file("", _GPX_CONTENT)
-        with caplog.at_level(
-            logging.WARNING, logger="safeuploads.audit"
+        with (
+            caplog.at_level(logging.WARNING, logger="safeuploads.audit"),
+            pytest.raises(FilenameSecurityError),
         ):
-            with pytest.raises(FilenameSecurityError):
-                await validator.validate_activity_file(f)
+            await validator.validate_activity_file(f)
 
         audit_msgs = [
             r.getMessage()
@@ -302,9 +296,7 @@ class TestValidateActivityFileResourceLimit:
         self, mock_upload_file
     ):
         config = FileSecurityConfig()
-        config.limits = SecurityLimits(
-            max_validation_time_seconds=-1.0
-        )
+        config.limits = SecurityLimits(max_validation_time_seconds=-1.0)
         validator = FileValidator(config=config)
         f = mock_upload_file("track.gpx", _GPX_CONTENT)
         with pytest.raises(ResourceLimitError):

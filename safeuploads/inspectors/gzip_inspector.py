@@ -1,6 +1,4 @@
-"""
-Gzip archive inspector for decompression bomb detection.
-"""
+"""Gzip archive inspector for decompression bomb detection."""
 
 from __future__ import annotations
 
@@ -8,13 +6,13 @@ import gzip
 import logging
 from typing import TYPE_CHECKING
 
+from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
 from ..exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
     ZipBombError,
 )
-from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -71,9 +69,7 @@ class GzipContentInspector:
         total_uncompressed = 0
         chunk_size = self.config.limits.chunk_size
         max_ratio = self.config.limits.max_compression_ratio
-        max_uncompressed = (
-            self.config.limits.max_uncompressed_size
-        )
+        max_uncompressed = self.config.limits.max_uncompressed_size
 
         try:
             with gzip.open(file_obj, "rb") as gz:
@@ -86,8 +82,7 @@ class GzipContentInspector:
                     # Check uncompressed size limit
                     if total_uncompressed > max_uncompressed:
                         logger.error(
-                            "Gzip uncompressed size exceeded: "
-                            "%dMB > %dMB",
+                            "Gzip uncompressed size exceeded: %dMB > %dMB",
                             total_uncompressed // (1024 * 1024),
                             max_uncompressed // (1024 * 1024),
                             extra=log_extra(),
@@ -95,9 +90,9 @@ class GzipContentInspector:
                         cid = get_correlation_id()
                         if cid:
                             self._audit.threat(
-                                "", cid,
-                                "Gzip decompression bomb"
-                                " — size exceeded",
+                                "",
+                                cid,
+                                "Gzip decompression bomb — size exceeded",
                             )
                         raise ZipBombError(
                             message=(
@@ -108,18 +103,13 @@ class GzipContentInspector:
                                 f" {max_uncompressed // (1024 * 1024)}MB"
                             ),
                             compression_ratio=0,
-                            uncompressed_size=(
-                                total_uncompressed
-                            ),
+                            uncompressed_size=(total_uncompressed),
                             max_size=max_uncompressed,
                         )
 
                     # Check ratio progressively
                     if compressed_size > 0:
-                        ratio = (
-                            total_uncompressed
-                            / compressed_size
-                        )
+                        ratio = total_uncompressed / compressed_size
                         if ratio > max_ratio:
                             logger.error(
                                 "Gzip compression ratio"
@@ -132,9 +122,9 @@ class GzipContentInspector:
                             cid = get_correlation_id()
                             if cid:
                                 self._audit.threat(
-                                    "", cid,
-                                    "Gzip decompression bomb"
-                                    " — ratio exceeded",
+                                    "",
+                                    cid,
+                                    "Gzip decompression bomb — ratio exceeded",
                                 )
                             raise ZipBombError(
                                 message=(
@@ -145,9 +135,7 @@ class GzipContentInspector:
                                     f" {max_ratio}:1"
                                 ),
                                 compression_ratio=ratio,
-                                max_ratio=float(
-                                    max_ratio
-                                ),
+                                max_ratio=float(max_ratio),
                             )
 
         except ZipBombError:
@@ -158,15 +146,11 @@ class GzipContentInspector:
                 exc_info=True,
             )
             raise CompressionSecurityError(
-                message=(
-                    "Invalid or corrupted gzip file"
-                ),
+                message=("Invalid or corrupted gzip file"),
                 error_code=ErrorCode.ZIP_CORRUPT,
             ) from err
         except EOFError as err:
-            logger.error(
-                "Truncated gzip file", exc_info=True
-            )
+            logger.error("Truncated gzip file", exc_info=True)
             raise CompressionSecurityError(
                 message="Truncated gzip file",
                 error_code=ErrorCode.ZIP_CORRUPT,
@@ -195,12 +179,9 @@ class GzipContentInspector:
 
         # Final overall ratio check
         if compressed_size > 0 and total_uncompressed > 0:
-            overall_ratio = (
-                total_uncompressed / compressed_size
-            )
+            overall_ratio = total_uncompressed / compressed_size
             logger.debug(
-                "Gzip analysis: %dMB uncompressed,"
-                " ratio %.1f:1",
+                "Gzip analysis: %dMB uncompressed, ratio %.1f:1",
                 total_uncompressed // (1024 * 1024),
                 overall_ratio,
             )

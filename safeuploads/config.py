@@ -142,7 +142,9 @@ class FileSecurityConfig:
     ALLOWED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png"}
     ALLOWED_ZIP_EXTENSIONS: set[str] = {".zip"}
     ALLOWED_ACTIVITY_EXTENSIONS: set[str] = {
-        ".gpx", ".tcx", ".fit",
+        ".gpx",
+        ".tcx",
+        ".fit",
     }
     ALLOWED_GZIP_EXTENSIONS: set[str] = {".gz"}
 
@@ -198,9 +200,7 @@ class FileSecurityConfig:
         return frozenset(dangerous_chars)
 
     # Dangerous file extensions (generated from enums)
-    BLOCKED_EXTENSIONS: frozenset[str] = (
-        _generate_blocked_extensions()
-    )
+    BLOCKED_EXTENSIONS: frozenset[str] = _generate_blocked_extensions()
 
     # Compound dangerous extensions (multi-part)
     COMPOUND_BLOCKED_EXTENSIONS: frozenset[str] = (
@@ -213,30 +213,32 @@ class FileSecurityConfig:
     )
 
     # Windows reserved names
-    WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset({
-        "con",
-        "prn",
-        "aux",
-        "nul",
-        "com1",
-        "com2",
-        "com3",
-        "com4",
-        "com5",
-        "com6",
-        "com7",
-        "com8",
-        "com9",
-        "lpt1",
-        "lpt2",
-        "lpt3",
-        "lpt4",
-        "lpt5",
-        "lpt6",
-        "lpt7",
-        "lpt8",
-        "lpt9",
-    })
+    WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset(
+        {
+            "con",
+            "prn",
+            "aux",
+            "nul",
+            "com1",
+            "com2",
+            "com3",
+            "com4",
+            "com5",
+            "com6",
+            "com7",
+            "com8",
+            "com9",
+            "lpt1",
+            "lpt2",
+            "lpt3",
+            "lpt4",
+            "lpt5",
+            "lpt6",
+            "lpt7",
+            "lpt8",
+            "lpt9",
+        }
+    )
 
     # Configuration validation trigger
     @classmethod

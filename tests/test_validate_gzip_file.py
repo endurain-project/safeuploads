@@ -143,9 +143,7 @@ class TestValidateGzipFileExceptionWrapping:
         async def _raise_runtime(*_args, **_kwargs):
             raise RuntimeError("unexpected failure")
 
-        monkeypatch.setattr(
-            validator, "_stream_to_temp_file", _raise_runtime
-        )
+        monkeypatch.setattr(validator, "_stream_to_temp_file", _raise_runtime)
         f = mock_upload_file("archive.gz", _VALID_GZIP)
         with pytest.raises(FileProcessingError):
             await validator.validate_gzip_file(f)
@@ -161,9 +159,7 @@ class TestValidateGzipFileAuditEvents:
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
         f = mock_upload_file("archive.gz", _VALID_GZIP)
-        with caplog.at_level(
-            logging.INFO, logger="safeuploads.audit"
-        ):
+        with caplog.at_level(logging.INFO, logger="safeuploads.audit"):
             await validator.validate_gzip_file(f)
 
         audit_msgs = [
@@ -181,11 +177,11 @@ class TestValidateGzipFileAuditEvents:
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
         f = mock_upload_file(None, _VALID_GZIP)
-        with caplog.at_level(
-            logging.WARNING, logger="safeuploads.audit"
+        with (
+            caplog.at_level(logging.WARNING, logger="safeuploads.audit"),
+            pytest.raises(FilenameSecurityError),
         ):
-            with pytest.raises(FilenameSecurityError):
-                await validator.validate_gzip_file(f)
+            await validator.validate_gzip_file(f)
 
         audit_msgs = [
             r.getMessage()
@@ -235,9 +231,7 @@ class TestValidateGzipFileResourceLimit:
         self, mock_upload_file
     ):
         config = FileSecurityConfig()
-        config.limits = SecurityLimits(
-            max_validation_time_seconds=-1.0
-        )
+        config.limits = SecurityLimits(max_validation_time_seconds=-1.0)
         validator = FileValidator(config=config)
         f = mock_upload_file("archive.gz", _VALID_GZIP)
         with pytest.raises(ResourceLimitError):

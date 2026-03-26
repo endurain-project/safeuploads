@@ -720,14 +720,10 @@ class TestCompressionSecurityValidator:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(zip_bytes), len(zip_bytes)
             )
-        assert (
-            exc_info.value.error_code
-            == ErrorCode.ZIP_COMPLEXITY_ATTACK
-        )
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
 
 
 class TestCompressionValidatorNestedAllowed:
-
     def test_nested_zip_allowed_when_configured_passes(
         self,
     ):
@@ -743,9 +739,7 @@ class TestCompressionValidatorNestedAllowed:
 
         outer_zip = io.BytesIO()
         with zipfile.ZipFile(outer_zip, "w") as zf:
-            zf.writestr(
-                "nested.zip", inner_zip.getvalue()
-            )
+            zf.writestr("nested.zip", inner_zip.getvalue())
 
         zip_bytes = outer_zip.getvalue()
 
@@ -776,6 +770,4 @@ class TestCompressionValidatorNestedAllowed:
         # so line 272 "if total_compressed_size > 0:" is False
         # and the branch jumps to line 306 (272->306).
         # allow_nested_archives=True prevents the raise at 306.
-        validator.validate_zip_compression_ratio(
-            io.BytesIO(zip_bytes), 0
-        )
+        validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), 0)

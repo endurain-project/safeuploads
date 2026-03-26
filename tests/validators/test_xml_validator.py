@@ -4,7 +4,6 @@ import io
 
 import pytest
 
-from safeuploads.config import FileSecurityConfig
 from safeuploads.exceptions import FileProcessingError
 from safeuploads.validators.xml_validator import XmlSecurityValidator
 
@@ -23,7 +22,7 @@ class TestXmlSecurityValidator:
         gpx_xml = (
             b'<?xml version="1.0" encoding="UTF-8"?>'
             b"<gpx><trk><trkseg>"
-            b"<trkpt lat=\"0\" lon=\"0\"/>"
+            b'<trkpt lat="0" lon="0"/>'
             b"</trkseg></trk></gpx>"
         )
         file_obj = io.BytesIO(gpx_xml)
@@ -35,7 +34,7 @@ class TestXmlSecurityValidator:
         tcx_xml = (
             b'<?xml version="1.0" encoding="UTF-8"?>'
             b"<TrainingCenterDatabase>"
-            b"<Activities><Activity Sport=\"Running\">"
+            b'<Activities><Activity Sport="Running">'
             b"</Activity></Activities>"
             b"</TrainingCenterDatabase>"
         )
@@ -101,18 +100,14 @@ class TestXmlSecurityValidator:
         with pytest.raises(FileProcessingError):
             validator.validate_xml_safety(file_obj)
 
-    def test_validate_delegates_to_validate_xml_safety(
-        self, default_config
-    ):
+    def test_validate_delegates_to_validate_xml_safety(self, default_config):
         """Test validate() delegates correctly."""
         validator = XmlSecurityValidator(default_config)
         valid_xml = b"<root/>"
         file_obj = io.BytesIO(valid_xml)
         validator.validate(file_obj)
 
-    def test_file_position_reset_after_validation(
-        self, default_config
-    ):
+    def test_file_position_reset_after_validation(self, default_config):
         """Test file position is reset after validation."""
         validator = XmlSecurityValidator(default_config)
         valid_xml = b"<root><child/></root>"
@@ -124,11 +119,7 @@ class TestXmlSecurityValidator:
     def test_xml_with_bom(self, default_config):
         """Test XML with byte order mark passes."""
         validator = XmlSecurityValidator(default_config)
-        bom_xml = (
-            b"\xef\xbb\xbf"
-            b'<?xml version="1.0" encoding="UTF-8"?>'
-            b"<root/>"
-        )
+        bom_xml = b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?><root/>'
         file_obj = io.BytesIO(bom_xml)
         validator.validate_xml_safety(file_obj)
 
@@ -141,11 +132,10 @@ class TestXmlSecurityValidator:
 
 
 class TestXmlValidatorDefusedxmlBranches:
-    def test_entities_forbidden_raises(
-        self, default_config, monkeypatch
-    ):
-        import safeuploads.validators.xml_validator as _mod
+    def test_entities_forbidden_raises(self, default_config, monkeypatch):
         from defusedxml import ElementTree as DefusedET
+
+        import safeuploads.validators.xml_validator as _mod
 
         validator = XmlSecurityValidator(default_config)
 
@@ -155,33 +145,24 @@ class TestXmlValidatorDefusedxmlBranches:
             )
 
         monkeypatch.setattr(_mod.DefusedET, "parse", _raise_entities)
-        with pytest.raises(
-            FileProcessingError, match="entity"
-        ):
+        with pytest.raises(FileProcessingError, match="entity"):
             validator.validate_xml_safety(io.BytesIO(b"<root/>"))
 
-    def test_external_ref_forbidden_raises(
-        self, default_config, monkeypatch
-    ):
-        import safeuploads.validators.xml_validator as _mod
+    def test_external_ref_forbidden_raises(self, default_config, monkeypatch):
         from defusedxml import ElementTree as DefusedET
+
+        import safeuploads.validators.xml_validator as _mod
 
         validator = XmlSecurityValidator(default_config)
 
         def _raise_ext(*a, **kw):
-            raise DefusedET.ExternalReferenceForbidden(
-                "ref", None, None, None
-            )
+            raise DefusedET.ExternalReferenceForbidden("ref", None, None, None)
 
         monkeypatch.setattr(_mod.DefusedET, "parse", _raise_ext)
-        with pytest.raises(
-            FileProcessingError, match="external"
-        ):
+        with pytest.raises(FileProcessingError, match="external"):
             validator.validate_xml_safety(io.BytesIO(b"<root/>"))
 
-    def test_unexpected_exception_raises(
-        self, default_config, monkeypatch
-    ):
+    def test_unexpected_exception_raises(self, default_config, monkeypatch):
         import safeuploads.validators.xml_validator as _mod
 
         validator = XmlSecurityValidator(default_config)
@@ -190,7 +171,5 @@ class TestXmlValidatorDefusedxmlBranches:
             raise OSError("disk failure")
 
         monkeypatch.setattr(_mod.DefusedET, "parse", _raise_generic)
-        with pytest.raises(
-            FileProcessingError, match="failed"
-        ):
+        with pytest.raises(FileProcessingError, match="failed"):
             validator.validate_xml_safety(io.BytesIO(b"<root/>"))

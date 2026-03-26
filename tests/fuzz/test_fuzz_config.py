@@ -1,7 +1,7 @@
 """Fuzz tests for SecurityLimits configuration."""
 
 import pytest
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
@@ -44,9 +44,7 @@ class TestFuzzConfig:
         chunk=st.integers(min_value=512, max_value=2**18),
     )
     @settings(max_examples=100, deadline=3000)
-    def test_validator_init_with_random_config(
-        self, max_image, chunk
-    ):
+    def test_validator_init_with_random_config(self, max_image, chunk):
         """FileValidator must init with any valid config."""
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
@@ -62,9 +60,7 @@ class TestFuzzConfig:
         path_len=st.integers(min_value=1, max_value=4096),
     )
     @settings(max_examples=100, deadline=2000)
-    def test_zip_limits_accept_valid_ranges(
-        self, depth, fname_len, path_len
-    ):
+    def test_zip_limits_accept_valid_ranges(self, depth, fname_len, path_len):
         """ZIP inspection limits accept valid ranges."""
         limits = SecurityLimits(
             max_zip_depth=depth,
@@ -75,9 +71,7 @@ class TestFuzzConfig:
         assert limits.max_filename_length == fname_len
 
     @given(
-        buffer_size=st.integers(
-            min_value=1024, max_value=100 * 1024 * 1024
-        ),
+        buffer_size=st.integers(min_value=1024, max_value=100 * 1024 * 1024),
         memory_mb=st.integers(min_value=1, max_value=4096),
         time_s=st.floats(
             min_value=0.1,

@@ -1,18 +1,17 @@
 """Fuzz tests for ZIP validation."""
 
+import contextlib
 import io
-import struct
 import zipfile
 
 import pytest
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from safeuploads.config import FileSecurityConfig, SecurityLimits
+from safeuploads.config import FileSecurityConfig
 from safeuploads.exceptions import (
     CompressionSecurityError,
     FileProcessingError,
-    FileValidationError,
     ZipBombError,
     ZipContentError,
 )
@@ -20,7 +19,6 @@ from safeuploads.inspectors.zip_inspector import ZipContentInspector
 from safeuploads.validators.compression_validator import (
     CompressionSecurityValidator,
 )
-
 
 # Strategy: random filenames for ZIP entries
 _entry_name = st.text(
@@ -62,15 +60,11 @@ class TestFuzzZipInspector:
         except Exception:
             return  # Invalid ZIP construction
 
-        try:
-            inspector.inspect_zip_content(
-                io.BytesIO(buf.getvalue())
-            )
-        except (
+        with contextlib.suppress(
             ZipContentError,
             FileProcessingError,
         ):
-            pass  # Expected rejections
+            inspector.inspect_zip_content(io.BytesIO(buf.getvalue()))
 
     @given(data=st.binary(min_size=4, max_size=200))
     @settings(max_examples=200, deadline=3000)
@@ -79,13 +73,11 @@ class TestFuzzZipInspector:
         config = FileSecurityConfig()
         inspector = ZipContentInspector(config)
 
-        try:
-            inspector.inspect_zip_content(io.BytesIO(data))
-        except (
+        with contextlib.suppress(
             ZipContentError,
             FileProcessingError,
         ):
-            pass
+            inspector.inspect_zip_content(io.BytesIO(data))
 
 
 @pytest.mark.fuzz
@@ -94,12 +86,8 @@ class TestFuzzCompressionValidator:
 
     @given(
         num_files=st.integers(min_value=1, max_value=50),
-        content_size=st.integers(
-            min_value=1, max_value=5000
-        ),
-        content_byte=st.integers(
-            min_value=0, max_value=255
-        ),
+        content_size=st.integers(min_value=1, max_value=5000),
+        content_byte=st.integers(min_value=0, max_value=255),
     )
     @settings(max_examples=100, deadline=5000)
     def test_validate_never_crashes(
@@ -110,9 +98,7 @@ class TestFuzzCompressionValidator:
         validator = CompressionSecurityValidator(config)
 
         buf = io.BytesIO()
-        with zipfile.ZipFile(
-            buf, "w", zipfile.ZIP_DEFLATED
-        ) as zf:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for i in range(num_files):
                 zf.writestr(
                     f"file_{i}.txt",
@@ -120,13 +106,11 @@ class TestFuzzCompressionValidator:
                 )
 
         zip_bytes = buf.getvalue()
-        try:
-            validator.validate_zip_compression_ratio(
-                io.BytesIO(zip_bytes), len(zip_bytes)
-            )
-        except (
+        with contextlib.suppress(
             ZipBombError,
             CompressionSecurityError,
             FileProcessingError,
         ):
-            pass
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )

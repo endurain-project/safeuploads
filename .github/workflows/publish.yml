@@ -1,0 +1,67 @@
+name: Publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type the package version to confirm publish"
+        required: true
+        type: string
+
+# Only one publish at a time.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write  # Required for trusted publishing (OIDC)
+
+jobs:
+  publish:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    environment: pypi
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Verify version matches input
+        run: |
+          PKG_VERSION=$(python3 -c "
+          import tomllib, pathlib
+          data = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
+          print(data['project']['version'])
+          ")
+          if [ "$PKG_VERSION" != "${{ inputs.confirm }}" ]; then
+            echo "::error::Input version ${{ inputs.confirm }} does not match pyproject.toml version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Publishing version $PKG_VERSION"
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Run tests before publish
+        run: uv run pytest --cov-fail-under=90
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

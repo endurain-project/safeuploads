@@ -1,9 +1,8 @@
-"""
-Content security inspector for malware signatures,
-script injection, and polyglot file detection.
+"""Content security inspector for malware and polyglots.
 
-Scans raw file bytes for embedded threats that pass
-MIME/signature/extension checks. Gated behind
+Scans raw file bytes for embedded malware signatures,
+script injection, and polyglot file threats that pass
+MIME/signature/extension checks.  Gated behind
 ``enable_content_analysis`` in ``SecurityLimits``.
 """
 
@@ -18,7 +17,6 @@ from ..audit import (
     log_extra,
 )
 from ..enums import MalwareSignatureCategory
-from ..exceptions import FileProcessingError
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -115,30 +113,17 @@ class ContentSecurityInspector:
         threats: list[str] = []
 
         # 1. Executable signature scan
-        threats.extend(
-            self._check_executable_signatures(
-                content, filename
-            )
-        )
+        threats.extend(self._check_executable_signatures(content, filename))
 
         # 2. Script injection scan
-        threats.extend(
-            self._check_script_patterns(
-                content, filename
-            )
-        )
+        threats.extend(self._check_script_patterns(content, filename))
 
         # 3. Polyglot detection
-        threats.extend(
-            self._check_polyglot(
-                content, filename, expected_type
-            )
-        )
+        threats.extend(self._check_polyglot(content, filename, expected_type))
 
         if threats:
             logger.warning(
-                "Content analysis threats detected"
-                " in '%s': %s",
+                "Content analysis threats detected in '%s': %s",
                 filename,
                 "; ".join(threats),
                 extra=log_extra(),
@@ -170,9 +155,7 @@ class ContentSecurityInspector:
         for sig in self._executable_sigs:
             if sig in content:
                 threats.append(
-                    f"Executable signature detected"
-                    f" in '{filename}':"
-                    f" {sig!r}"
+                    f"Executable signature detected in '{filename}': {sig!r}"
                 )
                 break
         return threats
@@ -195,27 +178,21 @@ class ContentSecurityInspector:
         for sig in self._webshell_sigs:
             if sig in content:
                 threats.append(
-                    f"Web shell signature detected"
-                    f" in '{filename}':"
-                    f" {sig!r}"
+                    f"Web shell signature detected in '{filename}': {sig!r}"
                 )
                 break
 
         # Text-level script pattern scan
         try:
-            text = content.decode(
-                "utf-8", errors="ignore"
-            ).lower()
+            text = content.decode("utf-8", errors="ignore").lower()
             for pattern in _SCRIPT_PATTERNS:
                 if pattern in text:
                     threats.append(
-                        "Script pattern detected"
-                        f" in '{filename}':"
-                        f" '{pattern}'"
+                        f"Script pattern detected in '{filename}': '{pattern}'"
                     )
                     break
-        except Exception:
-            pass
+        except Exception:  # noqa: S110
+            pass  # Binary decoding failure is non-critical
 
         return threats
 

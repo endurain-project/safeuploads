@@ -32,9 +32,7 @@ class TestGzipContentInspector:
             gz.write(content)
         compressed = buf.getvalue()
         file_obj = io.BytesIO(compressed)
-        inspector.inspect_gzip_content(
-            file_obj, len(compressed)
-        )
+        inspector.inspect_gzip_content(file_obj, len(compressed))
 
     def test_reject_excessive_compression_ratio(self):
         """Test rejection of high compression ratio."""
@@ -54,9 +52,7 @@ class TestGzipContentInspector:
         file_obj = io.BytesIO(compressed)
 
         with pytest.raises(ZipBombError) as exc_info:
-            inspector.inspect_gzip_content(
-                file_obj, len(compressed)
-            )
+            inspector.inspect_gzip_content(file_obj, len(compressed))
         assert "ratio" in str(exc_info.value).lower()
 
     def test_reject_excessive_uncompressed_size(self):
@@ -76,9 +72,7 @@ class TestGzipContentInspector:
         file_obj = io.BytesIO(compressed)
 
         with pytest.raises(ZipBombError) as exc_info:
-            inspector.inspect_gzip_content(
-                file_obj, len(compressed)
-            )
+            inspector.inspect_gzip_content(file_obj, len(compressed))
         assert "size" in str(exc_info.value).lower()
 
     def test_reject_corrupted_gzip(self, default_config):
@@ -88,16 +82,10 @@ class TestGzipContentInspector:
         corrupted = b"\x1f\x8b\x08\x00" + b"corrupted"
         file_obj = io.BytesIO(corrupted)
 
-        with pytest.raises(
-            (CompressionSecurityError, FileProcessingError)
-        ):
-            inspector.inspect_gzip_content(
-                file_obj, len(corrupted)
-            )
+        with pytest.raises((CompressionSecurityError, FileProcessingError)):
+            inspector.inspect_gzip_content(file_obj, len(corrupted))
 
-    def test_file_position_reset_after_inspection(
-        self, default_config
-    ):
+    def test_file_position_reset_after_inspection(self, default_config):
         """Test file position is reset after inspection."""
         inspector = GzipContentInspector(default_config)
         content = b"test data"
@@ -106,9 +94,7 @@ class TestGzipContentInspector:
             gz.write(content)
         compressed = buf.getvalue()
         file_obj = io.BytesIO(compressed)
-        inspector.inspect_gzip_content(
-            file_obj, len(compressed)
-        )
+        inspector.inspect_gzip_content(file_obj, len(compressed))
         assert file_obj.tell() == 0
 
     def test_small_gzip_within_limits(self, default_config):
@@ -120,17 +106,11 @@ class TestGzipContentInspector:
             gz.write(content)
         compressed = buf.getvalue()
         file_obj = io.BytesIO(compressed)
-        inspector.inspect_gzip_content(
-            file_obj, len(compressed)
-        )
+        inspector.inspect_gzip_content(file_obj, len(compressed))
 
-    def test_memory_error_handling(
-        self, default_config, monkeypatch
-    ):
+    def test_memory_error_handling(self, default_config, monkeypatch):
         """Test handling of MemoryError during decompression."""
         inspector = GzipContentInspector(default_config)
-
-        original_open = gzip.open
 
         def mock_open(*args, **kwargs):
             raise MemoryError("Simulated memory error")
@@ -144,10 +124,7 @@ class TestGzipContentInspector:
 
 
 class TestGzipInspectorEdgeCases:
-
-    def test_compressed_size_zero_skips_ratio_check(
-        self, default_config
-    ):
+    def test_compressed_size_zero_skips_ratio_check(self, default_config):
         inspector = GzipContentInspector(default_config)
         content = b"Hello, World!"
         buf = io.BytesIO()
@@ -157,13 +134,9 @@ class TestGzipInspectorEdgeCases:
         # compressed_size=0 bypasses the in-loop
         # ratio check (line 97) and final ratio
         # log (line 197) — both False branches.
-        inspector.inspect_gzip_content(
-            io.BytesIO(compressed), 0
-        )
+        inspector.inspect_gzip_content(io.BytesIO(compressed), 0)
 
-    def test_eof_error_raises_compression_security_error(
-        self, default_config
-    ):
+    def test_eof_error_raises_compression_security_error(self, default_config):
         inspector = GzipContentInspector(default_config)
 
         # Create valid gzip then truncate to trigger
@@ -175,15 +148,11 @@ class TestGzipInspectorEdgeCases:
         full = buf.getvalue()
         truncated = full[:15]
 
-        with pytest.raises(
-            CompressionSecurityError
-        ) as exc:
+        with pytest.raises(CompressionSecurityError) as exc:
             inspector.inspect_gzip_content(
                 io.BytesIO(truncated), len(truncated)
             )
-        assert (
-            exc.value.error_code == ErrorCode.ZIP_CORRUPT
-        )
+        assert exc.value.error_code == ErrorCode.ZIP_CORRUPT
         assert "Truncated" in str(exc.value)
 
     def test_generic_exception_raises_file_processing_error(
@@ -204,9 +173,7 @@ class TestGzipInspectorEdgeCases:
         def _failing_open(*a, **kw):
             raise OSError("disk failure")
 
-        monkeypatch.setattr(
-            _m.gzip, "open", _failing_open
-        )
+        monkeypatch.setattr(_m.gzip, "open", _failing_open)
 
         with pytest.raises(FileProcessingError):
             inspector.inspect_gzip_content(
@@ -275,9 +242,7 @@ class TestGzipInspectorEdgeCases:
         finally:
             reset_correlation_id()
 
-    def test_bad_gzip_file_raises_compression_error(
-        self, default_config
-    ):
+    def test_bad_gzip_file_raises_compression_error(self, default_config):
         """Trigger gzip.BadGzipFile (lines 156-160)."""
         inspector = GzipContentInspector(default_config)
         # Invalid magic byte (\x8a instead of \x8b)
@@ -286,7 +251,5 @@ class TestGzipInspectorEdgeCases:
             inspector.inspect_gzip_content(
                 io.BytesIO(bad_magic), len(bad_magic)
             )
-        assert (
-            exc.value.error_code == ErrorCode.ZIP_CORRUPT
-        )
+        assert exc.value.error_code == ErrorCode.ZIP_CORRUPT
         assert "corrupted" in str(exc.value).lower()

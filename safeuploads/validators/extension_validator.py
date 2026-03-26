@@ -32,9 +32,7 @@ class ExtensionSecurityValidator(BaseValidator):
         """
         super().__init__(config)
         # Pre-compile as frozensets for O(1) lookup
-        self._blocked: frozenset[str] = frozenset(
-            config.BLOCKED_EXTENSIONS
-        )
+        self._blocked: frozenset[str] = frozenset(config.BLOCKED_EXTENSIONS)
         self._compound_blocked: tuple[str, ...] = tuple(
             config.COMPOUND_BLOCKED_EXTENSIONS
         )

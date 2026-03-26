@@ -11,9 +11,15 @@ Secure file upload validation for Python 3.13+ applications. Catches dangerous f
 - **Framework-agnostic** async validation (FastAPI, generic)
 - Filename sanitization and Unicode security checks
 - Extension validation with configurable allow/block lists
-- ZIP bomb detection and content inspection
-- MIME type verification with signature validation
-- Rich exception hierarchy for precise error handling
+- ZIP bomb detection, nested archive inspection, and recursive structure protection
+- MIME type verification with file signature validation
+- Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing
+- Gzip archive validation with decompression bomb detection
+- Streaming validation for memory-efficient large file processing
+- Resource monitoring (CPU time and memory limits)
+- Content analysis with malware signature and polyglot detection
+- Structured audit logging with correlation IDs
+- Rich exception hierarchy with machine-readable error codes
 - Zero configuration required—secure defaults out of the box
 
 ## Installation
@@ -83,52 +89,34 @@ except FileValidationError as err:
     return {"error": str(err), "code": err.error_code}
 ```
 
-## Current Status & Roadmap
+## Current Status
 
-### What's Working
+### Implemented
 
 - **Filename Security**: Unicode normalization, directory traversal prevention, Windows reserved names blocking
 - **Extension Validation**: Allow/block lists with configurable rules, dangerous extension detection
-- **Compression Security**: ZIP bomb detection, nested archive inspection, size and ratio limits
+- **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits
 - **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits
-- **MIME Type Verification**: Magic number validation for common file types
+- **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip
+- **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
+- **Resource Monitoring**: CPU time and memory limits enforced via `ResourceMonitor`
+- **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing
+- **Gzip Support**: Gzip archive validation with decompression bomb detection
+- **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
+- **Audit Logging**: Structured security event logging with correlation IDs via `contextvars`
+- **Performance Optimizations**: Pre-compiled pattern sets, `frozenset` lookups, LRU-cached MIME guessing
 - **Rich Exception System**: Machine-readable error codes with detailed context
+- **Fuzzing Tests**: Hypothesis-based property testing for filenames, ZIP, images, and config
 
-### Planned Improvements
+### Known Limitations
 
-#### Critical (Pre-1.0)
-- **Streaming Validation**: Memory-efficient processing for large files to prevent resource exhaustion
-- **Resource Limits**: CPU and memory monitoring during validation operations
-- **Rate Limiting Guide**: Documentation and examples for production deployments
-
-#### High Priority
-- **Enhanced ZIP Security**: Protection against recursive ZIP structures and algorithmic complexity attacks
-- **Audit Logging**: Structured logging for security-relevant events with request correlation
-- **Performance Optimizations**: Pattern caching, compiled regex optimization, async I/O improvements
-
-#### Future Enhancements
-- **Additional File Types**: .gpx, .tcx, .fit, .gz
-- **Content Analysis**: Malware signature detection, embedded script scanning
-- **Fuzzing Tests**: Automated testing with malformed and malicious payloads
-- **Security Documentation**: Threat model, architecture diagrams, integration security checklist
-
-### Production Readiness
-
-**Status**: Beta - suitable for testing, not yet recommended for production use
-
-**Before Production**:
-1. Address memory exhaustion vulnerability in ZIP inspection
-2. Implement streaming validation for large files
-3. Complete security audit and penetration testing
-
-**Known Limitations**:
-- No built-in rate limiting (must be implemented at application level)
-- Limited to synchronous content reading in ZIP inspection
-- Performance not yet optimized for high-throughput scenarios
+- No built-in rate limiting (application-level concern — see documentation)
+- MIME detection covers first 8 KB; advanced polyglot attacks may require `enable_content_analysis`
+- `SpooledTemporaryFile` uses the system default temp directory
 
 ## Documentation
 
-Full documentation available at [link to your docs].
+Full documentation is available at the [safeuploads docs site](https://endurain-project.github.io/safeuploads/).
 
 ## Sponsors
 

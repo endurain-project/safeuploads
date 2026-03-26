@@ -1,12 +1,14 @@
 """Fuzz tests for image validation."""
 
+import contextlib
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from safeuploads.exceptions import (
-    FileValidationError,
     FileProcessingError,
+    FileValidationError,
 )
 from safeuploads.file_validator import FileValidator
 
@@ -22,10 +24,10 @@ class _MockFile:
 
     async def read(self, size=-1):
         if size == -1:
-            data = self.content[self._pos:]
+            data = self.content[self._pos :]
             self._pos = len(self.content)
         else:
-            data = self.content[self._pos:self._pos + size]
+            data = self.content[self._pos : self._pos + size]
             self._pos += len(data)
         return data
 
@@ -36,12 +38,7 @@ class _MockFile:
 
 # JPEG header prefix
 _JPEG_HDR = (
-    b"\xff\xd8\xff\xe0"
-    b"\x00\x10"
-    b"JFIF\x00"
-    b"\x01\x01\x00"
-    b"\x00\x01\x00\x01"
-    b"\x00\x00"
+    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 )
 
 # PNG header prefix
@@ -55,32 +52,24 @@ class TestFuzzImageValidation:
     @given(padding=st.binary(min_size=0, max_size=2000))
     @settings(max_examples=200, deadline=3000)
     @pytest.mark.asyncio
-    async def test_mutated_jpeg_never_crashes(
-        self, padding
-    ):
+    async def test_mutated_jpeg_never_crashes(self, padding):
         """Mutated JPEG content must not crash."""
         validator = FileValidator()
         content = _JPEG_HDR + padding + b"\xff\xd9"
         file = _MockFile("fuzz.jpg", content)
-        try:
+        with contextlib.suppress(FileValidationError, FileProcessingError):
             await validator.validate_image_file(file)
-        except (FileValidationError, FileProcessingError):
-            pass
 
     @given(padding=st.binary(min_size=0, max_size=2000))
     @settings(max_examples=200, deadline=3000)
     @pytest.mark.asyncio
-    async def test_mutated_png_never_crashes(
-        self, padding
-    ):
+    async def test_mutated_png_never_crashes(self, padding):
         """Mutated PNG content must not crash."""
         validator = FileValidator()
         content = _PNG_HDR + padding
         file = _MockFile("fuzz.png", content)
-        try:
+        with contextlib.suppress(FileValidationError, FileProcessingError):
             await validator.validate_image_file(file)
-        except (FileValidationError, FileProcessingError):
-            pass
 
     @given(data=st.binary(min_size=1, max_size=500))
     @settings(max_examples=200, deadline=3000)
@@ -89,10 +78,8 @@ class TestFuzzImageValidation:
         """Arbitrary bytes as .jpg must not crash."""
         validator = FileValidator()
         file = _MockFile("random.jpg", data)
-        try:
+        with contextlib.suppress(FileValidationError, FileProcessingError):
             await validator.validate_image_file(file)
-        except (FileValidationError, FileProcessingError):
-            pass
 
     @given(
         width=st.integers(min_value=0, max_value=65535),
@@ -100,16 +87,15 @@ class TestFuzzImageValidation:
     )
     @settings(max_examples=100, deadline=3000)
     @pytest.mark.asyncio
-    async def test_png_extreme_dimensions(
-        self, width, height
-    ):
+    async def test_png_extreme_dimensions(self, width, height):
         """PNG with extreme dimensions must not crash."""
         validator = FileValidator()
         # Construct PNG IHDR with given dimensions
         w = width.to_bytes(4, "big")
         h = height.to_bytes(4, "big")
         ihdr_data = (
-            w + h
+            w
+            + h
             + b"\x08\x02"  # 8-bit RGB
             + b"\x00\x00\x00"
         )
@@ -125,7 +111,5 @@ class TestFuzzImageValidation:
             + b"\x00\x00\x00\x00"
         )
         file = _MockFile("dims.png", content)
-        try:
+        with contextlib.suppress(FileValidationError, FileProcessingError):
             await validator.validate_image_file(file)
-        except (FileValidationError, FileProcessingError):
-            pass

@@ -1115,9 +1115,7 @@ class TestValidateActivityFile:
     """Test activity file validation (GPX, TCX, FIT)."""
 
     @pytest.mark.asyncio
-    async def test_validate_valid_gpx(
-        self, mock_upload_file
-    ):
+    async def test_validate_valid_gpx(self, mock_upload_file):
         """Test validation of valid GPX file."""
         validator = FileValidator()
         gpx_content = (
@@ -1126,33 +1124,25 @@ class TestValidateActivityFile:
             b'<trkpt lat="0" lon="0"/>'
             b"</trkseg></trk></gpx>"
         )
-        file = mock_upload_file(
-            filename="activity.gpx", content=gpx_content
-        )
+        file = mock_upload_file(filename="activity.gpx", content=gpx_content)
         await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_validate_valid_tcx(
-        self, mock_upload_file
-    ):
+    async def test_validate_valid_tcx(self, mock_upload_file):
         """Test validation of valid TCX file."""
         validator = FileValidator()
         tcx_content = (
             b'<?xml version="1.0" encoding="UTF-8"?>'
             b"<TrainingCenterDatabase>"
-            b"<Activities><Activity Sport=\"Running\">\n"
+            b'<Activities><Activity Sport="Running">\n'
             b"</Activity></Activities>"
             b"</TrainingCenterDatabase>"
         )
-        file = mock_upload_file(
-            filename="workout.tcx", content=tcx_content
-        )
+        file = mock_upload_file(filename="workout.tcx", content=tcx_content)
         await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_validate_valid_fit(
-        self, mock_upload_file
-    ):
+    async def test_validate_valid_fit(self, mock_upload_file):
         """Test validation of valid FIT file."""
         validator = FileValidator()
         # Minimal FIT header: 14 bytes header + ".FIT" at 8-11
@@ -1162,42 +1152,29 @@ class TestValidateActivityFile:
             b"\x00\x08"  # profile version
             b"\x00\x00\x00\x00"  # data size
             b".FIT"  # magic
-            b"\x00\x00"  # CRC
-            + b"\x00" * 50  # padding
+            b"\x00\x00" + b"\x00" * 50  # CRC  # padding
         )
-        file = mock_upload_file(
-            filename="ride.fit", content=fit_content
-        )
+        file = mock_upload_file(filename="ride.fit", content=fit_content)
         await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_wrong_extension(
-        self, mock_upload_file
-    ):
+    async def test_reject_wrong_extension(self, mock_upload_file):
         """Test that wrong extension is rejected."""
         validator = FileValidator()
-        file = mock_upload_file(
-            filename="activity.txt", content=b"data"
-        )
+        file = mock_upload_file(filename="activity.txt", content=b"data")
         with pytest.raises(ExtensionSecurityError):
             await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_empty_activity(
-        self, mock_upload_file
-    ):
+    async def test_reject_empty_activity(self, mock_upload_file):
         """Test that empty file is rejected."""
         validator = FileValidator()
-        file = mock_upload_file(
-            filename="empty.gpx", content=b""
-        )
+        file = mock_upload_file(filename="empty.gpx", content=b"")
         with pytest.raises(FileSizeError):
             await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_xxe_in_gpx(
-        self, mock_upload_file
-    ):
+    async def test_reject_xxe_in_gpx(self, mock_upload_file):
         """Test that XXE attack in GPX is blocked."""
         validator = FileValidator()
         xxe_gpx = (
@@ -1207,29 +1184,21 @@ class TestValidateActivityFile:
             b"]>"
             b"<gpx>&xxe;</gpx>"
         )
-        file = mock_upload_file(
-            filename="evil.gpx", content=xxe_gpx
-        )
+        file = mock_upload_file(filename="evil.gpx", content=xxe_gpx)
         with pytest.raises(FileProcessingError):
             await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_malformed_gpx_xml(
-        self, mock_upload_file
-    ):
+    async def test_reject_malformed_gpx_xml(self, mock_upload_file):
         """Test that malformed XML in GPX is rejected."""
         validator = FileValidator()
-        bad_xml = b"<?xml version=\"1.0\"?><gpx><unclosed>"
-        file = mock_upload_file(
-            filename="bad.gpx", content=bad_xml
-        )
+        bad_xml = b'<?xml version="1.0"?><gpx><unclosed>'
+        file = mock_upload_file(filename="bad.gpx", content=bad_xml)
         with pytest.raises(FileProcessingError):
             await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_oversized_activity(
-        self, mock_upload_file
-    ):
+    async def test_reject_oversized_activity(self, mock_upload_file):
         """Test that oversized activity file is rejected."""
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
@@ -1237,21 +1206,15 @@ class TestValidateActivityFile:
         )
         validator = FileValidator(config=config)
         content = b"<?xml " + b"x" * 2048
-        file = mock_upload_file(
-            filename="big.gpx", content=content
-        )
+        file = mock_upload_file(filename="big.gpx", content=content)
         with pytest.raises(FileSizeError):
             await validator.validate_activity_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_missing_filename(
-        self, mock_upload_file
-    ):
+    async def test_reject_missing_filename(self, mock_upload_file):
         """Test that missing filename is rejected."""
         validator = FileValidator()
-        file = mock_upload_file(
-            filename=None, content=b"data"
-        )
+        file = mock_upload_file(filename=None, content=b"data")
         with pytest.raises(FilenameSecurityError):
             await validator.validate_activity_file(file)
 
@@ -1260,9 +1223,7 @@ class TestValidateGzipFile:
     """Test gzip file validation."""
 
     @pytest.mark.asyncio
-    async def test_validate_valid_gzip(
-        self, mock_upload_file
-    ):
+    async def test_validate_valid_gzip(self, mock_upload_file):
         """Test validation of valid gzip file."""
         import gzip as gzip_mod
 
@@ -1271,51 +1232,35 @@ class TestValidateGzipFile:
         with gzip_mod.open(buf, "wb") as gz:
             gz.write(b"Hello, World!")
         gz_bytes = buf.getvalue()
-        file = mock_upload_file(
-            filename="data.gz", content=gz_bytes
-        )
+        file = mock_upload_file(filename="data.gz", content=gz_bytes)
         await validator.validate_gzip_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_wrong_extension(
-        self, mock_upload_file
-    ):
+    async def test_reject_wrong_extension(self, mock_upload_file):
         """Test that wrong extension is rejected."""
         validator = FileValidator()
-        file = mock_upload_file(
-            filename="data.zip", content=b"data"
-        )
+        file = mock_upload_file(filename="data.zip", content=b"data")
         with pytest.raises(ExtensionSecurityError):
             await validator.validate_gzip_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_empty_gzip(
-        self, mock_upload_file
-    ):
+    async def test_reject_empty_gzip(self, mock_upload_file):
         """Test that empty file is rejected."""
         validator = FileValidator()
-        file = mock_upload_file(
-            filename="empty.gz", content=b""
-        )
+        file = mock_upload_file(filename="empty.gz", content=b"")
         with pytest.raises(FileSizeError):
             await validator.validate_gzip_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_invalid_gzip_signature(
-        self, mock_upload_file
-    ):
+    async def test_reject_invalid_gzip_signature(self, mock_upload_file):
         """Test that invalid gzip signature is rejected."""
         validator = FileValidator()
-        file = mock_upload_file(
-            filename="fake.gz", content=b"not a gzip"
-        )
+        file = mock_upload_file(filename="fake.gz", content=b"not a gzip")
         with pytest.raises(FileSignatureError):
             await validator.validate_gzip_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_gzip_bomb(
-        self, mock_upload_file
-    ):
+    async def test_reject_gzip_bomb(self, mock_upload_file):
         """Test that gzip decompression bomb is detected."""
         import gzip as gzip_mod
 
@@ -1332,21 +1277,15 @@ class TestValidateGzipFile:
         with gzip_mod.open(buf, "wb") as gz:
             gz.write(content)
         gz_bytes = buf.getvalue()
-        file = mock_upload_file(
-            filename="bomb.gz", content=gz_bytes
-        )
+        file = mock_upload_file(filename="bomb.gz", content=gz_bytes)
 
         with pytest.raises(ZipBombError):
             await validator.validate_gzip_file(file)
 
     @pytest.mark.asyncio
-    async def test_reject_missing_filename(
-        self, mock_upload_file
-    ):
+    async def test_reject_missing_filename(self, mock_upload_file):
         """Test that missing filename is rejected."""
         validator = FileValidator()
-        file = mock_upload_file(
-            filename=None, content=b"data"
-        )
+        file = mock_upload_file(filename=None, content=b"data")
         with pytest.raises(FilenameSecurityError):
             await validator.validate_gzip_file(file)

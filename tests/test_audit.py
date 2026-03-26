@@ -8,10 +8,15 @@ from safeuploads.audit import (
     AuditEvent,
     AuditEventType,
     SecurityAuditLogger,
-    correlation_id_var,
     get_correlation_id,
     reset_correlation_id,
     set_correlation_id,
+)
+from safeuploads.exceptions import (
+    CompressionSecurityError,
+    FileSizeError,
+    ZipBombError,
+    ZipContentError,
 )
 
 
@@ -128,8 +133,11 @@ class TestSecurityAuditLogger:
         audit = SecurityAuditLogger(enabled=True)
         with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
             audit.failure(
-                "bad.zip", "cid-def", 100.0,
-                "ZipBombError", "ratio exceeded",
+                "bad.zip",
+                "cid-def",
+                100.0,
+                "ZipBombError",
+                "ratio exceeded",
             )
         assert len(caplog.records) == 1
         record = caplog.records[0]
@@ -142,7 +150,8 @@ class TestSecurityAuditLogger:
         audit = SecurityAuditLogger(enabled=True)
         with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
             audit.threat(
-                "evil.zip", "cid-ghi",
+                "evil.zip",
+                "cid-ghi",
                 "directory traversal detected",
             )
         assert len(caplog.records) == 1
@@ -193,17 +202,14 @@ class TestAuditIntegration:
         config = FileSecurityConfig()
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
-        file = mock_upload_file(
-            filename="photo.jpg", content=valid_jpeg_bytes
-        )
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
 
         with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
             await validator.validate_image_file(file)
 
         # Should have start + success
         audit_records = [
-            r for r in caplog.records
-            if r.name == "safeuploads.audit"
+            r for r in caplog.records if r.name == "safeuploads.audit"
         ]
         assert len(audit_records) == 2
         assert "validation_start" in audit_records[0].message
@@ -220,23 +226,21 @@ class TestAuditIntegration:
     ):
         """Test failed validation emits start+failure events."""
         from safeuploads.config import FileSecurityConfig, SecurityLimits
-        from safeuploads.exceptions import FileSizeError
         from safeuploads.file_validator import FileValidator
 
         config = FileSecurityConfig()
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
-        file = mock_upload_file(
-            filename="photo.jpg", content=b""
-        )
+        file = mock_upload_file(filename="photo.jpg", content=b"")
 
-        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
-            with pytest.raises(FileSizeError):
-                await validator.validate_image_file(file)
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(FileSizeError),
+        ):
+            await validator.validate_image_file(file)
 
         audit_records = [
-            r for r in caplog.records
-            if r.name == "safeuploads.audit"
+            r for r in caplog.records if r.name == "safeuploads.audit"
         ]
         assert len(audit_records) == 2
         assert "validation_start" in audit_records[0].message
@@ -253,19 +257,14 @@ class TestAuditIntegration:
         config = FileSecurityConfig()
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
-        zip_bytes = create_zip_file(
-            files={"test.txt": b"content"}
-        )
-        file = mock_upload_file(
-            filename="archive.zip", content=zip_bytes
-        )
+        zip_bytes = create_zip_file(files={"test.txt": b"content"})
+        file = mock_upload_file(filename="archive.zip", content=zip_bytes)
 
         with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
             await validator.validate_zip_file(file)
 
         audit_records = [
-            r for r in caplog.records
-            if r.name == "safeuploads.audit"
+            r for r in caplog.records if r.name == "safeuploads.audit"
         ]
         assert len(audit_records) == 2
         assert "validation_start" in audit_records[0].message
@@ -284,16 +283,13 @@ class TestAuditIntegration:
             enable_audit_logging=False,
         )
         validator = FileValidator(config=config)
-        file = mock_upload_file(
-            filename="photo.jpg", content=valid_jpeg_bytes
-        )
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
 
         with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
             await validator.validate_image_file(file)
 
         audit_records = [
-            r for r in caplog.records
-            if r.name == "safeuploads.audit"
+            r for r in caplog.records if r.name == "safeuploads.audit"
         ]
         assert len(audit_records) == 0
 
@@ -308,9 +304,7 @@ class TestAuditIntegration:
         config = FileSecurityConfig()
         config.limits = SecurityLimits(enable_audit_logging=True)
         validator = FileValidator(config=config)
-        file = mock_upload_file(
-            filename="photo.jpg", content=valid_jpeg_bytes
-        )
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
 
         await validator.validate_image_file(file)
         assert get_correlation_id() is None
@@ -345,28 +339,23 @@ class TestThreatAuditEvents:
             zf.writestr("../../../etc/passwd", b"evil")
         zip_bytes = buf.getvalue()
 
-        file = mock_upload_file(
-            filename="evil.zip", content=zip_bytes
-        )
+        file = mock_upload_file(filename="evil.zip", content=zip_bytes)
 
-        with caplog.at_level(
-            logging.DEBUG, logger="safeuploads.audit"
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ZipContentError),
         ):
-            with pytest.raises(Exception):
-                await validator.validate_zip_file(file)
+            await validator.validate_zip_file(file)
 
         threat_records = [
             r
             for r in caplog.records
-            if r.name == "safeuploads.audit"
-            and "threat_detected" in r.message
+            if r.name == "safeuploads.audit" and "threat_detected" in r.message
         ]
         assert len(threat_records) >= 1
 
     @pytest.mark.asyncio
-    async def test_zip_bomb_emits_audit_threat(
-        self, mock_upload_file, caplog
-    ):
+    async def test_zip_bomb_emits_audit_threat(self, mock_upload_file, caplog):
         """Test zip bomb detection emits THREAT_DETECTED."""
         import io
         import zipfile
@@ -388,27 +377,22 @@ class TestThreatAuditEvents:
         # Highly compressible content
         data = b"\x00" * (1024 * 1024)
         buf = io.BytesIO()
-        with zipfile.ZipFile(
-            buf, "w", zipfile.ZIP_DEFLATED
-        ) as zf:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("zeros.bin", data)
         zip_bytes = buf.getvalue()
 
-        file = mock_upload_file(
-            filename="bomb.zip", content=zip_bytes
-        )
+        file = mock_upload_file(filename="bomb.zip", content=zip_bytes)
 
-        with caplog.at_level(
-            logging.DEBUG, logger="safeuploads.audit"
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises((ZipBombError, CompressionSecurityError)),
         ):
-            with pytest.raises(Exception):
-                await validator.validate_zip_file(file)
+            await validator.validate_zip_file(file)
 
         threat_records = [
             r
             for r in caplog.records
-            if r.name == "safeuploads.audit"
-            and "threat_detected" in r.message
+            if r.name == "safeuploads.audit" and "threat_detected" in r.message
         ]
         assert len(threat_records) >= 1
 
@@ -440,21 +424,18 @@ class TestThreatAuditEvents:
             gz.write(content)
         gz_bytes = buf.getvalue()
 
-        file = mock_upload_file(
-            filename="bomb.gz", content=gz_bytes
-        )
+        file = mock_upload_file(filename="bomb.gz", content=gz_bytes)
 
-        with caplog.at_level(
-            logging.DEBUG, logger="safeuploads.audit"
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ZipBombError),
         ):
-            with pytest.raises(Exception):
-                await validator.validate_gzip_file(file)
+            await validator.validate_gzip_file(file)
 
         threat_records = [
             r
             for r in caplog.records
-            if r.name == "safeuploads.audit"
-            and "threat_detected" in r.message
+            if r.name == "safeuploads.audit" and "threat_detected" in r.message
         ]
         assert len(threat_records) >= 1
 

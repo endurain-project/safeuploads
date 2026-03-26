@@ -28,3 +28,7 @@ nav:
   - Home: index.md
   - API: api.md
   - Rate Limiting: rate-limiting.md
+  - Security:
+    - Threat Model: security/threat-model.md
+    - Architecture: security/architecture.md
+    - Integration Checklist: security/integration-checklist.md

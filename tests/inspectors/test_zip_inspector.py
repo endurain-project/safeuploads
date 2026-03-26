@@ -453,9 +453,7 @@ class TestZipContentInspector:
 
         # Should detect executable signature regardless of size
         with pytest.raises(ZipContentError):
-            inspector.inspect_zip_content(
-                io.BytesIO(zip_buffer.getvalue())
-            )
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_handle_corrupted_zip(self, default_config):
         """Test handling of corrupted ZIP file."""

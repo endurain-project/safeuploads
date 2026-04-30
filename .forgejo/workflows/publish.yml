@@ -1,0 +1,63 @@
+name: Publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type the package version to confirm publish"
+        required: true
+        type: string
+
+# Only one publish at a time.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build & Publish
+    runs-on: codeberg-medium
+
+    steps:
+      - name: Checkout repository
+        uses: https://data.forgejo.org/actions/checkout@v4
+
+      - name: Verify version matches input
+        run: |
+          PKG_VERSION=$(python3 -c "
+          import tomllib, pathlib
+          data = tomllib.loads(
+              pathlib.Path('pyproject.toml').read_text()
+          )
+          print(data['project']['version'])
+          ")
+          if [ "$PKG_VERSION" != "${{ inputs.confirm }}" ]; then
+            echo "::error::Input version ${{ inputs.confirm }} does not match pyproject.toml version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Publishing version $PKG_VERSION"
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Set up Python 3.13
+        uses: https://data.forgejo.org/actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Run tests before publish
+        run: uv run pytest --cov-fail-under=90
+
+      - name: Build package
+        run: uv build
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish

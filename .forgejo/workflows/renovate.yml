@@ -1,0 +1,37 @@
+name: Dependency updates
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 0'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  renovate:
+
+    runs-on: codeberg-small
+
+    steps:
+      - name: Checkout code
+        uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Renovate
+        uses: docker://ghcr.io/renovatebot/renovate:latest
+        env:
+          LOG_LEVEL: info
+          RENOVATE_CONFIG_FILE: renovate.json
+          RENOVATE_ENDPOINT: https://codeberg.org/api/v1/
+          RENOVATE_PLATFORM: gitea
+          RENOVATE_REPOSITORIES: ${{ forgejo.repository }}
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}

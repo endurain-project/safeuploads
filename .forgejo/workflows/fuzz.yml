@@ -1,0 +1,44 @@
+name: Scheduled Fuzz
+
+on:
+  schedule:
+    # Every Sunday at 03:00 UTC
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same branch to avoid wasted
+# runner minutes.
+concurrency:
+  group: ${{ forge.workflow }}-${{ forge.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Fuzz
+    runs-on: codeberg-medium-lazy
+
+    steps:
+      - name: Checkout repository
+        uses: https://data.forgejo.org/actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Set up Python 3.13
+        uses: https://data.forgejo.org/actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Run fuzz tests
+        run: >
+          uv run pytest -m fuzz
+          --hypothesis-seed=0
+          -x
+          --tb=short
+          -q

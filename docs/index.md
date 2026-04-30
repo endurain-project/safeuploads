@@ -1,12 +1,14 @@
 # safeuploads
 
 <div>
-    <img src="https://img.shields.io/github/license/endurain-project/safeuploads" alt="License">
-    <a href="https://github.com/endurain-project/safeuploads/releases">
-      <img src="https://img.shields.io/github/v/release/endurain-project/safeuploads" alt="GitHub release">
+    <a href="https://codeberg.org/endurain-project/safeuploads/src/branch/main/LICENSE.md">
+      <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     </a>
-    <a href="https://github.com/endurain-project/safeuploads/stargazers">
-      <img src="https://img.shields.io/github/stars/endurain-project/safeuploads.svg?style=social&label=Star" alt="GitHub stars">
+    <a href="https://codeberg.org/endurain-project/safeuploads/releases">
+      <img src="https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads/releases/latest&query=$.tag_name&label=release&color=blue" alt="Release">
+    </a>
+    <a href="https://codeberg.org/endurain-project/safeuploads">
+      <img src="https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads&query=$.stars_count&label=stars&logo=codeberg" alt="Stars">
     </a>
 </div>
 
@@ -128,19 +130,14 @@ except FileValidationError as err:
 - [Architecture](security/architecture.md) — validation pipeline and data flow
 - [Integration Checklist](security/integration-checklist.md) — production deployment checklist
 
-## Sponsors
-
-A huge thank you to the project sponsors! Your support helps keep this project going.
-
-Consider [sponsoring safeuploads on GitHub](https://github.com/sponsors/joaovitoriasilva) to ensure continuous development.
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](https://github.com/endurain-project/safeuploads/blob/main/LICENSE.md) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://codeberg.org/endurain-project/safeuploads/src/branch/main/LICENSE.md) file for details.
 
 ## Contributing
 
-Contributions welcome! See [Contributing Guidelines](https://github.com/endurain-project/safeuploads/blob/main/CONTRIBUTING.md) for guidelines.
+Contributions welcome! See [Contributing Guidelines](https://codeberg.org/endurain-project/safeuploads/src/branch/main/CONTRIBUTING.md) for guidelines.
 
 <div align="center">
-  <sub>Built with ❤️ from Portugal | Part of the <a href="https://github.com/endurain-project">Endurain</a> ecosystem</sub>
+  <sub>Built with ❤️ from Portugal | Part of the <a href="https://codeberg.org/endurain-project">Endurain</a> ecosystem</sub>
 </div>

@@ -1,0 +1,86 @@
+name: Lint & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch/PR to avoid wasted
+# runner minutes and race conditions on shared resources.
+concurrency:
+  group: ${{ forge.workflow }}-${{ forge.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ----------------------------------------------------------------
+  # Lint
+  # Runs ruff on all Python sources. Fails fast so test job is only
+  # triggered when the code is clean.
+  # ----------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: codeberg-tiny
+
+    steps:
+      - name: Checkout repository
+        uses: https://data.forgejo.org/actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: https://data.forgejo.org/actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Lint with ruff
+        run: uv run ruff check safeuploads tests examples
+
+      - name: Check formatting with ruff
+        run: uv run ruff format --check safeuploads tests examples
+
+  # ----------------------------------------------------------------
+  # Test
+  # Runs the full pytest suite with coverage. Only runs after lint
+  # passes so we don't waste runner minutes on broken code.
+  # ----------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: codeberg-medium
+    needs: lint
+
+    steps:
+      - name: Checkout repository
+        uses: https://data.forgejo.org/actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Set up Python 3.13
+        uses: https://data.forgejo.org/actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Audit Python dependencies
+        run: uvx pip-audit --require-hashes --disable-pip -r <(uv export --frozen --no-header --no-emit-project --no-dev)
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov-fail-under=90
+
+      - name: Upload coverage report
+        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        if: always()
+        with:
+          name: safeuploads-coverage
+          path: .coverage
+          retention-days: 7

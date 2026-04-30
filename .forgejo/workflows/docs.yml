@@ -1,0 +1,51 @@
+name: Deploy documentation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'safeuploads/**/*.py'
+      - '.forgejo/workflows/docs.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  deploy:
+
+    runs-on: codeberg-small
+
+    steps:
+      - name: Checkout code
+        uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: https://data.forgejo.org/actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install documentation dependencies
+        run: pip install mkdocs-material mkdocstrings[python]
+
+      - name: Build documentation
+        run: mkdocs build --site-dir site
+
+      - name: Deploy documentation to Codeberg Pages
+        uses: https://codeberg.org/git-pages/action@v2
+        with:
+          site: https://${{ forge.repository_owner }}.codeberg.page/${{ forge.event.repository.name }}/
+          token: ${{ forge.token }}
+          source: site/

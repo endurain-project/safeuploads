@@ -1,13 +1,12 @@
 # safeuploads
 
-![License](https://img.shields.io/github/license/endurain-project/safeuploads)
-[![GitHub release](https://img.shields.io/github/v/release/endurain-project/safeuploads)](https://github.com/endurain-project/safeuploads/releases)
-[![CI](https://github.com/endurain-project/safeuploads/actions/workflows/lint%26test.yml/badge.svg)](https://github.com/endurain-project/safeuploads/actions/workflows/lint%26test.yml)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://codeberg.org/endurain-project/safeuploads/src/branch/main/LICENSE.md)
+[![Release](https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads/releases/latest&query=$.tag_name&label=release&color=blue)](https://codeberg.org/endurain-project/safeuploads/releases)
 [![PyPI version](https://img.shields.io/pypi/v/safeuploads)](https://pypi.org/project/safeuploads/)
 [![PyPI downloads](https://img.shields.io/pypi/dm/safeuploads)](https://pypi.org/project/safeuploads/)
-[![Python](https://img.shields.io/pypi/pyversions/safeuploads)](https://pypi.org/project/safeuploads/)
-[![Docs](https://img.shields.io/badge/docs-endurain--project.github.io-blue)](https://endurain-project.github.io/safeuploads/)
-[![GitHub stars](https://img.shields.io/github/stars/endurain-project/safeuploads.svg?style=social&label=Star)](https://github.com/endurain-project/safeuploads/stargazers)
+[![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://pypi.org/project/safeuploads/)
+[![Docs](https://img.shields.io/badge/docs-endurain--project.codeberg.page-blue)](https://endurain-project.codeberg.page/safeuploads/)
+[![Stars](https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads&query=$.stars_count&label=stars&logo=codeberg)](https://codeberg.org/endurain-project/safeuploads)
 
 Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 
@@ -121,13 +120,7 @@ except FileValidationError as err:
 
 ## Documentation
 
-Full documentation is available at the [safeuploads docs site](https://endurain-project.github.io/safeuploads/).
-
-## Sponsors
-
-A huge thank you to the project sponsors! Your support helps keep this project going.
-
-Consider [sponsoring safeuploads on GitHub](https://github.com/sponsors/endurain-project) to ensure continuous development.
+Full documentation is available at the [safeuploads docs site](https://endurain-project.codeberg.page/safeuploads/).
 
 ## License
 
@@ -138,5 +131,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 Contributions welcome! See [Contributing Guidelines](CONTRIBUTING.md) for guidelines.
 
 <div align="center">
-  <sub>Built with ❤️ from Portugal | Part of the <a href="https://github.com/endurain-project">Endurain</a> ecosystem</sub>
+  <sub>Built with ❤️ from Portugal | Part of the <a href="https://codeberg.org/endurain-project">Endurain</a> ecosystem</sub>
 </div>

@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> This repository has moved to **[Codeberg](https://codeberg.org/endurain-project/safeuploads)**.
+> This GitHub mirror is archived and no longer maintained.
+> Please update your remotes: `git remote set-url origin https://codeberg.org/endurain-project/safeuploads.git`
+
 # safeuploads
 
 ![License](https://img.shields.io/github/license/endurain-project/safeuploads)

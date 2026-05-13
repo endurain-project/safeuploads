@@ -1,47 +1,82 @@
-# Contributing to safeuploads
+# Contributing to Endurain
+ 
+Thank you for considering contributing to Endurain! Before diving in, please read these guidelines carefully. They exist to make the process sustainable for everyone.
 
-Thank you for considering contributing to safeuploads! Your involvement helps improve the project and ensures it remains useful for others. Below are guidelines to make your contribution process smooth and effective.
+## A Note on Maintainership
+ 
+Endurain is maintained by a single person in their spare time. This means review bandwidth is genuinely limited. Following these guidelines isn't bureaucracy, it's what allows contributions to actually get merged rather than sitting in a queue indefinitely.
 
-## How Can You Contribute?
+## Before You Write Any Code
+ 
+**Open an issue first.** For anything beyond a small bug fix, typo, or documentation improvement, please open an issue and wait for a response before writing code. This takes minutes and can save you hours of work on something that won't be merged because it conflicts with planned direction, existing work, or project scope.
+ 
+If an issue already exists, comment on it to signal your intent so work isn't duplicated.
 
-### 1. Start Small, Think Big
-- **Small Contributions First**: I encourage small, incremental improvements. Whether it's fixing a typo, enhancing documentation, or optimizing a small part of the code, your contribution matters. Smaller contributions are easier to review, merge, and deploy.
-- **Build Up Gradually**: As you familiarize yourself with the project, feel free to take on more complex tasks. However, starting small ensures that changes are manageable and can be quickly integrated.
+## Pull Request Size — The Most Important Rule
+ 
+**Keep PRs small and focused on a single concern.**
+ 
+As a rule of thumb:
+ 
+- **Target under 300 lines changed** (excluding lock files, generated code, and migrations)
+- **One PR = one thing.** Don't bundle a bug fix with a refactor with a new feature
+- If your change is naturally large (e.g. a new integration), break it into a chain of smaller PRs that can each be reviewed and merged independently
 
-### 2. Issues and Bugs
-- **Report an Issue**: Found a bug? Please create an issue with detailed steps to reproduce it. If you can, propose a solution or submit a pull request (PR) with the fix.
-- **Fix an Issue**: Browse through the list of open issues. Look for ones labeled as `good first issue` or `help wanted` if you're unsure where to start.
+PRs that are too large to review efficiently will be asked to be split before they receive a review. This isn't a judgment on the quality of the work, it's a maintainability constraint.
+ 
+**Excluded from the line count:** `uv.lock`, migration files, and other generated or vendored files.
 
-### 3. Documentation
-- **Improve Documentation**: Whether it's enhancing existing documentation or adding new sections, contributions to the documentation are highly valued. Clear and comprehensive documentation benefits everyone.
-- **Comment Your Code**: When submitting code changes, include comments where necessary. This helps maintain the code's readability and ease of understanding for future contributors.
+## How to Contribute
+ 
+### Bug Fixes
 
-### 4. Feature Requests
-- **Suggest a Feature**: If you have an idea for a new feature, feel free to open an issue to discuss it. Please explain the use case and how it can benefit the project.
-- **Start with Discussion**: Major changes or new features should be discussed in an issue before implementation. This ensures that the proposed changes align with the project goals and direction.
+- Check if an issue already exists before opening a new one
+- Include clear steps to reproduce in the issue
+- Small, targeted fixes are the fastest path to a merge
 
-### 5. Code Quality and Testing
-- **Follow Code Standards**: Maintain consistency with the existing codebase. Follow any coding standards or styles used in the project.
-- **Write Tests**: If applicable, include tests for your changes. This helps ensure that the project remains stable and that new changes don't introduce bugs.
-- **Review and Refactor**: Consider reviewing and refactoring existing code to improve performance, readability, or maintainability.
+### Documentation
+
+- Always welcome and rarely requires prior discussion
+- Improvements to the docs site, inline code comments, and the README all count
+- Keep the same tone and structure as existing docs
+
+### New Features
+
+- **Always discuss in an issue first** — this is required, not optional
+- Features that haven't been discussed and approved in an issue may be closed without review, regardless of quality
+
+### Refactors and Code Quality
+
+- Must be discussed in an issue first
+- Pure refactor PRs (no behaviour change) are easiest to review. Keep them separate from feature or fix PRs
+- Include a clear explanation of what improved and why
+
 
 ## Getting Started
-
-1. **Fork the Repository**: Create a fork of the project repository to work on your changes.
-2. **Clone the Repository**: Clone your forked repository to your local machine.
+ 
+1. **Fork the repository** on Codeberg
+2. **Clone your fork** locally:
    ```bash
-   git clone https://codeberg.org/endurain-project/safeuploads.git
+   git clone https://codeberg.org/YOUR_USERNAME/endurain.git
    ```
-3. **Create a Branch**: Create a new branch for your changes.
-    ```bash
-    git checkout -b feature/your-feature-name
-    ```
-4. **Make Your Changes**: Commit your changes with clear and descriptive commit messages.
-5. **Push Your Changes**: Push your changes to your forked repository.
-    ```bash
-    git push origin feature/your-feature-name
-    ```
-6. **Submit a Pull Request**: Open a pull request (PR) to the main repository. Be sure to describe your changes and link to any relevant issues.
+3. **Create a branch** and use a descriptive name:
+   ```bash
+   git checkout -b fix/garmin-sync-timeout
+   # or
+   git checkout -b feat/gpx-export
+   ```
+4. **Make your changes**, committing with clear messages following [Conventional Commits](https://www.conventionalcommits.org/):
+   ```
+   fix: handle timeout on Garmin sync
+   feat: add GPX export for activities
+   docs: clarify Docker environment variables
+   ```
+5. **Push and open a PR** against the `master` branch, filling in the PR template completely
 
-## Thank You!
-Your contributions, whether big or small, make a huge difference. Thank you for helping to make safeuploads better!
+## Response Time Expectations
+ 
+Reviews may take days to weeks depending on availability. A PR sitting without a response is not a rejection. Please feel free to leave a polite ping after two weeks if there's been no activity.
+
+## Thank You
+ 
+Even small contributions make a real difference. Thank you for taking the time to improve Endurain for everyone who self-hosts it.

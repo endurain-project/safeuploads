@@ -474,7 +474,8 @@ class FileValidator:
 
         Returns:
             Tuple of SpooledTemporaryFile positioned at start and
-            total bytes written.
+            total bytes written. The original file is also seeked
+            back to position 0 so callers can re-read it.
 
         Raises:
             FileSizeError: File exceeds maximum or is empty.
@@ -513,6 +514,7 @@ class FileValidator:
                 )
 
             temp.seek(0)
+            await file.seek(0)
             return temp, total_bytes
         except FileSizeError:
             raise

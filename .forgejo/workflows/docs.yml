@@ -46,6 +46,7 @@ jobs:
       - name: Deploy documentation to Codeberg Pages
         uses: https://codeberg.org/git-pages/action@v2
         with:
-          site: https://${{ forge.repository_owner }}.codeberg.page/${{ forge.event.repository.name }}/
+          site: https://safeuploads.endurain.com/
+          server: codeberg.page
           token: ${{ forge.token }}
           source: site/

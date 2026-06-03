@@ -5,7 +5,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/safeuploads)](https://pypi.org/project/safeuploads/)
 [![PyPI downloads](https://img.shields.io/pypi/dm/safeuploads)](https://pypi.org/project/safeuploads/)
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://pypi.org/project/safeuploads/)
-[![Docs](https://img.shields.io/badge/docs-endurain--project.codeberg.page-blue)](https://endurain-project.codeberg.page/safeuploads/)
+[![Docs](https://img.shields.io/badge/docs-endurain--project.codeberg.page-blue)](https://safeuploads.endurain.com/)
 [![Stars](https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads&query=$.stars_count&label=stars&logo=codeberg)](https://codeberg.org/endurain-project/safeuploads)
 
 Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
@@ -120,7 +120,7 @@ except FileValidationError as err:
 
 ## Documentation
 
-Full documentation is available at the [safeuploads docs site](https://endurain-project.codeberg.page/safeuploads/).
+Full documentation is available at the [safeuploads docs site](https://safeuploads.endurain.com/).
 
 ## License
 

@@ -27,12 +27,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: https://data.forgejo.org/actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: https://data.forgejo.org/actions/setup-python@v5
+        uses: https://data.forgejo.org/actions/setup-python@v6
         with:
           python-version: '3.13'
           cache: pip

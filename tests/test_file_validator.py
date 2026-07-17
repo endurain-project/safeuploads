@@ -1289,3 +1289,35 @@ class TestValidateGzipFile:
         file = mock_upload_file(filename=None, content=b"data")
         with pytest.raises(FilenameSecurityError):
             await validator.validate_gzip_file(file)
+
+
+class TestImageContentAnalysisIntegration:
+    """Integration tests for image content analysis wiring."""
+
+    @staticmethod
+    def _content_analysis_validator() -> FileValidator:
+        """Build a validator with content analysis enabled."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_content_analysis=True)
+        return FileValidator(config=config)
+
+    @pytest.mark.asyncio
+    async def test_polyglot_after_header_is_detected(self, mock_upload_file):
+        """Polyglot signature past the 8 KB header is caught."""
+        validator = self._content_analysis_validator()
+        # Valid JPEG header, 9 KB filler, then a ZIP (GIFAR)
+        # polyglot signature well past the 8 KB read window.
+        jpeg = (
+            b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04" + b"\xff\xd9"
+        )
+        file = mock_upload_file(filename="poly.jpg", content=jpeg)
+        with pytest.raises(FileProcessingError, match="Content analysis"):
+            await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
+    async def test_clean_large_image_passes(self, mock_upload_file):
+        """A clean image larger than 8 KB passes analysis."""
+        validator = self._content_analysis_validator()
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"\xff\xd9"
+        file = mock_upload_file(filename="clean.jpg", content=jpeg)
+        await validator.validate_image_file(file)

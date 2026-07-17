@@ -344,7 +344,7 @@ class FileValidator:
             ) from err
 
     def _validate_file_extension(
-        self, file: UploadFile, allowed_extensions: set[str]
+        self, file: UploadFile, allowed_extensions: frozenset[str]
     ) -> None:
         """
         Validate extension of uploaded file against allowed and blocked lists.
@@ -590,7 +590,12 @@ class FileValidator:
                 # Optional content analysis
                 if self.config.limits.enable_content_analysis:
                     scan_size = self.config.limits.content_scan_max_size
-                    sample = file_content[:scan_size]
+                    # file_content holds only the 8 KB header;
+                    # re-read up to scan_size bytes so threats
+                    # past the header (e.g. polyglots) are seen.
+                    await file.seek(0)
+                    sample = await file.read(scan_size)
+                    await file.seek(0)
                     threats = self.content_inspector.scan_content(
                         sample,
                         filename,

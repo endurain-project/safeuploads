@@ -319,3 +319,48 @@ class TestConfigurationValidation:
             assert ext.startswith("."), (
                 f"Extension {ext} should start with dot"
             )
+
+
+class TestConfigInstanceIsolation:
+    """Regression tests for shared mutable config state."""
+
+    def test_limits_are_not_shared_between_instances(self):
+        """Each instance must own a distinct limits object."""
+        a = FileSecurityConfig()
+        b = FileSecurityConfig()
+
+        assert a.limits is not b.limits
+
+    def test_limit_mutation_does_not_leak_across_instances(self):
+        """Mutating one instance's limits must not affect another."""
+        a = FileSecurityConfig()
+        b = FileSecurityConfig()
+
+        a.limits.max_image_size = 12345
+
+        assert b.limits.max_image_size == 20 * 1024 * 1024
+
+    def test_limit_mutation_does_not_leak_to_class_default(self):
+        """Instance limit mutation must not touch the class default."""
+        original = SecurityLimits().max_image_size
+        a = FileSecurityConfig()
+
+        a.limits.max_image_size = 999
+
+        assert FileSecurityConfig.limits.max_image_size == original
+
+    def test_allowed_mime_sets_are_immutable(self):
+        """Allow-list MIME sets must be immutable frozensets."""
+        config = FileSecurityConfig()
+
+        assert isinstance(config.ALLOWED_IMAGE_MIMES, frozenset)
+        with pytest.raises(AttributeError):
+            config.ALLOWED_IMAGE_MIMES.add("image/evil")
+
+    def test_allowed_extension_sets_are_immutable(self):
+        """Allow-list extension sets must be immutable frozensets."""
+        config = FileSecurityConfig()
+
+        assert isinstance(config.ALLOWED_ACTIVITY_EXTENSIONS, frozenset)
+        with pytest.raises(AttributeError):
+            config.ALLOWED_ACTIVITY_EXTENSIONS.add(".evil")

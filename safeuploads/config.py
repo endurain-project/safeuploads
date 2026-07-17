@@ -1,7 +1,7 @@
 """File security configuration module."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
 from .enums import (
@@ -116,46 +116,58 @@ class FileSecurityConfig:
     limits = SecurityLimits()
 
     # Allowed MIME types for images
-    ALLOWED_IMAGE_MIMES: ClassVar[set[str]] = {
-        "image/jpeg",
-        "image/jpg",
-        "image/png",
-    }
+    ALLOWED_IMAGE_MIMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+        }
+    )
 
     # Allowed MIME types for ZIP files
-    ALLOWED_ZIP_MIMES: ClassVar[set[str]] = {
-        "application/zip",
-        "application/x-zip-compressed",
-        "multipart/x-zip",
-    }
+    ALLOWED_ZIP_MIMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "application/zip",
+            "application/x-zip-compressed",
+            "multipart/x-zip",
+        }
+    )
 
     # Allowed MIME types for activity files (GPX/TCX/FIT)
-    ALLOWED_ACTIVITY_MIMES: ClassVar[set[str]] = {
-        "application/gpx+xml",
-        "application/xml",
-        "text/xml",
-        "application/octet-stream",  # FIT files detected as binary
-    }
+    ALLOWED_ACTIVITY_MIMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "application/gpx+xml",
+            "application/xml",
+            "text/xml",
+            "application/octet-stream",  # FIT files detected as binary
+        }
+    )
 
     # Allowed MIME types for gzip files
-    ALLOWED_GZIP_MIMES: ClassVar[set[str]] = {
-        "application/gzip",
-        "application/x-gzip",
-    }
+    ALLOWED_GZIP_MIMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "application/gzip",
+            "application/x-gzip",
+        }
+    )
 
     # Allowed file extensions
-    ALLOWED_IMAGE_EXTENSIONS: ClassVar[set[str]] = {
-        ".jpg",
-        ".jpeg",
-        ".png",
-    }
-    ALLOWED_ZIP_EXTENSIONS: ClassVar[set[str]] = {".zip"}
-    ALLOWED_ACTIVITY_EXTENSIONS: ClassVar[set[str]] = {
-        ".gpx",
-        ".tcx",
-        ".fit",
-    }
-    ALLOWED_GZIP_EXTENSIONS: ClassVar[set[str]] = {".gz"}
+    ALLOWED_IMAGE_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
+        {
+            ".jpg",
+            ".jpeg",
+            ".png",
+        }
+    )
+    ALLOWED_ZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".zip"})
+    ALLOWED_ACTIVITY_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
+        {
+            ".gpx",
+            ".tcx",
+            ".fit",
+        }
+    )
+    ALLOWED_GZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".gz"})
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod
@@ -248,6 +260,17 @@ class FileSecurityConfig:
             "lpt9",
         }
     )
+
+    def __init__(self) -> None:
+        """
+        Create a config instance with isolated mutable state.
+
+        Copies the class-level ``limits`` so mutating one
+        instance's limits never affects other instances or
+        the shared class default.
+        """
+        # Per-instance copy prevents cross-instance mutation
+        self.limits = replace(type(self).limits)
 
     # Configuration validation trigger
     @classmethod

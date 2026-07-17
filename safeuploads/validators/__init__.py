@@ -16,9 +16,9 @@ from .xml_validator import XmlSecurityValidator
 
 __all__ = [
     "BaseValidator",
-    "UnicodeSecurityValidator",
-    "ExtensionSecurityValidator",
-    "WindowsSecurityValidator",
     "CompressionSecurityValidator",
+    "ExtensionSecurityValidator",
+    "UnicodeSecurityValidator",
+    "WindowsSecurityValidator",
     "XmlSecurityValidator",
 ]

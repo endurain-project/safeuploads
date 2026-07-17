@@ -27,7 +27,7 @@ class BaseValidator(ABC):
         self.config = config
 
     @abstractmethod
-    def validate(self, *args, **kwargs) -> Any:
+    def validate(self, *args: Any, **kwargs: Any) -> Any:
         """
         Validate data using subclass-specific logic.
 

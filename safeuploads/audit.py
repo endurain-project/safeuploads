@@ -20,6 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 # ----------------------------------------------------------------
 # Context variable for correlation ID
@@ -62,8 +63,8 @@ def reset_correlation_id() -> None:
 
 
 def log_extra(
-    extra: dict | None = None,
-) -> dict:
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Build a log ``extra`` dict enriched with the correlation ID.
 
@@ -73,7 +74,7 @@ def log_extra(
     Returns:
         Dict with ``correlation_id`` key added.
     """
-    merged = dict(extra) if extra else {}
+    merged: dict[str, Any] = dict(extra) if extra else {}
     cid = correlation_id_var.get()
     if cid is not None:
         merged["correlation_id"] = cid

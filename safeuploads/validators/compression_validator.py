@@ -72,9 +72,9 @@ class CompressionSecurityValidator(BaseValidator):
             total_compressed_size = compressed_size
             file_count = 0
             nested_archives = []
-            max_compression_ratio = 0
+            max_compression_ratio = 0.0
             overall_compression_ratio = (
-                0  # Initialize to avoid unbound variable
+                0.0  # Initialize to avoid unbound variable
             )
 
             # Analyze ZIP file structure with timeout protection

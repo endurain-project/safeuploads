@@ -23,12 +23,22 @@ dev = [
     "pytest-cov>=4.1,<8.0",
     "ruff>=0.9.0",
     "hypothesis>=6.100,<7.0",
+    "mypy>=1.20.2",
+    "types-defusedxml",
+]
+docs = [
+    "mkdocs-material>=9.6.0",
+    "mkdocstrings[python]>=0.29.0",
 ]
 
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+required-version = "0.11.18"
+exclude-newer = "30 days"
 
 [tool.ruff]
 line-length = 79
@@ -40,21 +50,37 @@ select = [
     "W",      # pycodestyle warnings
     "F",      # pyflakes
     "I",      # isort
+    "N",      # pep8-naming
     "UP",     # pyupgrade
     "B",      # flake8-bugbear
     "S",      # flake8-bandit (security)
+    "A",      # flake8-builtins
+    "T20",    # flake8-print
     "SIM",    # flake8-simplify
     "RET",    # flake8-return
     "C4",     # flake8-comprehensions
     "PIE",    # flake8-pie
     "PT",     # flake8-pytest-style
+    "ASYNC",  # flake8-async (blocking calls in async defs)
+    "RUF",    # ruff-specific rules
     "D",      # pydocstyle
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"safeuploads/enums.py" = [
+    "RUF012",  # Enum member values are singletons, not shared
+               # mutable class state
+]
+"safeuploads/__init__.py" = [
+    "RUF022",  # __all__ is intentionally grouped by category,
+               # not alphabetically sorted
+]
 "tests/**/*.py" = [
     "S101",   # assert is expected in tests
     "D",      # no docstring enforcement in tests
+    "T201",   # print is expected for benchmark/perf output
+    "ASYNC251",  # time.sleep in async test doubles simulates
+                 # real blocking I/O on purpose
 ]
 "tests/conftest.py" = [
     "S101",
@@ -106,6 +132,7 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 precision = 2
 show_missing = true
 skip_covered = false
+fail_under = 90
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
@@ -115,3 +142,20 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "@abstractmethod",
 ]
+
+[tool.mypy]
+python_version = "3.13"
+incremental = false
+# strict = true enables the full strict bundle, including
+# disallow_any_generics, warn_return_any, disallow_untyped_calls,
+# disallow_incomplete_defs, disallow_untyped_decorators, and
+# strict_equality, so a bare `Any` cannot silently satisfy the
+# type checker and every def must be fully and precisely typed.
+strict = true
+mypy_path = ["safeuploads"]
+files = ["safeuploads"]
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = ["magic", "fastapi"]
+ignore_missing_imports = true

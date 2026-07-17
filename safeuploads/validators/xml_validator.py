@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING
 from xml.etree.ElementTree import ParseError
 
 from defusedxml import ElementTree as DefusedET
+from defusedxml.common import (
+    DTDForbidden,
+    EntitiesForbidden,
+    ExternalReferenceForbidden,
+)
 
 from ..exceptions import FileProcessingError
 from .base import BaseValidator
@@ -58,17 +63,17 @@ class XmlSecurityValidator(BaseValidator):
             # entity expansion by default.
             # forbid_dtd=True rejects ALL DTD declarations.
             DefusedET.parse(file_obj, forbid_dtd=True)
-        except DefusedET.DTDForbidden as err:
+        except DTDForbidden as err:
             logger.warning("XML contains forbidden DTD declaration")
             raise FileProcessingError(
                 "XML contains forbidden DTD declaration"
             ) from err
-        except DefusedET.EntitiesForbidden as err:
+        except EntitiesForbidden as err:
             logger.warning("XML contains forbidden entity reference")
             raise FileProcessingError(
                 "XML contains forbidden external entity"
             ) from err
-        except DefusedET.ExternalReferenceForbidden as err:
+        except ExternalReferenceForbidden as err:
             logger.warning("XML contains forbidden external reference")
             raise FileProcessingError(
                 "XML contains forbidden external reference"

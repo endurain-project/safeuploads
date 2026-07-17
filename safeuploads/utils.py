@@ -3,6 +3,7 @@
 import logging
 import resource
 import time
+from types import TracebackType
 
 from .exceptions import ErrorCode, ResourceLimitError
 
@@ -54,7 +55,12 @@ class ResourceMonitor:
         self.start_memory = self._get_rss_bytes()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """
         Check resource usage on context exit.
 

@@ -459,7 +459,7 @@ class FileValidator:
 
     async def _stream_to_temp_file(
         self, file: UploadFile, max_file_size: int
-    ) -> tuple[tempfile.SpooledTemporaryFile, int]:
+    ) -> tuple[tempfile.SpooledTemporaryFile[bytes], int]:
         """
         Stream uploaded file to a SpooledTemporaryFile with size validation.
 

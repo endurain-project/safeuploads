@@ -15,22 +15,19 @@ concurrency:
 jobs:
   fuzz:
     name: Fuzz
-    runs-on: codeberg-medium-lazy
+    runs-on: local-runner
 
     steps:
       - name: Checkout repository
-        uses: https://data.forgejo.org/actions/checkout@v6
+        uses: https://data.forgejo.org/actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libmagic1
 
-      - name: Set up Python 3.13
-        uses: https://data.forgejo.org/actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
       - name: Install uv
-        run: pip install uv
+        uses: https://data.forgejo.org/astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          working-directory: .
 
       - name: Install dependencies
         run: uv sync --frozen --dev

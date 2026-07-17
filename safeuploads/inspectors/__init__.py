@@ -10,7 +10,7 @@ from .gzip_inspector import GzipContentInspector
 from .zip_inspector import ZipContentInspector
 
 __all__ = [
-    "ZipContentInspector",
-    "GzipContentInspector",
     "ContentSecurityInspector",
+    "GzipContentInspector",
+    "ZipContentInspector",
 ]

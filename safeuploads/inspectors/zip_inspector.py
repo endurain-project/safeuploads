@@ -285,7 +285,7 @@ class ZipContentInspector:
             )
 
         # Check for suspicious file distribution
-        file_types = {}
+        file_types: dict[str, int] = {}
         for entry in entries:
             if not entry.is_dir():
                 ext = os.path.splitext(entry.filename)[1].lower()

@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from typing import Any, ClassVar
 
 from .enums import (
     CompoundExtensionCategory,
@@ -115,17 +116,21 @@ class FileSecurityConfig:
     limits = SecurityLimits()
 
     # Allowed MIME types for images
-    ALLOWED_IMAGE_MIMES: set[str] = {"image/jpeg", "image/jpg", "image/png"}
+    ALLOWED_IMAGE_MIMES: ClassVar[set[str]] = {
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+    }
 
     # Allowed MIME types for ZIP files
-    ALLOWED_ZIP_MIMES: set[str] = {
+    ALLOWED_ZIP_MIMES: ClassVar[set[str]] = {
         "application/zip",
         "application/x-zip-compressed",
         "multipart/x-zip",
     }
 
     # Allowed MIME types for activity files (GPX/TCX/FIT)
-    ALLOWED_ACTIVITY_MIMES: set[str] = {
+    ALLOWED_ACTIVITY_MIMES: ClassVar[set[str]] = {
         "application/gpx+xml",
         "application/xml",
         "text/xml",
@@ -133,20 +138,24 @@ class FileSecurityConfig:
     }
 
     # Allowed MIME types for gzip files
-    ALLOWED_GZIP_MIMES: set[str] = {
+    ALLOWED_GZIP_MIMES: ClassVar[set[str]] = {
         "application/gzip",
         "application/x-gzip",
     }
 
     # Allowed file extensions
-    ALLOWED_IMAGE_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png"}
-    ALLOWED_ZIP_EXTENSIONS: set[str] = {".zip"}
-    ALLOWED_ACTIVITY_EXTENSIONS: set[str] = {
+    ALLOWED_IMAGE_EXTENSIONS: ClassVar[set[str]] = {
+        ".jpg",
+        ".jpeg",
+        ".png",
+    }
+    ALLOWED_ZIP_EXTENSIONS: ClassVar[set[str]] = {".zip"}
+    ALLOWED_ACTIVITY_EXTENSIONS: ClassVar[set[str]] = {
         ".gpx",
         ".tcx",
         ".fit",
     }
-    ALLOWED_GZIP_EXTENSIONS: set[str] = {".gz"}
+    ALLOWED_GZIP_EXTENSIONS: ClassVar[set[str]] = {".gz"}
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod
@@ -242,7 +251,7 @@ class FileSecurityConfig:
 
     # Configuration validation trigger
     @classmethod
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         """
         Validate configuration on subclass creation.
 
@@ -852,55 +861,59 @@ class FileSecurityConfig:
         errors = []
 
         # Check for empty enum categories
-        for category in DangerousExtensionCategory:
-            if not category.value:
+        for dangerous_category in DangerousExtensionCategory:
+            if not dangerous_category.value:
                 errors.append(
                     ConfigValidationError(
                         error_type="empty_enum_category",
-                        message=f"Extension category {category.name} is empty",
+                        message=(
+                            "Extension category"
+                            f" {dangerous_category.name} is empty"
+                        ),
                         severity="warning",
                         component="enums",
                         recommendation=(
                             "Add extensions to"
-                            f" {category.name} or remove"
+                            f" {dangerous_category.name} or remove"
                             " unused category"
                         ),
                     )
                 )
 
-        for category in CompoundExtensionCategory:
-            if not category.value:
+        for compound_category in CompoundExtensionCategory:
+            if not compound_category.value:
                 errors.append(
                     ConfigValidationError(
                         error_type="empty_enum_category",
                         message=(
                             "Compound extension"
                             " category"
-                            f" {category.name} is empty"
+                            f" {compound_category.name} is empty"
                         ),
                         severity="warning",
                         component="enums",
                         recommendation=(
                             "Add extensions to"
-                            f" {category.name} or remove"
+                            f" {compound_category.name} or remove"
                             " unused category"
                         ),
                     )
                 )
 
-        for category in UnicodeAttackCategory:
-            if not category.value:
+        for unicode_category in UnicodeAttackCategory:
+            if not unicode_category.value:
                 errors.append(
                     ConfigValidationError(
                         error_type="empty_enum_category",
                         message=(
-                            f"Unicode attack category {category.name} is empty"
+                            "Unicode attack category"
+                            f" {unicode_category.name} is empty"
                         ),
                         severity="warning",
                         component="enums",
                         recommendation=(
                             "Add Unicode characters to"
-                            f" {category.name} or remove"
+                            f" {unicode_category.name} or remove"
                             " unused category"
                         ),
                     )
@@ -908,8 +921,10 @@ class FileSecurityConfig:
 
         # Check for overlapping extensions between categories
         all_extensions_by_category = {}
-        for category in DangerousExtensionCategory:
-            all_extensions_by_category[category.name] = category.value
+        for dangerous_category in DangerousExtensionCategory:
+            all_extensions_by_category[dangerous_category.name] = (
+                dangerous_category.value
+            )
 
         for cat1_name, cat1_exts in all_extensions_by_category.items():
             for cat2_name, cat2_exts in all_extensions_by_category.items():

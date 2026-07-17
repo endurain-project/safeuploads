@@ -16,7 +16,7 @@ from ..audit import (
     get_correlation_id,
     log_extra,
 )
-from ..enums import MalwareSignatureCategory
+from ..enums import MalwareSignatureCategory, SuspiciousFilePattern
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -24,21 +24,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Script patterns checked against decoded text content
-_SCRIPT_PATTERNS: tuple[str, ...] = (
-    "#!/bin/",
-    "#!/usr/bin/",
-    "powershell",
-    "cmd.exe",
-    "eval(",
-    "exec(",
-    "system(",
-    "shell_exec(",
-    "<script",
-    "<?php",
-    "<%",
-    "import os",
-    "import subprocess",
+# Script patterns checked against decoded text content,
+# sourced from the shared SuspiciousFilePattern enum.
+_SCRIPT_PATTERNS: tuple[str, ...] = tuple(
+    SuspiciousFilePattern.SCRIPT_PATTERNS.value
 )
 
 

@@ -8,6 +8,7 @@ import zipfile
 from typing import TYPE_CHECKING
 
 from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
+from ..enums import ZipThreatCategory
 from ..exceptions import (
     CompressionSecurityError,
     ErrorCode,
@@ -42,6 +43,9 @@ class CompressionSecurityValidator(BaseValidator):
         super().__init__(config)
         self._audit = SecurityAuditLogger(
             enabled=config.limits.enable_audit_logging
+        )
+        self._nested_archive_exts: tuple[str, ...] = tuple(
+            ZipThreatCategory.NESTED_ARCHIVES.value
         )
 
     def validate_zip_compression_ratio(
@@ -201,14 +205,7 @@ class CompressionSecurityValidator(BaseValidator):
                     filename_lower = entry.filename.lower()
                     if any(
                         filename_lower.endswith(ext)
-                        for ext in [
-                            ".zip",
-                            ".rar",
-                            ".7z",
-                            ".tar",
-                            ".gz",
-                            ".bz2",
-                        ]
+                        for ext in self._nested_archive_exts
                     ):
                         nested_archives.append(entry.filename)
 

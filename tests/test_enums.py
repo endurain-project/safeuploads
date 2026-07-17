@@ -412,6 +412,17 @@ class TestSuspiciousFilePattern:
         """
         assert ".git/" in SuspiciousFilePattern.SUSPICIOUS_PATHS.value
 
+    def test_script_patterns_contains_known_markers(self):
+        """
+        Test that script patterns include shell and PHP markers.
+
+        Returns:
+            None
+        """
+        patterns = SuspiciousFilePattern.SCRIPT_PATTERNS.value
+        assert "#!/bin/" in patterns
+        assert "<?php" in patterns
+
 
 class TestZipThreatCategory:
     """Tests for ZipThreatCategory enum members."""
@@ -433,6 +444,15 @@ class TestZipThreatCategory:
             None
         """
         assert ".rar" in ZipThreatCategory.NESTED_ARCHIVES.value
+
+    def test_recursable_archives_contains_jar(self):
+        """
+        Test that recursable archives include .jar.
+
+        Returns:
+            None
+        """
+        assert ".jar" in ZipThreatCategory.RECURSABLE_ARCHIVES.value
 
     def test_executable_files_contains_exe(self):
         """

@@ -239,6 +239,23 @@ class TestCompressionSecurityValidator:
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
+    def test_reject_nested_archives_tgz(self, default_config):
+        """Test rejection of ZIP containing .tgz files."""
+        validator = CompressionSecurityValidator(default_config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("backup.tgz", b"fake tgz content")
+
+        zip_bytes = zip_buffer.getvalue()
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
+
     def test_reject_nested_archives_rar(self, default_config):
         """Test rejection of ZIP containing RAR files."""
         validator = CompressionSecurityValidator(default_config)

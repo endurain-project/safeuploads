@@ -311,6 +311,7 @@ class SuspiciousFilePattern(Enum):
         SUSPICIOUS_NAMES: Suspicious filename patterns.
         EXECUTABLE_SIGNATURES: Dangerous file content signatures.
         SUSPICIOUS_PATHS: Suspicious path components.
+        SCRIPT_PATTERNS: Script injection markers in text.
     """
 
     # Directory traversal attack patterns
@@ -393,6 +394,23 @@ class SuspiciousFilePattern(Enum):
         "__pycache__/",
     }
 
+    # Script injection markers checked against decoded text
+    SCRIPT_PATTERNS = {
+        "#!/bin/",
+        "#!/usr/bin/",
+        "powershell",
+        "cmd.exe",
+        "eval(",
+        "exec(",
+        "system(",
+        "shell_exec(",
+        "<script",
+        "<?php",
+        "<%",
+        "import os",
+        "import subprocess",
+    }
+
 
 class ZipThreatCategory(Enum):
     """
@@ -400,6 +418,8 @@ class ZipThreatCategory(Enum):
 
     Attributes:
         NESTED_ARCHIVES: Archive format threats.
+        RECURSABLE_ARCHIVES: ZIP-family formats openable for
+            recursion.
         EXECUTABLE_FILES: Executable content threats.
         SCRIPT_FILES: Script and code threats.
         SYSTEM_FILES: System and configuration threats.
@@ -422,6 +442,14 @@ class ZipThreatCategory(Enum):
         ".tar.xz",
         ".tgz",
         ".tbz2",
+    }
+
+    # ZIP-family archives that can be recursively opened
+    RECURSABLE_ARCHIVES = {
+        ".zip",
+        ".jar",
+        ".war",
+        ".ear",
     }
 
     # Executable content threats

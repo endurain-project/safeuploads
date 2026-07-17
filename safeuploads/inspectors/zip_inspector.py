@@ -65,6 +65,12 @@ class ZipContentInspector:
         self._exec_signatures: tuple[bytes, ...] = tuple(
             SuspiciousFilePattern.EXECUTABLE_SIGNATURES.value
         )
+        self._script_patterns: tuple[str, ...] = tuple(
+            SuspiciousFilePattern.SCRIPT_PATTERNS.value
+        )
+        self._recursable_exts: frozenset[str] = frozenset(
+            ZipThreatCategory.RECURSABLE_ARCHIVES.value
+        )
 
     def inspect_zip_content(self, file_obj: SeekableFile) -> None:
         """
@@ -464,23 +470,7 @@ class ZipContentInspector:
             text_content = content.decode("utf-8", errors="ignore").lower()
 
             # Check for common script patterns
-            script_patterns = [
-                "#!/bin/",
-                "#!/usr/bin/",
-                "powershell",
-                "cmd.exe",
-                "eval(",
-                "exec(",
-                "system(",
-                "shell_exec(",
-                "<script",
-                "<?php",
-                "<%",
-                "import os",
-                "import subprocess",
-            ]
-
-            for pattern in script_patterns:
+            for pattern in self._script_patterns:
                 if pattern in text_content:
                     return True
 
@@ -617,16 +607,7 @@ class ZipContentInspector:
                         continue
 
                     ext = os.path.splitext(entry.filename)[1].lower()
-                    is_archive = any(
-                        ext == a
-                        for a in (
-                            ".zip",
-                            ".jar",
-                            ".war",
-                            ".ear",
-                        )
-                    )
-                    if not is_archive:
+                    if ext not in self._recursable_exts:
                         continue
 
                     # Size guard for nested archive

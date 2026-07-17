@@ -6,23 +6,23 @@ import gzip
 import logging
 from typing import TYPE_CHECKING
 
-from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
+from ..audit import get_correlation_id, log_extra
 from ..exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
     ZipBombError,
 )
+from .base import BaseInspector
 
 if TYPE_CHECKING:
-    from ..config import FileSecurityConfig
     from ..protocols import SeekableFile
 
 
 logger = logging.getLogger(__name__)
 
 
-class GzipContentInspector:
+class GzipContentInspector(BaseInspector):
     """
     Inspects gzip archives for decompression bomb attacks.
 
@@ -33,18 +33,6 @@ class GzipContentInspector:
     Attributes:
         config: File security configuration.
     """
-
-    def __init__(self, config: FileSecurityConfig):
-        """
-        Initialize gzip inspector with configuration.
-
-        Args:
-            config: File security configuration.
-        """
-        self.config = config
-        self._audit = SecurityAuditLogger(
-            enabled=config.limits.enable_audit_logging
-        )
 
     def inspect_gzip_content(
         self,

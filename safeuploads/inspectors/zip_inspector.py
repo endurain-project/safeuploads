@@ -10,13 +10,14 @@ import time
 import zipfile
 from typing import TYPE_CHECKING
 
-from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
+from ..audit import get_correlation_id, log_extra
 from ..enums import (
     BinaryFileCategory,
     SuspiciousFilePattern,
     ZipThreatCategory,
 )
 from ..exceptions import ErrorCode, FileProcessingError, ZipContentError
+from .base import BaseInspector
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ZipContentInspector:
+class ZipContentInspector(BaseInspector):
     """
     Inspects ZIP archive contents for security threats.
 
@@ -41,10 +42,7 @@ class ZipContentInspector:
         Args:
             config: File security configuration.
         """
-        self.config = config
-        self._audit = SecurityAuditLogger(
-            enabled=config.limits.enable_audit_logging
-        )
+        super().__init__(config)
 
         # Pre-compile pattern sets for O(1) lookups
         self._traversal_patterns: tuple[str, ...] = tuple(

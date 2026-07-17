@@ -260,8 +260,9 @@ paths (e.g., ZIP with many entries, deeply nested structures).
 
 - `ResourceMonitor` enforces `max_validation_time_seconds`
   (default 30 s) using `time.monotonic()`.
-- ZIP analysis has its own `zip_analysis_timeout` (default 5 s)
-  with periodic `check_time()` calls during iteration.
+- ZIP analysis has its own `zip_analysis_timeout` (default 5 s),
+  compared against `time.monotonic()` on each entry during
+  iteration.
 - `max_zip_entries` (default 10,000) caps per-archive entry
   count.
 

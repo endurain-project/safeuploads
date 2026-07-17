@@ -11,12 +11,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ..audit import (
-    SecurityAuditLogger,
-    get_correlation_id,
-    log_extra,
-)
+from ..audit import get_correlation_id, log_extra
 from ..enums import MalwareSignatureCategory, SuspiciousFilePattern
+from .base import BaseInspector
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -31,7 +28,7 @@ _SCRIPT_PATTERNS: tuple[str, ...] = tuple(
 )
 
 
-class ContentSecurityInspector:
+class ContentSecurityInspector(BaseInspector):
     """
     Scans file content for embedded malware and scripts.
 
@@ -55,10 +52,7 @@ class ContentSecurityInspector:
         Args:
             config: File security configuration.
         """
-        self.config = config
-        self._audit = SecurityAuditLogger(
-            enabled=config.limits.enable_audit_logging
-        )
+        super().__init__(config)
 
         # Pre-compile signature sets
         self._executable_sigs: tuple[bytes, ...] = tuple(

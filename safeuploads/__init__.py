@@ -49,6 +49,7 @@ from .file_validator import FileValidator
 
 # Inspectors
 from .inspectors import (
+    BaseInspector,
     ContentSecurityInspector,
     GzipContentInspector,
     ZipContentInspector,
@@ -113,6 +114,7 @@ __all__ = [
     "CompressionSecurityValidator",
     "XmlSecurityValidator",
     # Inspectors
+    "BaseInspector",
     "ZipContentInspector",
     "GzipContentInspector",
     "ContentSecurityInspector",

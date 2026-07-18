@@ -36,7 +36,7 @@ from .exceptions import (
 from .inspectors import ZipContentInspector
 from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
-from .utils import ResourceMonitor
+from .utils import ResourceMonitor, bytes_to_mb
 from .validators import (
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
@@ -431,7 +431,7 @@ class FileValidator:
                     raise FileSizeError(
                         f"File too large. "
                         f"Maximum: "
-                        f"{max_file_size // (1024 * 1024)}MB",
+                        f"{bytes_to_mb(max_file_size)}MB",
                         size=file_size,
                         max_size=max_file_size,
                     )
@@ -441,9 +441,9 @@ class FileValidator:
             raise FileSizeError(
                 (
                     f"File too large. File size:"
-                    f" {file_size // (1024 * 1024)}MB,"
+                    f" {bytes_to_mb(file_size)}MB,"
                     f" maximum:"
-                    f" {max_file_size // (1024 * 1024)}MB"
+                    f" {bytes_to_mb(max_file_size)}MB"
                 ),
                 size=file_size,
                 max_size=max_file_size,
@@ -500,7 +500,7 @@ class FileValidator:
                     raise FileSizeError(
                         f"File too large. "
                         f"Maximum: "
-                        f"{max_file_size // (1024 * 1024)}MB",
+                        f"{bytes_to_mb(max_file_size)}MB",
                         size=total_bytes,
                         max_size=max_file_size,
                     )
@@ -522,6 +522,46 @@ class FileValidator:
         except Exception:
             temp.close()
             raise
+
+    def _read_header_and_detect(
+        self,
+        temp_file: tempfile.SpooledTemporaryFile[bytes],
+        filename: str,
+        sig_type: str,
+    ) -> tuple[bytes, str]:
+        """
+        Read the header, detect MIME, and verify the signature.
+
+        Reads the first 8 KB of a streamed temp file, resets
+        its position to the start, detects the MIME type, and
+        validates the magic signature against the expected type.
+
+        Args:
+            temp_file: Spooled temp file; reset to start on
+                return.
+            filename: Sanitized filename for error context.
+            sig_type: Expected signature category (e.g. "zip",
+                "gzip", "activity", "fit").
+
+        Returns:
+            Tuple of the header bytes and the detected MIME type.
+
+        Raises:
+            FileSignatureError: If the header does not match the
+                expected signature type.
+        """
+        header = temp_file.read(8192)
+        temp_file.seek(0)
+        detected_mime = self._detect_mime_type(header, filename)
+        try:
+            self._validate_file_signature(header, sig_type)
+        except FileSignatureError as err:
+            raise FileSignatureError(
+                f"File content does not match expected {sig_type} format",
+                filename=filename,
+                expected_type=sig_type,
+            ) from err
+        return header, detected_mime
 
     async def _run_validation(
         self,
@@ -737,22 +777,10 @@ class FileValidator:
 
             try:
                 # Read header for MIME/signature checks
-                header = temp_file.read(8192)
-                temp_file.seek(0)
-
-                # Detect MIME type using header bytes
                 filename = file.filename or "unknown"
-                detected_mime = self._detect_mime_type(header, filename)
-
-                # Validate ZIP file signature first
-                try:
-                    self._validate_file_signature(header, "zip")
-                except FileSignatureError as err:
-                    raise FileSignatureError(
-                        "File content does not match ZIP format",
-                        filename=filename,
-                        expected_type="zip",
-                    ) from err
+                _, detected_mime = self._read_header_and_detect(
+                    temp_file, filename, "zip"
+                )
 
                 # Check MIME type, allow octet-stream if signature valid
                 if detected_mime not in self.config.ALLOWED_ZIP_MIMES:
@@ -863,26 +891,15 @@ class FileValidator:
             )
 
             try:
-                header = temp_file.read(8192)
-                temp_file.seek(0)
-
                 filename = file.filename or "unknown"
-                detected_mime = self._detect_mime_type(header, filename)
 
                 _, ext = os.path.splitext(filename.lower())
                 is_fit = ext == ".fit"
-
-                # Signature check
                 sig_type = "fit" if is_fit else "activity"
-                try:
-                    self._validate_file_signature(header, sig_type)
-                except FileSignatureError as err:
-                    raise FileSignatureError(
-                        "File content does not match"
-                        f" expected {sig_type} format",
-                        filename=filename,
-                        expected_type=sig_type,
-                    ) from err
+
+                _, detected_mime = self._read_header_and_detect(
+                    temp_file, filename, sig_type
+                )
 
                 # MIME check — be lenient for FIT
                 if not is_fit:
@@ -959,21 +976,10 @@ class FileValidator:
             )
 
             try:
-                header = temp_file.read(8192)
-                temp_file.seek(0)
-
                 filename = file.filename or "unknown"
-                detected_mime = self._detect_mime_type(header, filename)
-
-                # Signature check
-                try:
-                    self._validate_file_signature(header, "gzip")
-                except FileSignatureError as err:
-                    raise FileSignatureError(
-                        "File content does not match gzip format",
-                        filename=filename,
-                        expected_type="gzip",
-                    ) from err
+                _, detected_mime = self._read_header_and_detect(
+                    temp_file, filename, "gzip"
+                )
 
                 # MIME check — allow octet-stream
                 allowed = self.config.ALLOWED_GZIP_MIMES

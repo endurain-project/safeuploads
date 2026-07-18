@@ -511,7 +511,7 @@ class ZipContentInspector(BaseInspector):
         *,
         depth: int = 0,
         seen_hashes: set[str] | None = None,
-        total_entries: int = 0,
+        entry_counter: list[int] | None = None,
         start_time: float | None = None,
     ) -> None:
         """
@@ -526,7 +526,9 @@ class ZipContentInspector(BaseInspector):
             file_obj: Seekable file containing ZIP data.
             depth: Current nesting depth (0 = outermost).
             seen_hashes: Set of SHA-256 hashes already seen.
-            total_entries: Cumulative entry count so far.
+            entry_counter: Single-element list holding the
+                cumulative entry count shared across all
+                recursion branches.
             start_time: Monotonic timestamp of initial call.
 
         Raises:
@@ -535,6 +537,8 @@ class ZipContentInspector(BaseInspector):
         """
         if seen_hashes is None:
             seen_hashes = set()
+        if entry_counter is None:
+            entry_counter = [0]
         if start_time is None:
             start_time = time.monotonic()
 
@@ -570,19 +574,19 @@ class ZipContentInspector(BaseInspector):
         try:
             with zipfile.ZipFile(file_obj, "r") as zf:
                 entries = zf.infolist()
-                total_entries += len(entries)
+                entry_counter[0] += len(entries)
 
                 # Complexity check
-                if total_entries > max_entries:
+                if entry_counter[0] > max_entries:
                     raise ZipContentError(
                         message=(
                             "Total recursive entries"
-                            f" ({total_entries})"
+                            f" ({entry_counter[0]})"
                             " exceeds limit"
                             f" ({max_entries})"
                         ),
                         threats=[
-                            f"Complexity attack: {total_entries} entries"
+                            f"Complexity attack: {entry_counter[0]} entries"
                         ],
                         error_code=(ErrorCode.ZIP_COMPLEXITY_ATTACK),
                     )
@@ -633,7 +637,7 @@ class ZipContentInspector(BaseInspector):
                         nested_buf,
                         depth=depth + 1,
                         seen_hashes=seen_hashes,
-                        total_entries=total_entries,
+                        entry_counter=entry_counter,
                         start_time=start_time,
                     )
 

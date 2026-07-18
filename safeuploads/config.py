@@ -10,6 +10,7 @@ from .enums import (
     UnicodeAttackCategory,
 )
 from .exceptions import ConfigValidationError, FileSecurityConfigurationError
+from .utils import bytes_to_mb
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,16 @@ class SecurityLimits:
     Attributes:
         max_image_size: Maximum size in bytes for image files.
         max_zip_size: Maximum size in bytes for ZIP archives.
+        max_activity_file_size: Maximum size in bytes for
+            GPX/TCX/FIT activity files.
+        max_gzip_size: Maximum size in bytes for gzip files.
+        max_memory_buffer_size: Bytes kept in memory before a
+            streamed upload spills to a temporary file on disk.
+        chunk_size: Chunk size in bytes for streaming reads.
+        max_validation_memory_mb: Maximum memory in MB allowed
+            during a single validation.
+        max_validation_time_seconds: Overall validation timeout
+            in seconds.
         max_compression_ratio: Maximum expansion ratio for ZIP files.
         max_uncompressed_size: Maximum cumulative size of ZIP contents.
         max_individual_file_size: Maximum size of single file in ZIP.
@@ -30,10 +41,20 @@ class SecurityLimits:
         max_zip_depth: Maximum directory nesting depth in ZIP.
         max_filename_length: Maximum length for filenames in ZIP.
         max_path_length: Maximum length for full paths in ZIP.
+        max_number_files_same_type: Maximum number of files
+            sharing the same extension inside a ZIP.
         allow_nested_archives: Whether nested archives are permitted.
         allow_symlinks: Whether symbolic links are permitted.
         allow_absolute_paths: Whether absolute paths are permitted.
         scan_zip_content: Whether deep content inspection is enabled.
+        max_total_entries_recursive: Maximum cumulative entry
+            count across all nesting levels of nested archives.
+        enable_audit_logging: Whether structured security audit
+            logging is emitted.
+        enable_content_analysis: Whether optional deep content
+            scanning (malware/script/polyglot) runs.
+        content_scan_max_size: Maximum bytes scanned during
+            optional content analysis.
     """
 
     # File size limits (in bytes)
@@ -104,8 +125,14 @@ class FileSecurityConfig:
         limits: Security limits configuration instance.
         ALLOWED_IMAGE_MIMES: Permitted MIME types for images.
         ALLOWED_ZIP_MIMES: Permitted MIME types for ZIP files.
+        ALLOWED_ACTIVITY_MIMES: Permitted MIME types for activity
+            files (GPX/TCX/FIT).
+        ALLOWED_GZIP_MIMES: Permitted MIME types for gzip files.
         ALLOWED_IMAGE_EXTENSIONS: Permitted image file extensions.
         ALLOWED_ZIP_EXTENSIONS: Permitted ZIP file extensions.
+        ALLOWED_ACTIVITY_EXTENSIONS: Permitted activity file
+            extensions.
+        ALLOWED_GZIP_EXTENSIONS: Permitted gzip file extensions.
         BLOCKED_EXTENSIONS: Dangerous file extensions to block.
         COMPOUND_BLOCKED_EXTENSIONS: Multi-part extensions to block.
         DANGEROUS_UNICODE_CHARS: Unicode characters for filename attacks.
@@ -433,7 +460,7 @@ class FileSecurityConfig:
                     error_type="excessive_size_limit",
                     message=(
                         "max_image_size"
-                        f" ({cls.limits.max_image_size // (1024 * 1024)}"
+                        f" ({bytes_to_mb(cls.limits.max_image_size)}"
                         "MB) is very large"
                     ),
                     severity="warning",
@@ -466,7 +493,7 @@ class FileSecurityConfig:
                     error_type="excessive_size_limit",
                     message=(
                         "max_zip_size"
-                        f" ({cls.limits.max_zip_size // (1024 * 1024)}"
+                        f" ({bytes_to_mb(cls.limits.max_zip_size)}"
                         "MB) is very large"
                     ),
                     severity="warning",
@@ -794,8 +821,8 @@ class FileSecurityConfig:
         if cls.limits.max_individual_file_size > (
             cls.limits.max_uncompressed_size
         ):
-            ind_mb = cls.limits.max_individual_file_size // (1024 * 1024)
-            uncomp_mb = cls.limits.max_uncompressed_size // (1024 * 1024)
+            ind_mb = bytes_to_mb(cls.limits.max_individual_file_size)
+            uncomp_mb = bytes_to_mb(cls.limits.max_uncompressed_size)
             errors.append(
                 ConfigValidationError(
                     error_type="inconsistent_size_limits",

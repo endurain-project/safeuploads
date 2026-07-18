@@ -760,6 +760,42 @@ class TestRecursiveZipDetection:
             inspector.inspect_nested_archives(io.BytesIO(buf.getvalue()))
         assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
 
+    def test_complexity_attack_accumulates_across_siblings(self):
+        """Sibling nested archives share one cumulative entry count.
+
+        Neither inner archive alone exceeds the recursive entry
+        limit, but their combined entries do. The shared counter
+        must accumulate across sibling branches, not reset per
+        branch, and raise a complexity-attack error.
+        """
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=5,
+            max_total_entries_recursive=15,
+        )
+        inspector = ZipContentInspector(config)
+
+        def _make_inner(prefix: str) -> bytes:
+            inner = io.BytesIO()
+            with zipfile.ZipFile(inner, "w") as zf:
+                for i in range(10):
+                    zf.writestr(f"{prefix}{i}.txt", b"x")
+            return inner.getvalue()
+
+        # Distinct content so the quine/hash check does not fire;
+        # this isolates the cumulative entry-count behaviour.
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr("inner1.zip", _make_inner("a"))
+            zf.writestr("inner2.zip", _make_inner("b"))
+
+        # Outer(2) + inner1(10) = 12 <= 15, but adding inner2(10)
+        # reaches 22 > 15 only if siblings share the counter.
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(outer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
     def test_nested_inspection_passes_safe_archive(self):
         """Test that safe nested archive passes."""
         config = FileSecurityConfig()

@@ -10,6 +10,19 @@ from .exceptions import ErrorCode, ResourceLimitError
 logger = logging.getLogger(__name__)
 
 
+def bytes_to_mb(num_bytes: int) -> int:
+    """
+    Convert a byte count to whole megabytes.
+
+    Args:
+        num_bytes: Size in bytes.
+
+    Returns:
+        Size in whole megabytes using floor division.
+    """
+    return num_bytes // (1024 * 1024)
+
+
 class ResourceMonitor:
     """
     Context manager that enforces wall-clock and memory limits.
@@ -100,8 +113,8 @@ class ResourceMonitor:
             self._memory_delta > 0
             and self._memory_delta > self.max_memory_bytes
         ):
-            delta_mb = self._memory_delta // (1024 * 1024)
-            max_mb = self.max_memory_bytes // (1024 * 1024)
+            delta_mb = bytes_to_mb(self._memory_delta)
+            max_mb = bytes_to_mb(self.max_memory_bytes)
             logger.error(
                 "Validation memory limit exceeded: %dMB > %dMB",
                 delta_mb,

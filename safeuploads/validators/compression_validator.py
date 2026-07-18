@@ -15,6 +15,7 @@ from ..exceptions import (
     FileProcessingError,
     ZipBombError,
 )
+from ..utils import bytes_to_mb
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -221,25 +222,22 @@ class CompressionSecurityValidator(BaseValidator):
                                 {
                                     "error_type": "file_too_large",
                                     "file_name": entry.filename,
-                                    "size_mb": uncompressed_size
-                                    // (1024 * 1024),
-                                    "max_size_mb": (
+                                    "size_mb": bytes_to_mb(uncompressed_size),
+                                    "max_size_mb": bytes_to_mb(
                                         self.config.limits.max_individual_file_size
-                                        // (1024 * 1024)
                                     ),
                                 }
                             ),
                         )
-                        max_file_mb = (
+                        max_file_mb = bytes_to_mb(
                             self.config.limits.max_individual_file_size
-                            // (1024 * 1024)
                         )
                         raise CompressionSecurityError(
                             message=(
                                 "Individual file too"
                                 f" large: '{entry.filename}'"
                                 " would expand to"
-                                f" {uncompressed_size // (1024 * 1024)}MB."
+                                f" {bytes_to_mb(uncompressed_size)}MB."
                                 " Maximum allowed:"
                                 f" {max_file_mb}MB"
                             ),
@@ -256,24 +254,23 @@ class CompressionSecurityValidator(BaseValidator):
                         extra=log_extra(
                             {
                                 "error_type": "zip_too_large",
-                                "total_size_mb": total_uncompressed_size
-                                // (1024 * 1024),
-                                "max_size_mb": (
+                                "total_size_mb": bytes_to_mb(
+                                    total_uncompressed_size
+                                ),
+                                "max_size_mb": bytes_to_mb(
                                     self.config.limits.max_uncompressed_size
-                                    // (1024 * 1024)
                                 ),
                             }
                         ),
                     )
-                    max_uncomp_mb = (
+                    max_uncomp_mb = bytes_to_mb(
                         self.config.limits.max_uncompressed_size
-                        // (1024 * 1024)
                     )
                     raise ZipBombError(
                         message=(
                             "Total uncompressed size"
                             " too large:"
-                            f" {total_uncompressed_size // (1024 * 1024)}MB."
+                            f" {bytes_to_mb(total_uncompressed_size)}MB."
                             " Maximum allowed:"
                             f" {max_uncomp_mb}MB"
                         ),
@@ -374,7 +371,7 @@ class CompressionSecurityValidator(BaseValidator):
                     " max ratio: %.1f:1,"
                     " overall ratio: %.1f:1",
                     file_count,
-                    total_uncompressed_size // (1024 * 1024),
+                    bytes_to_mb(total_uncompressed_size),
                     max_compression_ratio,
                     overall_compression_ratio,
                 )

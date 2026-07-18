@@ -13,6 +13,7 @@ from ..exceptions import (
     FileProcessingError,
     ZipBombError,
 )
+from ..utils import bytes_to_mb
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -71,8 +72,8 @@ class GzipContentInspector(BaseInspector):
                     if total_uncompressed > max_uncompressed:
                         logger.error(
                             "Gzip uncompressed size exceeded: %dMB > %dMB",
-                            total_uncompressed // (1024 * 1024),
-                            max_uncompressed // (1024 * 1024),
+                            bytes_to_mb(total_uncompressed),
+                            bytes_to_mb(max_uncompressed),
                             extra=log_extra(),
                         )
                         cid = get_correlation_id()
@@ -86,9 +87,9 @@ class GzipContentInspector(BaseInspector):
                             message=(
                                 "Gzip uncompressed size too"
                                 " large:"
-                                f" {total_uncompressed // (1024 * 1024)}MB."
+                                f" {bytes_to_mb(total_uncompressed)}MB."
                                 " Maximum:"
-                                f" {max_uncompressed // (1024 * 1024)}MB"
+                                f" {bytes_to_mb(max_uncompressed)}MB"
                             ),
                             compression_ratio=0,
                             uncompressed_size=(total_uncompressed),
@@ -170,7 +171,7 @@ class GzipContentInspector(BaseInspector):
             overall_ratio = total_uncompressed / compressed_size
             logger.debug(
                 "Gzip analysis: %dMB uncompressed, ratio %.1f:1",
-                total_uncompressed // (1024 * 1024),
+                bytes_to_mb(total_uncompressed),
                 overall_ratio,
             )
 

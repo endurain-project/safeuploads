@@ -383,11 +383,13 @@ class CompressionSecurityError(FileValidationError):
     """
     Compressed file security check failed.
 
+    Inherits the constructor of ``FileValidationError``.
+
     Args:
         message: Human-readable error description.
         filename: Optional filename of compressed file.
-        error_code: Optional error code (defaults to
-            COMPRESSION_GENERIC).
+        error_code: Optional machine-readable error code
+            (defaults to None).
 
     Attributes:
         None beyond inherited FileValidationError attributes.

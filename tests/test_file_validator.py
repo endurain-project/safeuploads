@@ -1,5 +1,6 @@
 """Tests for FileValidator integration."""
 
+import asyncio
 import io
 
 import pytest
@@ -1355,3 +1356,49 @@ class TestImageContentAnalysisIntegration:
         jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"\xff\xd9"
         file = mock_upload_file(filename="clean.jpg", content=jpeg)
         await validator.validate_image_file(file)
+
+
+class TestConcurrentValidation:
+    """Validation is offloaded to threads and safe under load."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_zip_validations_succeed(
+        self, mock_upload_file, create_zip_file
+    ):
+        """Concurrent ZIP validations run in threads without races.
+
+        Exercises the shared python-magic instance and inspectors
+        across worker threads (via asyncio.to_thread).
+        """
+        validator = FileValidator()
+        zip_bytes = create_zip_file(files={"a.txt": b"hello world"})
+
+        async def _run(name: str) -> None:
+            f = mock_upload_file(filename=name, content=zip_bytes)
+            await validator.validate_zip_file(f)
+
+        # Should complete without raising despite sharing one
+        # validator (and its magic instance) across coroutines.
+        await asyncio.gather(*[_run(f"z{i}.zip") for i in range(20)])
+
+    @pytest.mark.asyncio
+    async def test_concurrent_mixed_validations_succeed(
+        self, mock_upload_file, create_zip_file, valid_jpeg_bytes
+    ):
+        """Mixed image + ZIP validations run concurrently."""
+        validator = FileValidator()
+        zip_bytes = create_zip_file(files={"a.txt": b"data"})
+
+        async def _img(name: str) -> None:
+            f = mock_upload_file(filename=name, content=valid_jpeg_bytes)
+            await validator.validate_image_file(f)
+
+        async def _zip(name: str) -> None:
+            f = mock_upload_file(filename=name, content=zip_bytes)
+            await validator.validate_zip_file(f)
+
+        tasks: list = []
+        for i in range(10):
+            tasks.append(_img(f"i{i}.jpg"))
+            tasks.append(_zip(f"z{i}.zip"))
+        await asyncio.gather(*tasks)

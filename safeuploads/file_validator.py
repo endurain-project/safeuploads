@@ -1,10 +1,12 @@
 """Main file validator coordinating all security validations."""
 
+import asyncio
 import functools
 import logging
 import mimetypes
 import os
 import tempfile
+import threading
 import time
 from collections.abc import Awaitable, Callable
 
@@ -110,6 +112,11 @@ class FileValidator:
             enabled=self.config.limits.enable_audit_logging
         )
 
+        # Serialize access to the shared python-magic instance;
+        # libmagic cookies are not thread-safe and validation may
+        # run in worker threads via asyncio.to_thread.
+        self._magic_lock = threading.Lock()
+
         # Initialize python-magic for content-based detection
         try:
             self.magic_mime = magic.Magic(mime=True)
@@ -136,10 +143,13 @@ class FileValidator:
         """
         detected_mime = None
 
-        # Content-based detection using python-magic (most reliable)
+        # Content-based detection using python-magic (most reliable).
+        # Guarded by a lock because libmagic is not thread-safe and
+        # detection may run concurrently in worker threads.
         if self.magic_available:
             try:
-                detected_mime = self.magic_mime.from_buffer(file_content)
+                with self._magic_lock:
+                    detected_mime = self.magic_mime.from_buffer(file_content)
             except Exception as err:
                 logger.warning("Magic MIME detection failed: %s", err)
 
@@ -708,7 +718,8 @@ class FileValidator:
             # Validate file signature (raises exceptions on failure)
             self._validate_file_signature(file_content, "image")
 
-            # Optional content analysis
+            # Optional content analysis (offloaded — scans up to
+            # content_scan_max_size bytes and is CPU-bound)
             if self.config.limits.enable_content_analysis:
                 scan_size = self.config.limits.content_scan_max_size
                 # file_content holds only the 8 KB header;
@@ -717,7 +728,8 @@ class FileValidator:
                 await file.seek(0)
                 sample = await file.read(scan_size)
                 await file.seek(0)
-                threats = self.content_inspector.scan_content(
+                threats = await asyncio.to_thread(
+                    self.content_inspector.scan_content,
                     sample,
                     filename,
                     "image",
@@ -785,67 +797,90 @@ class FileValidator:
             )
 
             try:
-                # Read header for MIME/signature checks
+                # Offload the CPU/IO-bound ZIP inspection off the loop
                 filename = file.filename or "unknown"
-                _, detected_mime = self._read_header_and_detect(
-                    temp_file, filename, "zip"
-                )
-
-                # Check MIME type, allow octet-stream if signature valid
-                if detected_mime not in self.config.ALLOWED_ZIP_MIMES:
-                    if detected_mime == "application/octet-stream":
-                        logger.debug(
-                            "ZIP file detected as "
-                            "application/octet-stream, "
-                            "but signature is valid: %s",
-                            filename,
-                        )
-                    else:
-                        raise MimeTypeError(
-                            f"Invalid file type. "
-                            f"Detected: {detected_mime}. "
-                            f"Expected ZIP file.",
-                            filename=filename,
-                            detected_mime=detected_mime,
-                            allowed_mimes=list(self.config.ALLOWED_ZIP_MIMES),
-                        )
-
-                # Validate ZIP compression ratio
-                self.compression_validator.validate_zip_compression_ratio(
-                    temp_file, file_size
-                )
-
-                # Perform ZIP content inspection if enabled
-                if self.config.limits.scan_zip_content:
-                    temp_file.seek(0)
-                    self.zip_inspector.inspect_zip_content(temp_file)
-
-                # Optional content analysis
-                if self.config.limits.enable_content_analysis:
-                    temp_file.seek(0)
-                    scan_size = self.config.limits.content_scan_max_size
-                    sample = temp_file.read(scan_size)
-                    temp_file.seek(0)
-                    threats = self.content_inspector.scan_content(
-                        sample,
-                        filename,
-                        "zip",
-                    )
-                    if threats:
-                        raise FileProcessingError(
-                            "Content analysis"
-                            " threats detected:"
-                            f" {'; '.join(threats)}"
-                        )
-
-                logger.debug(
-                    "ZIP file validation passed: %s (%s, %s bytes)",
-                    filename,
-                    detected_mime,
-                    file_size,
+                await asyncio.to_thread(
+                    self._inspect_zip_sync, temp_file, file_size, filename
                 )
             finally:
                 temp_file.close()
+
+    def _inspect_zip_sync(
+        self,
+        temp_file: tempfile.SpooledTemporaryFile[bytes],
+        file_size: int,
+        filename: str,
+    ) -> None:
+        """
+        Run synchronous ZIP inspection off the event loop.
+
+        Args:
+            temp_file: Spooled temp file holding the ZIP data.
+            file_size: Compressed archive size in bytes.
+            filename: Sanitized filename for context.
+
+        Raises:
+            MimeTypeError: If the MIME type is not allowed.
+            FileSignatureError: If the signature mismatches.
+            CompressionSecurityError: If a zip bomb is detected.
+            FileProcessingError: If content analysis finds threats.
+        """
+        # Read header for MIME/signature checks
+        _, detected_mime = self._read_header_and_detect(
+            temp_file, filename, "zip"
+        )
+
+        # Check MIME type, allow octet-stream if signature valid
+        if detected_mime not in self.config.ALLOWED_ZIP_MIMES:
+            if detected_mime == "application/octet-stream":
+                logger.debug(
+                    "ZIP file detected as "
+                    "application/octet-stream, "
+                    "but signature is valid: %s",
+                    filename,
+                )
+            else:
+                raise MimeTypeError(
+                    f"Invalid file type. "
+                    f"Detected: {detected_mime}. "
+                    f"Expected ZIP file.",
+                    filename=filename,
+                    detected_mime=detected_mime,
+                    allowed_mimes=list(self.config.ALLOWED_ZIP_MIMES),
+                )
+
+        # Validate ZIP compression ratio
+        self.compression_validator.validate_zip_compression_ratio(
+            temp_file, file_size
+        )
+
+        # Perform ZIP content inspection if enabled
+        if self.config.limits.scan_zip_content:
+            temp_file.seek(0)
+            self.zip_inspector.inspect_zip_content(temp_file)
+
+        # Optional content analysis
+        if self.config.limits.enable_content_analysis:
+            temp_file.seek(0)
+            scan_size = self.config.limits.content_scan_max_size
+            sample = temp_file.read(scan_size)
+            temp_file.seek(0)
+            threats = self.content_inspector.scan_content(
+                sample,
+                filename,
+                "zip",
+            )
+            if threats:
+                raise FileProcessingError(
+                    f"Content analysis threats detected: {'; '.join(threats)}"
+                )
+
+        logger.debug(
+            "ZIP file validation passed: %s (%s, %s bytes)",
+            filename,
+            detected_mime,
+            file_size,
+        )
 
     async def validate_activity_file(self, file: UploadFile) -> None:
         """
@@ -901,40 +936,68 @@ class FileValidator:
 
             try:
                 filename = file.filename or "unknown"
-
-                _, ext = os.path.splitext(filename.lower())
-                is_fit = ext == ".fit"
-                sig_type = "fit" if is_fit else "activity"
-
-                _, detected_mime = self._read_header_and_detect(
-                    temp_file, filename, sig_type
-                )
-
-                # MIME check — be lenient for FIT
-                if not is_fit:
-                    allowed = self.config.ALLOWED_ACTIVITY_MIMES
-                    if detected_mime not in allowed:
-                        raise MimeTypeError(
-                            "Invalid file type."
-                            f" Detected: {detected_mime}."
-                            " Expected activity file.",
-                            filename=filename,
-                            detected_mime=detected_mime,
-                            allowed_mimes=list(allowed),
-                        )
-
-                # XXE-safe XML validation for GPX/TCX
-                if not is_fit:
-                    self.xml_validator.validate_xml_safety(temp_file)
-
-                logger.debug(
-                    "Activity file validation passed: %s (%s, %s bytes)",
-                    filename,
-                    detected_mime,
+                await asyncio.to_thread(
+                    self._inspect_activity_sync,
+                    temp_file,
                     file_size,
+                    filename,
                 )
             finally:
                 temp_file.close()
+
+    def _inspect_activity_sync(
+        self,
+        temp_file: tempfile.SpooledTemporaryFile[bytes],
+        file_size: int,
+        filename: str,
+    ) -> None:
+        """
+        Run synchronous activity-file inspection off the loop.
+
+        Handles XXE-safe XML parsing for GPX/TCX and binary
+        signature validation for FIT files.
+
+        Args:
+            temp_file: Spooled temp file holding the data.
+            file_size: File size in bytes.
+            filename: Sanitized filename for context.
+
+        Raises:
+            MimeTypeError: If the MIME type is not allowed.
+            FileSignatureError: If the signature mismatches.
+            FileProcessingError: If XML parsing fails.
+        """
+        _, ext = os.path.splitext(filename.lower())
+        is_fit = ext == ".fit"
+        sig_type = "fit" if is_fit else "activity"
+
+        _, detected_mime = self._read_header_and_detect(
+            temp_file, filename, sig_type
+        )
+
+        # MIME check — be lenient for FIT
+        if not is_fit:
+            allowed = self.config.ALLOWED_ACTIVITY_MIMES
+            if detected_mime not in allowed:
+                raise MimeTypeError(
+                    "Invalid file type."
+                    f" Detected: {detected_mime}."
+                    " Expected activity file.",
+                    filename=filename,
+                    detected_mime=detected_mime,
+                    allowed_mimes=list(allowed),
+                )
+
+        # XXE-safe XML validation for GPX/TCX
+        if not is_fit:
+            self.xml_validator.validate_xml_safety(temp_file)
+
+        logger.debug(
+            "Activity file validation passed: %s (%s, %s bytes)",
+            filename,
+            detected_mime,
+            file_size,
+        )
 
     async def validate_gzip_file(self, file: UploadFile) -> None:
         """
@@ -986,34 +1049,61 @@ class FileValidator:
 
             try:
                 filename = file.filename or "unknown"
-                _, detected_mime = self._read_header_and_detect(
-                    temp_file, filename, "gzip"
-                )
-
-                # MIME check — allow octet-stream
-                allowed = self.config.ALLOWED_GZIP_MIMES
-                if (
-                    detected_mime not in allowed
-                    and detected_mime != "application/octet-stream"
-                ):
-                    raise MimeTypeError(
-                        "Invalid file type."
-                        f" Detected:"
-                        f" {detected_mime}."
-                        " Expected gzip file.",
-                        filename=filename,
-                        detected_mime=detected_mime,
-                        allowed_mimes=list(allowed),
-                    )
-
-                # Decompression bomb check
-                self.gzip_inspector.inspect_gzip_content(temp_file, file_size)
-
-                logger.debug(
-                    "Gzip file validation passed: %s (%s, %s bytes)",
-                    filename,
-                    detected_mime,
+                await asyncio.to_thread(
+                    self._inspect_gzip_sync,
+                    temp_file,
                     file_size,
+                    filename,
                 )
             finally:
                 temp_file.close()
+
+    def _inspect_gzip_sync(
+        self,
+        temp_file: tempfile.SpooledTemporaryFile[bytes],
+        file_size: int,
+        filename: str,
+    ) -> None:
+        """
+        Run synchronous gzip inspection off the event loop.
+
+        Args:
+            temp_file: Spooled temp file holding the gzip data.
+            file_size: Compressed size in bytes.
+            filename: Sanitized filename for context.
+
+        Raises:
+            MimeTypeError: If the MIME type is not allowed.
+            FileSignatureError: If the signature mismatches.
+            ZipBombError: If a decompression bomb is detected.
+            CompressionSecurityError: If the gzip is invalid.
+        """
+        _, detected_mime = self._read_header_and_detect(
+            temp_file, filename, "gzip"
+        )
+
+        # MIME check — allow octet-stream
+        allowed = self.config.ALLOWED_GZIP_MIMES
+        if (
+            detected_mime not in allowed
+            and detected_mime != "application/octet-stream"
+        ):
+            raise MimeTypeError(
+                "Invalid file type."
+                f" Detected:"
+                f" {detected_mime}."
+                " Expected gzip file.",
+                filename=filename,
+                detected_mime=detected_mime,
+                allowed_mimes=list(allowed),
+            )
+
+        # Decompression bomb check
+        self.gzip_inspector.inspect_gzip_content(temp_file, file_size)
+
+        logger.debug(
+            "Gzip file validation passed: %s (%s, %s bytes)",
+            filename,
+            detected_mime,
+            file_size,
+        )

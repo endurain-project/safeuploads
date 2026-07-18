@@ -96,6 +96,24 @@ uncompressed), exhausting disk and memory.
 - All timeout checks use `time.monotonic()` to prevent bypass
   via NTP clock adjustment.
 
+**Metadata trust boundary:**
+
+- The size and ratio checks above read the ZIP central-
+  directory `file_size` / `compress_size` fields, which are
+  attacker-controlled. A forged *small* `file_size` cannot bomb
+  a `zipfile`-based consumer: Python's `zipfile` caps reads at
+  the declared size and raises `BadZipFile` on the resulting
+  CRC mismatch. The residual risk is a consumer that inflates
+  the raw DEFLATE stream while ignoring the ZIP metadata.
+- safeuploads does **not** extract archives. Consumers must
+  extract safely — prefer `zipfile` (which enforces the
+  declared sizes) over raw `zlib` inflation.
+- Set `verify_zip_decompression=True` to make safeuploads read
+  every entry through `zipfile`, forcing CRC and decompression
+  validation. Archives whose real content does not match their
+  declared metadata are then rejected as `ZIP_CORRUPT`. This is
+  off by default because it decompresses the full archive.
+
 ### Recursive / Quine ZIP Archives
 
 **Attack:** A ZIP containing itself (quine) or deeply nested

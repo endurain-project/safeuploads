@@ -47,6 +47,8 @@ class SecurityLimits:
         allow_symlinks: Whether symbolic links are permitted.
         allow_absolute_paths: Whether absolute paths are permitted.
         scan_zip_content: Whether deep content inspection is enabled.
+        verify_zip_decompression: Whether to decompress every ZIP
+            entry to reject forged central-directory metadata.
         max_total_entries_recursive: Maximum cumulative entry
             count across all nesting levels of nested archives.
         enable_audit_logging: Whether structured security audit
@@ -101,6 +103,9 @@ class SecurityLimits:
     # Whether to allow absolute paths in ZIP
     allow_absolute_paths: bool = False
     scan_zip_content: bool = True  # Whether to perform deep content inspection
+    # Decompress every ZIP entry to reject forged central-
+    # directory metadata (extra CPU/IO; off by default)
+    verify_zip_decompression: bool = False
 
     # Recursive ZIP inspection limits
     max_total_entries_recursive: int = (

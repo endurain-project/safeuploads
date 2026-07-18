@@ -1,6 +1,7 @@
 """Tests for CompressionSecurityValidator."""
 
 import io
+import struct
 import zipfile
 
 import pytest
@@ -788,3 +789,71 @@ class TestCompressionValidatorNestedAllowed:
         # and the branch jumps to line 306 (272->306).
         # allow_nested_archives=True prevents the raise at 306.
         validator.validate_zip_compression_ratio(io.BytesIO(zip_bytes), 0)
+
+
+def _forge_small_file_size(zip_bytes: bytes, lie: int = 100) -> bytes:
+    """Rewrite the declared uncompressed size to understate it.
+
+    Patches the uncompressed-size field in both the local header
+    and the central directory so the archive metadata lies about
+    how large the single entry expands to.
+    """
+    data = bytearray(zip_bytes)
+    central = data.find(b"PK\x01\x02")
+    struct.pack_into("<I", data, central + 24, lie)
+    local = data.find(b"PK\x03\x04")
+    struct.pack_into("<I", data, local + 22, lie)
+    return bytes(data)
+
+
+class TestVerifyZipDecompression:
+    """Tests for the opt-in verify_zip_decompression mode."""
+
+    @staticmethod
+    def _bomb_zip() -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("big.bin", b"\x00" * (1024 * 1024))
+        return buf.getvalue()
+
+    def test_forged_metadata_passes_when_verify_disabled(self):
+        """A forged small file_size passes when verification is off."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(verify_zip_decompression=False)
+        validator = CompressionSecurityValidator(config)
+        forged = _forge_small_file_size(self._bomb_zip())
+
+        # Metadata is trusted, so the understated size passes.
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(forged), len(forged)
+        )
+
+    def test_forged_metadata_rejected_when_verify_enabled(self):
+        """Verification rejects forged metadata as a corrupt ZIP."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(verify_zip_decompression=True)
+        validator = CompressionSecurityValidator(config)
+        forged = _forge_small_file_size(self._bomb_zip())
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(forged), len(forged)
+            )
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+    def test_valid_zip_passes_with_verify_enabled(self):
+        """A well-formed ZIP (with a dir entry) passes verification."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(verify_zip_decompression=True)
+        validator = CompressionSecurityValidator(config)
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("subdir/", b"")  # directory entry is skipped
+            zf.writestr("subdir/a.txt", b"hello")
+            zf.writestr("b.txt", b"world")
+        zip_bytes = buf.getvalue()
+
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )

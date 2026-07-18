@@ -362,6 +362,11 @@ class CompressionSecurityValidator(BaseValidator):
                         error_code=(ErrorCode.ZIP_COMPLEXITY_ATTACK),
                     )
 
+                # Optional: read every entry through zipfile to
+                # confirm the declared metadata is not forged.
+                if self.config.limits.verify_zip_decompression:
+                    self._verify_entries_decompress(zip_file, zip_entries)
+
                 # Log analysis results
                 logger.debug(
                     "ZIP analysis: %s files, %sMB uncompressed,"
@@ -406,6 +411,34 @@ class CompressionSecurityValidator(BaseValidator):
             raise FileProcessingError(
                 message="ZIP validation failed due to an internal error",
             ) from err
+
+    def _verify_entries_decompress(
+        self,
+        zip_file: zipfile.ZipFile,
+        zip_entries: list[zipfile.ZipInfo],
+    ) -> None:
+        """
+        Decompress every entry to detect forged metadata.
+
+        The size checks above trust the central-directory
+        ``file_size``. Reading each entry forces ``zipfile`` to
+        validate the CRC and decompression, so an archive whose
+        real content does not match its declared sizes raises
+        ``zipfile.BadZipFile`` (surfaced by the caller as a
+        corrupt archive). Reads are bounded by the already-
+        validated declared sizes.
+
+        Args:
+            zip_file: Open ZIP archive to verify.
+            zip_entries: Entries listed in the archive.
+        """
+        chunk_size = self.config.limits.chunk_size
+        for entry in zip_entries:
+            if entry.is_dir():
+                continue
+            with zip_file.open(entry, "r") as stream:
+                while stream.read(chunk_size):
+                    pass
 
     def validate(self, file_obj: SeekableFile, compressed_size: int) -> None:
         """

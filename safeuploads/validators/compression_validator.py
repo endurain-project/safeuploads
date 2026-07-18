@@ -7,7 +7,7 @@ import time
 import zipfile
 from typing import TYPE_CHECKING
 
-from ..audit import SecurityAuditLogger, get_correlation_id, log_extra
+from ..audit import get_correlation_id, log_extra
 from ..enums import ZipThreatCategory
 from ..exceptions import (
     CompressionSecurityError,
@@ -42,9 +42,6 @@ class CompressionSecurityValidator(BaseValidator):
             config: Security configuration with compression limits.
         """
         super().__init__(config)
-        self._audit = SecurityAuditLogger(
-            enabled=config.limits.enable_audit_logging
-        )
         self._nested_archive_exts: tuple[str, ...] = tuple(
             ZipThreatCategory.NESTED_ARCHIVES.value
         )

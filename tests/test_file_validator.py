@@ -304,6 +304,27 @@ class TestValidateFileSize:
         assert exc_info.value.size == 10 * 1024 * 1024
         assert exc_info.value.max_size == 5 * 1024 * 1024
 
+    @pytest.mark.asyncio
+    async def test_validate_size_ignores_understated_size(
+        self, mock_upload_file
+    ):
+        """Under-reported declared size cannot bypass the limit."""
+        validator = FileValidator()
+        # 2MB actual body but the client claims only 10 bytes.
+        content = b"x" * (2 * 1024 * 1024)
+        file = mock_upload_file(
+            filename="sneaky.jpg", content=content, size=10
+        )
+
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._validate_file_size(
+                file, max_file_size=1 * 1024 * 1024
+            )
+
+        # Rejection is based on the real counted bytes, not the
+        # tiny declared size.
+        assert exc_info.value.size > 1 * 1024 * 1024
+
 
 class TestDetectMimeType:
     """Test MIME type detection."""

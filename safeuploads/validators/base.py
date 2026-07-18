@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from ..audit import SecurityAuditLogger
+
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
 
@@ -25,6 +27,9 @@ class BaseValidator(ABC):
             config: File security settings to apply.
         """
         self.config = config
+        self._audit = SecurityAuditLogger(
+            enabled=config.limits.enable_audit_logging
+        )
 
     @abstractmethod
     def validate(self, *args: Any, **kwargs: Any) -> Any:

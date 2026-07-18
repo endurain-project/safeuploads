@@ -412,42 +412,39 @@ class FileValidator:
         # Reset file position
         await file.seek(0)
 
-        # Check file size
-        file_size = len(file_content)
-        if hasattr(file, "size") and file.size:
-            file_size = file.size
-        else:
-            # Determine size via chunked reads to prevent
-            # memory exhaustion when Content-Length is absent
-            chunk_size = self.config.limits.chunk_size
-            file_size = 0
-            while True:
-                chunk = await file.read(chunk_size)
-                if not chunk:
-                    break
-                file_size += len(chunk)
-                if file_size > max_file_size:
-                    await file.seek(0)
-                    raise FileSizeError(
-                        f"File too large. "
-                        f"Maximum: "
-                        f"{bytes_to_mb(max_file_size)}MB",
-                        size=file_size,
-                        max_size=max_file_size,
-                    )
-            await file.seek(0)
-
-        if file_size > max_file_size:
+        # Fail closed: if the client declares a size that already
+        # exceeds the limit, reject immediately without reading.
+        declared_size = getattr(file, "size", None)
+        if declared_size and declared_size > max_file_size:
             raise FileSizeError(
                 (
                     f"File too large. File size:"
-                    f" {bytes_to_mb(file_size)}MB,"
+                    f" {bytes_to_mb(declared_size)}MB,"
                     f" maximum:"
                     f" {bytes_to_mb(max_file_size)}MB"
                 ),
-                size=file_size,
+                size=declared_size,
                 max_size=max_file_size,
             )
+
+        # Never trust a small or absent declared size: verify the
+        # real byte count by streaming so an under-reported size
+        # cannot bypass the limit.
+        chunk_size = self.config.limits.chunk_size
+        file_size = 0
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            file_size += len(chunk)
+            if file_size > max_file_size:
+                await file.seek(0)
+                raise FileSizeError(
+                    f"File too large. Maximum: {bytes_to_mb(max_file_size)}MB",
+                    size=file_size,
+                    max_size=max_file_size,
+                )
+        await file.seek(0)
 
         if file_size == 0:
             raise FileSizeError(

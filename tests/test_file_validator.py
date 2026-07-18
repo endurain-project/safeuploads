@@ -59,6 +59,19 @@ class TestFileValidatorInitialization:
         assert validator.magic_available is True
         assert validator.magic_mime is not None
 
+    def test_invalid_custom_config_logs_issue(self, caplog):
+        """Invalid custom config is validated and logged at init."""
+        import logging
+
+        bad_config = FileSecurityConfig()
+        bad_config.limits = SecurityLimits(max_image_size=-1)
+
+        with caplog.at_level(
+            logging.ERROR, logger="safeuploads.file_validator"
+        ):
+            FileValidator(config=bad_config)
+        assert "configuration" in caplog.text.lower()
+
 
 class TestSanitizeFilename:
     """Test filename sanitization."""

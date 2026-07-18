@@ -897,3 +897,48 @@ class TestZipExtensionBlockedConflict:
         errors = FileSecurityConfig.validate_configuration()
         types = [e.error_type for e in errors if e.severity == "error"]
         assert "extension_conflict" in types
+
+
+class TestInstanceValidation:
+    """Tests for instance-aware configuration validation."""
+
+    def test_validate_instance_checks_instance_limits(self):
+        """Instance validation uses self.limits, not the class default."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_size=-1)
+
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_size_limit" in error_types
+
+    def test_validate_instance_independent_of_class_default(self):
+        """A bad instance does not leak into class-level validation."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_compression_ratio=-1)
+
+        instance_types = [e.error_type for e in config.validate_instance()]
+        assert "invalid_compression_ratio" in instance_types
+
+        class_types = [
+            e.error_type for e in FileSecurityConfig.validate_configuration()
+        ]
+        assert "invalid_compression_ratio" not in class_types
+
+    def test_validate_and_report_instance_strict_raises(self):
+        """Strict instance reporting raises on errors."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_size=-1)
+
+        with pytest.raises(FileSecurityConfigurationError):
+            config.validate_and_report_instance(strict=True)
+
+    def test_validate_and_report_instance_non_strict_logs(self, caplog):
+        """Non-strict instance reporting logs without raising."""
+        import logging
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_size=-1)
+
+        with caplog.at_level(logging.ERROR, logger="safeuploads.config"):
+            config.validate_and_report_instance(strict=False)
+        assert "configuration error" in caplog.text.lower()

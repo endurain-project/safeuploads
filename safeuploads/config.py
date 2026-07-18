@@ -400,7 +400,7 @@ class FileSecurityConfig:
         cls, strict: bool = True
     ) -> list[ConfigValidationError]:
         """
-        Run all configuration validation routines.
+        Validate the class-level default configuration.
 
         Args:
             strict: Reserved for future behavior adjustments.
@@ -408,10 +408,45 @@ class FileSecurityConfig:
         Returns:
             List of detected validation errors.
         """
-        errors = []
+        return cls._collect_errors(cls.limits)
+
+    def validate_instance(
+        self, strict: bool = True
+    ) -> list[ConfigValidationError]:
+        """
+        Validate this instance's configuration.
+
+        Validates the per-instance ``limits`` so a customized
+        instance is checked instead of the class default.
+
+        Args:
+            strict: Reserved for future behavior adjustments.
+
+        Returns:
+            List of detected validation errors.
+        """
+        return type(self)._collect_errors(self.limits)
+
+    @classmethod
+    def _collect_errors(
+        cls, limits: SecurityLimits
+    ) -> list[ConfigValidationError]:
+        """
+        Run all validation routines for the given limits.
+
+        Class-level MIME, extension, and enum checks are
+        instance-independent and always validated as-is.
+
+        Args:
+            limits: Security limits to validate.
+
+        Returns:
+            List of detected validation errors.
+        """
+        errors: list[ConfigValidationError] = []
 
         # Validate file size limits
-        errors.extend(cls._validate_file_size_limits())
+        errors.extend(cls._validate_file_size_limits(limits))
 
         # Validate MIME type configurations
         errors.extend(cls._validate_mime_configurations())
@@ -420,7 +455,7 @@ class FileSecurityConfig:
         errors.extend(cls._validate_extension_configurations())
 
         # Validate ZIP compression settings
-        errors.extend(cls._validate_compression_settings())
+        errors.extend(cls._validate_compression_settings(limits))
 
         # Validate enum consistency
         errors.extend(cls._validate_enum_consistency())
@@ -430,10 +465,15 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_file_size_limits(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_file_size_limits(
+        limits: SecurityLimits,
+    ) -> list[ConfigValidationError]:
         """
-        Validate configured file size limits.
+        Validate the provided file size limits.
+
+        Args:
+            limits: Security limits to validate.
 
         Returns:
             List of detected configuration issues.
@@ -441,7 +481,7 @@ class FileSecurityConfig:
         errors = []
 
         # Check image size limits
-        if cls.limits.max_image_size <= 0:
+        if limits.max_image_size <= 0:
             errors.append(
                 ConfigValidationError(
                     error_type="invalid_size_limit",
@@ -454,13 +494,13 @@ class FileSecurityConfig:
                 )
             )
 
-        if cls.limits.max_image_size > 100 * 1024 * 1024:  # 100MB
+        if limits.max_image_size > 100 * 1024 * 1024:  # 100MB
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_size_limit",
                     message=(
                         "max_image_size"
-                        f" ({bytes_to_mb(cls.limits.max_image_size)}"
+                        f" ({bytes_to_mb(limits.max_image_size)}"
                         "MB) is very large"
                     ),
                     severity="warning",
@@ -474,7 +514,7 @@ class FileSecurityConfig:
             )
 
         # Check ZIP size limits
-        if cls.limits.max_zip_size <= 0:
+        if limits.max_zip_size <= 0:
             errors.append(
                 ConfigValidationError(
                     error_type="invalid_size_limit",
@@ -487,13 +527,13 @@ class FileSecurityConfig:
                 )
             )
 
-        if cls.limits.max_zip_size > 2 * 1024 * 1024 * 1024:  # 2GB
+        if limits.max_zip_size > 2 * 1024 * 1024 * 1024:  # 2GB
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_size_limit",
                     message=(
                         "max_zip_size"
-                        f" ({bytes_to_mb(cls.limits.max_zip_size)}"
+                        f" ({bytes_to_mb(limits.max_zip_size)}"
                         "MB) is very large"
                     ),
                     severity="warning",
@@ -507,7 +547,7 @@ class FileSecurityConfig:
             )
 
         # Validate size relationship
-        if cls.limits.max_zip_size <= cls.limits.max_image_size:
+        if limits.max_zip_size <= limits.max_image_size:
             errors.append(
                 ConfigValidationError(
                     error_type="inconsistent_size_limits",
@@ -728,10 +768,15 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_compression_settings(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_compression_settings(
+        limits: SecurityLimits,
+    ) -> list[ConfigValidationError]:
         """
-        Validate compression-related limits.
+        Validate the provided compression-related limits.
+
+        Args:
+            limits: Security limits to validate.
 
         Returns:
             List of detected configuration issues.
@@ -739,7 +784,7 @@ class FileSecurityConfig:
         errors = []
 
         # Validate compression ratio
-        if cls.limits.max_compression_ratio <= 0:
+        if limits.max_compression_ratio <= 0:
             errors.append(
                 ConfigValidationError(
                     error_type="invalid_compression_ratio",
@@ -753,13 +798,13 @@ class FileSecurityConfig:
                 )
             )
 
-        if cls.limits.max_compression_ratio < 10:
+        if limits.max_compression_ratio < 10:
             errors.append(
                 ConfigValidationError(
                     error_type="too_strict_compression",
                     message=(
                         "max_compression_ratio"
-                        f" ({cls.limits.max_compression_ratio})"
+                        f" ({limits.max_compression_ratio})"
                         " is very strict"
                     ),
                     severity="warning",
@@ -772,13 +817,13 @@ class FileSecurityConfig:
                 )
             )
 
-        if cls.limits.max_compression_ratio > 1000:
+        if limits.max_compression_ratio > 1000:
             errors.append(
                 ConfigValidationError(
                     error_type="too_permissive_compression",
                     message=(
                         "max_compression_ratio"
-                        f" ({cls.limits.max_compression_ratio})"
+                        f" ({limits.max_compression_ratio})"
                         " may allow zip bombs"
                     ),
                     severity="warning",
@@ -792,7 +837,7 @@ class FileSecurityConfig:
             )
 
         # Validate uncompressed size limit
-        if cls.limits.max_uncompressed_size <= 0:
+        if limits.max_uncompressed_size <= 0:
             errors.append(
                 ConfigValidationError(
                     error_type="invalid_uncompressed_size",
@@ -804,7 +849,7 @@ class FileSecurityConfig:
             )
 
         # Validate individual file size limit
-        if cls.limits.max_individual_file_size <= 0:
+        if limits.max_individual_file_size <= 0:
             errors.append(
                 ConfigValidationError(
                     error_type="invalid_individual_file_size",
@@ -818,11 +863,9 @@ class FileSecurityConfig:
             )
 
         # Check individual file size doesn't exceed total uncompressed size
-        if cls.limits.max_individual_file_size > (
-            cls.limits.max_uncompressed_size
-        ):
-            ind_mb = bytes_to_mb(cls.limits.max_individual_file_size)
-            uncomp_mb = bytes_to_mb(cls.limits.max_uncompressed_size)
+        if limits.max_individual_file_size > (limits.max_uncompressed_size):
+            ind_mb = bytes_to_mb(limits.max_individual_file_size)
+            uncomp_mb = bytes_to_mb(limits.max_uncompressed_size)
             errors.append(
                 ConfigValidationError(
                     error_type="inconsistent_size_limits",
@@ -843,7 +886,7 @@ class FileSecurityConfig:
             )
 
         # Validate ZIP entry limits
-        if cls.limits.max_zip_entries <= 0:
+        if limits.max_zip_entries <= 0:
             errors.append(
                 ConfigValidationError(
                     error_type="invalid_zip_entries",
@@ -856,13 +899,13 @@ class FileSecurityConfig:
                 )
             )
 
-        if cls.limits.max_zip_entries > 100000:
+        if limits.max_zip_entries > 100000:
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_zip_entries",
                     message=(
                         "max_zip_entries"
-                        f" ({cls.limits.max_zip_entries})"
+                        f" ({limits.max_zip_entries})"
                         " is very high"
                     ),
                     severity="warning",
@@ -872,7 +915,7 @@ class FileSecurityConfig:
             )
 
         # Validate timeout settings
-        if cls.limits.zip_analysis_timeout <= 0:
+        if limits.zip_analysis_timeout <= 0:
             errors.append(
                 ConfigValidationError(
                     error_type="invalid_timeout",
@@ -883,13 +926,13 @@ class FileSecurityConfig:
                 )
             )
 
-        if cls.limits.zip_analysis_timeout > 30:
+        if limits.zip_analysis_timeout > 30:
             errors.append(
                 ConfigValidationError(
                     error_type="excessive_timeout",
                     message=(
                         "zip_analysis_timeout"
-                        f" ({cls.limits.zip_analysis_timeout}s)"
+                        f" ({limits.zip_analysis_timeout}s)"
                         " is very long"
                     ),
                     severity="warning",
@@ -1071,7 +1114,7 @@ class FileSecurityConfig:
     @classmethod
     def validate_and_report(cls, strict: bool = True) -> None:
         """
-        Validate configuration and log outcomes.
+        Validate the class-level configuration and log outcomes.
 
         Args:
             strict: If True, raise on errors/warnings.
@@ -1079,8 +1122,36 @@ class FileSecurityConfig:
         Raises:
             FileSecurityConfigurationError: If strict and issues found.
         """
-        errors = cls.validate_configuration(strict=strict)
+        cls._report_errors(cls.validate_configuration(strict=strict), strict)
 
+    def validate_and_report_instance(self, strict: bool = True) -> None:
+        """
+        Validate this instance's configuration and log outcomes.
+
+        Args:
+            strict: If True, raise on errors/warnings.
+
+        Raises:
+            FileSecurityConfigurationError: If strict and issues found.
+        """
+        type(self)._report_errors(
+            self.validate_instance(strict=strict), strict
+        )
+
+    @staticmethod
+    def _report_errors(
+        errors: list[ConfigValidationError], strict: bool
+    ) -> None:
+        """
+        Log validation issues and optionally raise.
+
+        Args:
+            errors: Validation errors to report.
+            strict: If True, raise when errors or warnings exist.
+
+        Raises:
+            FileSecurityConfigurationError: If strict and issues found.
+        """
         if not errors:
             logger.info("File security configuration validation passed")
             return

@@ -83,6 +83,18 @@ class FileValidator:
         """
         self.config = config or FileSecurityConfig()
 
+        # Validate the actual (possibly custom) config in use;
+        # log any issues by severity without raising so
+        # construction still succeeds. A valid config logs nothing.
+        for issue in self.config.validate_instance(strict=False):
+            log = logger.error if issue.severity == "error" else logger.warning
+            log(
+                "Configuration %s: %s. %s",
+                issue.component,
+                issue.message,
+                issue.recommendation,
+            )
+
         # Initialize specialized validators
         self.unicode_validator = UnicodeSecurityValidator(self.config)
         self.extension_validator = ExtensionSecurityValidator(self.config)

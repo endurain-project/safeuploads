@@ -33,7 +33,7 @@ safeuploads/
 
 | Component | Responsibility |
 |---|---|
-| `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring, audit events, and delegates to validators/inspectors. |
+| `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring, audit events, offloads blocking inspection to a worker thread (or a configured `executor`), and delegates to validators/inspectors. |
 | `FileSecurityConfig` | Centralizes all configuration: allowed MIME types, extensions, blocked extensions, Unicode characters, and Windows reserved names. |
 | `SecurityLimits` | Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps. |
 | `BaseValidator` | Abstract base class; validators inherit and implement `validate()`. |
@@ -322,21 +322,21 @@ UploadFile (.gz)
 
 ```
 Exception
+├── FileSecurityConfigurationError
 └── FileSecurityError
     ├── FileValidationError
     │   ├── FilenameSecurityError
-    │   ├── UnicodeSecurityError
-    │   ├── ExtensionSecurityError
-    │   ├── WindowsReservedNameError
+    │   │   ├── UnicodeSecurityError
+    │   │   ├── ExtensionSecurityError
+    │   │   └── WindowsReservedNameError
     │   ├── FileSizeError
     │   ├── MimeTypeError
-    │   └── FileSignatureError
-    ├── FileProcessingError
-    │   ├── CompressionSecurityError
-    │   │   └── ZipBombError
-    │   ├── ZipContentError
-    │   └── ResourceLimitError
-    └── FileSecurityConfigurationError
+    │   ├── FileSignatureError
+    │   └── CompressionSecurityError
+    │       ├── ZipBombError
+    │       └── ZipContentError
+    └── FileProcessingError
+        └── ResourceLimitError
 ```
 
 All exceptions carry an `error_code` from `ErrorCode` for

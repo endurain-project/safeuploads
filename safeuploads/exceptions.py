@@ -58,9 +58,9 @@ class ErrorCode:
     """
     Machine-readable error codes for file validation failures.
 
-    Attributes:
-        Error codes are class-level string constants for various
-        validation failure types.
+    Error codes are class-level string constants grouped by
+    validation failure type (filename, extension, MIME, size,
+    signature, compression, resource, and processing).
     """
 
     # Filename validation errors
@@ -390,9 +390,6 @@ class CompressionSecurityError(FileValidationError):
         filename: Optional filename of compressed file.
         error_code: Optional machine-readable error code
             (defaults to None).
-
-    Attributes:
-        None beyond inherited FileValidationError attributes.
     """
 
 

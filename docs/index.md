@@ -74,7 +74,19 @@ config = FileSecurityConfig()
 config.limits.max_image_size = 10 * 1024 * 1024  # 10 MiB
 config.limits.max_compression_ratio = 50
 
+# Opt in to strict ZIP checking: decompress every entry to
+# reject archives with forged central-directory metadata
+config.limits.verify_zip_decompression = True
+
 validator = FileValidator(config=config)
+
+# Optionally offload blocking inspection to a bounded pool
+from concurrent.futures import ThreadPoolExecutor
+
+pooled_validator = FileValidator(
+    config=config,
+    executor=ThreadPoolExecutor(max_workers=4),
+)
 ```
 
 ## Exception Handling
@@ -103,7 +115,7 @@ except FileValidationError as err:
 
 - **Filename Security**: Unicode normalization, directory traversal prevention, Windows reserved names blocking
 - **Extension Validation**: Allow/block lists with configurable rules, dangerous extension detection
-- **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits
+- **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits, optional strict decompression verification
 - **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files

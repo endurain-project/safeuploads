@@ -122,10 +122,10 @@ validator = FileValidator(config=config)
 ```json
 {
   "error": "invalid_mime_type",
-  "message": "MIME type not allowed",
-  "detected": "application/x-msdownload",
-  "allowed": ["image/jpeg", "image/png", "image/gif"],
-  "error_code": "MIME_TYPE_NOT_ALLOWED"
+  "message": "Invalid file type. Detected: application/x-msdownload.",
+  "detected_mime": "application/x-msdownload",
+  "allowed_mimes": ["image/jpeg", "image/jpg", "image/png"],
+  "error_code": "MIME_TYPE_INVALID"
 }
 ```
 
@@ -134,7 +134,7 @@ validator = FileValidator(config=config)
 {
   "error": "zip_bomb_detected",
   "message": "Compression ratio exceeds limit",
-  "ratio": 150.5,
+  "compression_ratio": 150.5,
   "error_code": "ZIP_BOMB_DETECTED"
 }
 ```

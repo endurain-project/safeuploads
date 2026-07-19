@@ -166,6 +166,19 @@ class TestSanitizeFilename:
         with pytest.raises(ExtensionSecurityError):
             validator._sanitize_filename("malware.exe")
 
+    def test_sanitize_empty_name_uses_random_token(self):
+        """Whitespace-only name parts get a random, unique fallback."""
+        validator = FileValidator()
+
+        first = validator._sanitize_filename("   .txt")
+        second = validator._sanitize_filename("   .txt")
+
+        assert first.startswith("file_")
+        assert first.endswith(".txt")
+        assert second.startswith("file_")
+        # Random token, so two identical inputs do not collide.
+        assert first != second
+
 
 class TestValidateFilename:
     """Test filename validation."""
@@ -441,6 +454,22 @@ class TestValidateFileSignature:
             validator._validate_file_signature(
                 invalid_bytes, expected_type="zip"
             )
+
+    def test_validate_activity_signature_leading_whitespace(self):
+        """Leading whitespace before <?xml is tolerated."""
+        validator = FileValidator()
+        content = b"\n  <?xml version='1.0'?><gpx></gpx>"
+
+        # Should not raise
+        validator._validate_file_signature(content, "activity")
+
+    def test_validate_activity_signature_bom_then_whitespace(self):
+        """A UTF-8 BOM followed by whitespace before <?xml passes."""
+        validator = FileValidator()
+        content = b"\xef\xbb\xbf\n<?xml version='1.0'?><gpx></gpx>"
+
+        # Should not raise
+        validator._validate_file_signature(content, "activity")
 
 
 class TestValidateImageFile:
@@ -1402,3 +1431,29 @@ class TestConcurrentValidation:
             tasks.append(_img(f"i{i}.jpg"))
             tasks.append(_zip(f"z{i}.zip"))
         await asyncio.gather(*tasks)
+
+    @pytest.mark.asyncio
+    async def test_custom_executor_runs_offloaded_work(
+        self, mock_upload_file, create_zip_file
+    ):
+        """A supplied executor receives the offloaded inspection."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        class RecordingExecutor(ThreadPoolExecutor):
+            def __init__(self):
+                super().__init__(max_workers=2)
+                self.calls = 0
+
+            def submit(self, fn, /, *args, **kwargs):
+                self.calls += 1
+                return super().submit(fn, *args, **kwargs)
+
+        recorder = RecordingExecutor()
+        try:
+            validator = FileValidator(executor=recorder)
+            zip_bytes = create_zip_file(files={"a.txt": b"hi"})
+            f = mock_upload_file(filename="z.zip", content=zip_bytes)
+            await validator.validate_zip_file(f)
+            assert recorder.calls > 0
+        finally:
+            recorder.shutdown(wait=True)

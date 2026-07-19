@@ -1,14 +1,18 @@
 """Main file validator coordinating all security validations."""
 
 import asyncio
+import contextvars
 import functools
 import logging
 import mimetypes
 import os
+import secrets
 import tempfile
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Executor
+from typing import TypeVar
 
 import magic
 
@@ -49,6 +53,8 @@ from .validators.xml_validator import XmlSecurityValidator
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 
 class FileValidator:
     """
@@ -65,13 +71,20 @@ class FileValidator:
         magic_available: Whether python-magic was successfully initialized.
     """
 
-    def __init__(self, config: FileSecurityConfig | None = None):
+    def __init__(
+        self,
+        config: FileSecurityConfig | None = None,
+        executor: Executor | None = None,
+    ):
         """
         Initialize file validator with configuration and detection utilities.
 
         Args:
             config: Optional configuration object defining file security
                 rules. Defaults to new FileSecurityConfig instance.
+            executor: Optional executor used to run blocking
+                inspection off the event loop. Defaults to the
+                asyncio default thread pool.
 
         Attributes:
             config: Active security configuration.
@@ -84,6 +97,7 @@ class FileValidator:
             magic_available: Whether python-magic initialized successfully.
         """
         self.config = config or FileSecurityConfig()
+        self._executor = executor
 
         # Validate the actual (possibly custom) config in use;
         # log any issues by severity without raising so
@@ -128,6 +142,33 @@ class FileValidator:
                 "python-magic not available for content detection: %s",
                 err,
             )
+
+    async def _to_thread(self, func: Callable[..., _T], *args: object) -> _T:
+        """
+        Run a blocking callable in a worker thread.
+
+        Uses the configured executor when one was supplied,
+        otherwise the default ``asyncio.to_thread`` pool. The
+        current context (including the correlation ID) is
+        propagated to the worker thread in both cases.
+
+        Args:
+            func: Blocking callable to execute.
+            *args: Positional arguments passed to ``func``.
+
+        Returns:
+            The value returned by ``func``.
+        """
+        if self._executor is None:
+            return await asyncio.to_thread(func, *args)
+
+        loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
+
+        def _call() -> _T:
+            return ctx.run(func, *args)
+
+        return await loop.run_in_executor(self._executor, _call)
 
     def _detect_mime_type(self, file_content: bytes, filename: str) -> str:
         """
@@ -242,6 +283,15 @@ class FileValidator:
         ):
             return
 
+        # Activity XML files may carry a UTF-8 BOM and/or leading
+        # whitespace before the XML declaration; tolerate both.
+        if expected_type == "activity":
+            head = file_content
+            if head.startswith(b"\xef\xbb\xbf"):
+                head = head[3:]
+            if head.lstrip().startswith(b"<?xml"):
+                return
+
         # No matching signature found
         raise FileSignatureError(
             f"File content does not match expected {expected_type} format",
@@ -305,7 +355,7 @@ class FileValidator:
 
         # Ensure we don't end up with just an extension or empty name
         if not name_part or name_part.strip() == "":
-            filename = f"file_{int(time.time())}{ext_part}"
+            filename = f"file_{secrets.token_hex(8)}{ext_part}"
 
         # Final check: ensure the sanitized filename
         # doesn't become a reserved name
@@ -728,7 +778,7 @@ class FileValidator:
                 await file.seek(0)
                 sample = await file.read(scan_size)
                 await file.seek(0)
-                threats = await asyncio.to_thread(
+                threats = await self._to_thread(
                     self.content_inspector.scan_content,
                     sample,
                     filename,
@@ -799,7 +849,7 @@ class FileValidator:
             try:
                 # Offload the CPU/IO-bound ZIP inspection off the loop
                 filename = file.filename or "unknown"
-                await asyncio.to_thread(
+                await self._to_thread(
                     self._inspect_zip_sync, temp_file, file_size, filename
                 )
             finally:
@@ -936,7 +986,7 @@ class FileValidator:
 
             try:
                 filename = file.filename or "unknown"
-                await asyncio.to_thread(
+                await self._to_thread(
                     self._inspect_activity_sync,
                     temp_file,
                     file_size,
@@ -1049,7 +1099,7 @@ class FileValidator:
 
             try:
                 filename = file.filename or "unknown"
-                await asyncio.to_thread(
+                await self._to_thread(
                     self._inspect_gzip_sync,
                     temp_file,
                     file_size,

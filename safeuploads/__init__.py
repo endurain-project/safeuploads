@@ -67,9 +67,10 @@ from .validators import (
     XmlSecurityValidator,
 )
 
-# Perform configuration validation when module is imported
-# This ensures configuration issues are caught early during application startup
-FileSecurityConfig.validate_and_report(strict=False)
+# Configuration is validated explicitly rather than at import
+# time: FileValidator validates its config on construction, and
+# callers can invoke FileSecurityConfig.validate_and_report() or
+# config.validate_instance() for an early check.
 
 # Export all public APIs
 __all__ = [

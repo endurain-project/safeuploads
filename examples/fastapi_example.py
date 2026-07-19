@@ -10,6 +10,8 @@ Rate limiting requires ``slowapi``::
     pip install slowapi
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -27,9 +29,11 @@ from safeuploads import FileValidator
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     ExtensionSecurityError,
+    FileProcessingError,
     FileSizeError,
     FileValidationError,
     MimeTypeError,
+    ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
     ZipBombError,
@@ -65,6 +69,17 @@ strict_config.limits = strict_limits
 # Initialize validators
 default_validator = FileValidator()  # Uses default config
 strict_validator = FileValidator(config=strict_config)
+
+# Hardened validator: decompress every ZIP entry to reject
+# forged central-directory metadata, and offload blocking
+# inspection to a bounded thread pool so large uploads never
+# starve the event loop.
+hardened_config = FileSecurityConfig()
+hardened_config.limits = SecurityLimits(verify_zip_decompression=True)
+hardened_validator = FileValidator(
+    config=hardened_config,
+    executor=ThreadPoolExecutor(max_workers=4),
+)
 
 
 @app.exception_handler(FileValidationError)
@@ -132,6 +147,35 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
         }
 
     return JSONResponse(status_code=status_code, content=detail)
+
+
+@app.exception_handler(FileProcessingError)
+async def file_processing_exception_handler(request, exc: FileProcessingError):
+    """
+    Handle processing and resource errors.
+
+    XML parsing failures and resource-limit breaches derive
+    from FileProcessingError rather than FileValidationError,
+    so they need their own handler.
+    """
+    if isinstance(exc, ResourceLimitError):
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": "resource_limit_exceeded",
+                "message": str(exc),
+                "error_code": exc.error_code,
+            },
+        )
+
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "processing_error",
+            "message": str(exc),
+            "error_code": exc.error_code,
+        },
+    )
 
 
 @app.post("/upload/image")
@@ -209,6 +253,61 @@ async def upload_zip(file: UploadFile):
     }
 
 
+@app.post("/upload/zip/verified")
+async def upload_zip_verified(file: UploadFile):
+    """
+    Upload a ZIP validated with strict decompression checking.
+
+    Uses the hardened validator (``verify_zip_decompression``
+    enabled), which decompresses every entry to reject archives
+    whose real content does not match their declared metadata.
+    Inspection runs on a dedicated thread pool.
+    """
+    await hardened_validator.validate_zip_file(file)
+
+    return {
+        "status": "success",
+        "message": "ZIP verified with strict decompression checking",
+        "filename": file.filename,
+        "size": file.size,
+    }
+
+
+@app.post("/upload/activity")
+async def upload_activity(file: UploadFile):
+    """
+    Upload and validate an activity file (GPX, TCX, or FIT).
+
+    XML formats (GPX/TCX) are parsed with XXE protections;
+    FIT files are validated by their binary signature.
+    """
+    await default_validator.validate_activity_file(file)
+
+    return {
+        "status": "success",
+        "message": "Activity file uploaded and validated successfully",
+        "filename": file.filename,
+        "size": file.size,
+    }
+
+
+@app.post("/upload/gzip")
+async def upload_gzip(file: UploadFile):
+    """
+    Upload and validate a gzip archive.
+
+    Streams decompression to detect decompression bombs.
+    """
+    await default_validator.validate_gzip_file(file)
+
+    return {
+        "status": "success",
+        "message": "Gzip file uploaded and validated successfully",
+        "filename": file.filename,
+        "size": file.size,
+    }
+
+
 @app.post("/upload/multiple")
 async def upload_multiple(files: list[UploadFile]):
     """
@@ -221,9 +320,16 @@ async def upload_multiple(files: list[UploadFile]):
     for file in files:
         try:
             # Determine file type and validate accordingly
-            if file.filename and file.filename.lower().endswith(".zip"):
+            name = (file.filename or "").lower()
+            if name.endswith(".zip"):
                 await default_validator.validate_zip_file(file)
                 file_type = "zip"
+            elif name.endswith(".gz"):
+                await default_validator.validate_gzip_file(file)
+                file_type = "gzip"
+            elif name.endswith((".gpx", ".tcx", ".fit")):
+                await default_validator.validate_activity_file(file)
+                file_type = "activity"
             else:
                 await default_validator.validate_image_file(file)
                 file_type = "image"
@@ -271,6 +377,10 @@ async def get_config():
         "default": {
             "max_image_size": default_validator.config.limits.max_image_size,
             "max_zip_size": default_validator.config.limits.max_zip_size,
+            "max_activity_file_size": (
+                default_validator.config.limits.max_activity_file_size
+            ),
+            "max_gzip_size": (default_validator.config.limits.max_gzip_size),
             "max_compression_ratio": (
                 default_validator.config.limits.max_compression_ratio
             ),
@@ -283,6 +393,11 @@ async def get_config():
                 strict_validator.config.limits.max_compression_ratio
             ),
             "max_zip_entries": strict_validator.config.limits.max_zip_entries,
+        },
+        "hardened": {
+            "verify_zip_decompression": (
+                hardened_validator.config.limits.verify_zip_decompression
+            ),
         },
     }
 
@@ -297,6 +412,11 @@ async def root():
             "POST /upload/image": "Upload image with default validation",
             "POST /upload/image/strict": "Upload image with strict validation",
             "POST /upload/zip": "Upload and validate ZIP archive",
+            "POST /upload/zip/verified": (
+                "Upload ZIP with strict decompression verification"
+            ),
+            "POST /upload/activity": "Upload GPX/TCX/FIT activity file",
+            "POST /upload/gzip": "Upload and validate gzip archive",
             "POST /upload/multiple": "Upload multiple files",
             "POST /upload/image/rate-limited": (
                 "Rate-limited image upload (requires slowapi)"
@@ -337,6 +457,8 @@ if __name__ == "__main__":
     print("Example endpoints:")
     print("  POST http://localhost:8000/upload/image")
     print("  POST http://localhost:8000/upload/zip")
+    print("  POST http://localhost:8000/upload/activity")
+    print("  POST http://localhost:8000/upload/gzip")
     print("\nPress CTRL+C to stop")
 
     uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -49,6 +49,14 @@ curl -X POST http://localhost:8000/upload/image/strict \
 curl -X POST http://localhost:8000/upload/zip \
   -F "file=@test_archive.zip"
 
+# Upload an activity file (GPX/TCX/FIT)
+curl -X POST http://localhost:8000/upload/activity \
+  -F "file=@track.gpx"
+
+# Upload a gzip archive
+curl -X POST http://localhost:8000/upload/gzip \
+  -F "file=@data.json.gz"
+
 # Upload multiple files
 curl -X POST http://localhost:8000/upload/multiple \
   -F "files=@image1.jpg" \

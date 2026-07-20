@@ -1,10 +1,6 @@
 name: Conventional Commits
 
 on:
-  push:
-    branches:
-      - main
-      - master
   pull_request:
     types: [opened, edited, synchronize, reopened]
 

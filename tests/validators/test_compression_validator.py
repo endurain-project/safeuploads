@@ -102,6 +102,9 @@ class TestCompressionSecurityValidator:
 
         assert "Excessive compression ratio" in str(exc_info.value)
         assert exc_info.value.compression_ratio > 0
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
 
     def test_reject_excessive_overall_compression_ratio(self):
         """Test rejection of overall compression ratio exceeding limits."""

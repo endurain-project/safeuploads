@@ -201,6 +201,9 @@ class CompressionSecurityValidator(BaseValidator):
                                     f" {max_ratio}:1"
                                 ),
                                 compression_ratio=compression_ratio,
+                                error_code=(
+                                    ErrorCode.COMPRESSION_RATIO_EXCEEDED
+                                ),
                             )
 
                     # Check for nested archive files
@@ -318,6 +321,7 @@ class CompressionSecurityValidator(BaseValidator):
                             max_ratio=(
                                 self.config.limits.max_compression_ratio
                             ),
+                            error_code=(ErrorCode.COMPRESSION_RATIO_EXCEEDED),
                         )
 
                 # Reject nested archives (potential security risk)

@@ -1,12 +1,20 @@
-"""Utility classes for resource monitoring during validation."""
+"""Utility helpers for resource monitoring and content scanning."""
 
 import logging
-import resource
 import sys
 import time
+from collections.abc import Iterable
 from types import TracebackType
 
 from .exceptions import ErrorCode, ResourceLimitError
+
+try:
+    # ``resource`` is a Unix-only stdlib module and is absent on
+    # Windows; memory accounting degrades to a no-op there while
+    # the wall-clock timeout keeps working.
+    import resource
+except ImportError:  # pragma: no cover - platform-specific (Windows)
+    resource = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +35,75 @@ def bytes_to_mb(num_bytes: int) -> int:
         Size in whole megabytes using floor division.
     """
     return num_bytes // (1024 * 1024)
+
+
+def matches_signature_prefix(
+    content: bytes, signatures: Iterable[bytes]
+) -> bytes | None:
+    """
+    Return the first signature the content begins with.
+
+    Anchored match via ``bytes.startswith``; use when deciding
+    whether content *is* a given format from its header.
+
+    Args:
+        content: Raw bytes to test.
+        signatures: Candidate byte signatures.
+
+    Returns:
+        The first matching signature, or None if none match.
+    """
+    for sig in signatures:
+        if content.startswith(sig):
+            return sig
+    return None
+
+
+def find_embedded_signature(
+    content: bytes, signatures: Iterable[bytes]
+) -> bytes | None:
+    """
+    Return the first signature found anywhere in the content.
+
+    Substring match; use when detecting a format embedded inside
+    otherwise-valid content (polyglots, appended payloads).
+
+    Args:
+        content: Raw bytes to scan.
+        signatures: Candidate byte signatures.
+
+    Returns:
+        The first matching signature, or None if none present.
+    """
+    for sig in signatures:
+        if sig in content:
+            return sig
+    return None
+
+
+def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
+    """
+    Return the first text pattern present in decoded content.
+
+    Content is decoded as UTF-8 with errors ignored and lower-
+    cased so binary data degrades gracefully. Any decoding
+    failure is treated as "no match".
+
+    Args:
+        content: Raw bytes to scan.
+        patterns: Lower-case substrings to search for.
+
+    Returns:
+        The first matching pattern, or None if none present.
+    """
+    try:
+        text = content.decode("utf-8", errors="ignore").lower()
+    except Exception:
+        return None
+    for pattern in patterns:
+        if pattern in text:
+            return pattern
+    return None
 
 
 class ResourceMonitor:
@@ -106,38 +183,8 @@ class ResourceMonitor:
         # clamp defensively in case the platform reports noise.
         self._memory_delta = max(0, current_memory - self.start_memory)
 
-        if self._elapsed > self.max_time_seconds:
-            logger.error(
-                "Validation time limit exceeded: %.2fs > %.2fs",
-                self._elapsed,
-                self.max_time_seconds,
-            )
-            raise ResourceLimitError(
-                message=(
-                    f"Validation time limit exceeded: "
-                    f"{self._elapsed:.1f}s "
-                    f"(max {self.max_time_seconds:.1f}s)"
-                ),
-                error_code=ErrorCode.RESOURCE_TIME_EXCEEDED,
-                elapsed_seconds=self._elapsed,
-            )
-
-        if self._memory_delta > self.max_memory_bytes:
-            delta_mb = bytes_to_mb(self._memory_delta)
-            max_mb = bytes_to_mb(self.max_memory_bytes)
-            logger.error(
-                "Validation memory limit exceeded: %dMB > %dMB",
-                delta_mb,
-                max_mb,
-            )
-            raise ResourceLimitError(
-                message=(
-                    f"Validation memory limit exceeded: "
-                    f"{delta_mb}MB (max {max_mb}MB)"
-                ),
-                error_code=(ErrorCode.RESOURCE_MEMORY_EXCEEDED),
-                memory_bytes=self._memory_delta,
-            )
+        self._raise_if_time_exceeded(self._elapsed)
+        self._raise_if_memory_exceeded(self._memory_delta)
 
     def check_time(self) -> None:
         """
@@ -147,22 +194,7 @@ class ResourceMonitor:
             ResourceLimitError: If the wall-clock time limit has
                 been exceeded since context entry.
         """
-        elapsed = time.monotonic() - self.start_time
-        if elapsed > self.max_time_seconds:
-            logger.error(
-                "Validation time limit exceeded: %.2fs > %.2fs",
-                elapsed,
-                self.max_time_seconds,
-            )
-            raise ResourceLimitError(
-                message=(
-                    f"Validation time limit exceeded: "
-                    f"{elapsed:.1f}s "
-                    f"(max {self.max_time_seconds:.1f}s)"
-                ),
-                error_code=ErrorCode.RESOURCE_TIME_EXCEEDED,
-                elapsed_seconds=elapsed,
-            )
+        self._raise_if_time_exceeded(time.monotonic() - self.start_time)
 
     def check_memory(self) -> None:
         """
@@ -177,22 +209,62 @@ class ResourceMonitor:
                 entry exceeds the configured memory limit.
         """
         delta = max(0, self._get_peak_rss_bytes() - self.start_memory)
-        if delta > self.max_memory_bytes:
-            delta_mb = bytes_to_mb(delta)
-            max_mb = bytes_to_mb(self.max_memory_bytes)
-            logger.error(
-                "Validation memory limit exceeded: %dMB > %dMB",
-                delta_mb,
-                max_mb,
-            )
-            raise ResourceLimitError(
-                message=(
-                    f"Validation memory limit exceeded: "
-                    f"{delta_mb}MB (max {max_mb}MB)"
-                ),
-                error_code=ErrorCode.RESOURCE_MEMORY_EXCEEDED,
-                memory_bytes=delta,
-            )
+        self._raise_if_memory_exceeded(delta)
+
+    def _raise_if_time_exceeded(self, elapsed: float) -> None:
+        """
+        Raise if elapsed wall-clock time exceeds the limit.
+
+        Args:
+            elapsed: Seconds elapsed since context entry.
+
+        Raises:
+            ResourceLimitError: If the time limit is exceeded.
+        """
+        if elapsed <= self.max_time_seconds:
+            return
+        logger.error(
+            "Validation time limit exceeded: %.2fs > %.2fs",
+            elapsed,
+            self.max_time_seconds,
+        )
+        raise ResourceLimitError(
+            message=(
+                f"Validation time limit exceeded: "
+                f"{elapsed:.1f}s "
+                f"(max {self.max_time_seconds:.1f}s)"
+            ),
+            error_code=ErrorCode.RESOURCE_TIME_EXCEEDED,
+            elapsed_seconds=elapsed,
+        )
+
+    def _raise_if_memory_exceeded(self, delta: int) -> None:
+        """
+        Raise if peak-RSS growth exceeds the limit.
+
+        Args:
+            delta: Peak-RSS growth in bytes since context entry.
+
+        Raises:
+            ResourceLimitError: If the memory limit is exceeded.
+        """
+        if delta <= self.max_memory_bytes:
+            return
+        delta_mb = bytes_to_mb(delta)
+        max_mb = bytes_to_mb(self.max_memory_bytes)
+        logger.error(
+            "Validation memory limit exceeded: %dMB > %dMB",
+            delta_mb,
+            max_mb,
+        )
+        raise ResourceLimitError(
+            message=(
+                f"Validation memory limit exceeded: "
+                f"{delta_mb}MB (max {max_mb}MB)"
+            ),
+            error_code=ErrorCode.RESOURCE_MEMORY_EXCEEDED,
+            memory_bytes=delta,
+        )
 
     @property
     def elapsed(self) -> float:
@@ -229,7 +301,11 @@ class ResourceMonitor:
         Returns:
             Peak resident set size (high-water mark) in bytes
             since the process started, normalized across
-            platforms.
+            platforms, or 0 on platforms without the ``resource``
+            module (e.g. Windows), which disables memory-limit
+            enforcement while leaving the timeout active.
         """
+        if resource is None:  # pragma: no cover - platform-specific
+            return 0
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return usage.ru_maxrss * _RSS_UNIT_BYTES

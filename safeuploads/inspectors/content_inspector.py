@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from ..audit import get_correlation_id, log_extra
 from ..enums import MalwareSignatureCategory, SuspiciousFilePattern
+from ..utils import find_embedded_signature, find_text_pattern
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -129,7 +130,7 @@ class ContentSecurityInspector(BaseInspector):
         self, content: bytes, filename: str
     ) -> list[str]:
         """
-        Check for executable headers in content.
+        Check for embedded executable headers in content.
 
         Args:
             content: Raw bytes to inspect.
@@ -138,14 +139,10 @@ class ContentSecurityInspector(BaseInspector):
         Returns:
             List of threat descriptions.
         """
-        threats: list[str] = []
-        for sig in self._executable_sigs:
-            if sig in content:
-                threats.append(
-                    f"Executable signature detected in '{filename}': {sig!r}"
-                )
-                break
-        return threats
+        sig = find_embedded_signature(content, self._executable_sigs)
+        if sig is not None:
+            return [f"Executable signature detected in '{filename}': {sig!r}"]
+        return []
 
     def _check_script_patterns(
         self, content: bytes, filename: str
@@ -161,25 +158,20 @@ class ContentSecurityInspector(BaseInspector):
             List of threat descriptions.
         """
         threats: list[str] = []
-        # Check binary-level web shell signatures
-        for sig in self._webshell_sigs:
-            if sig in content:
-                threats.append(
-                    f"Web shell signature detected in '{filename}': {sig!r}"
-                )
-                break
+
+        # Binary-level web shell signatures
+        sig = find_embedded_signature(content, self._webshell_sigs)
+        if sig is not None:
+            threats.append(
+                f"Web shell signature detected in '{filename}': {sig!r}"
+            )
 
         # Text-level script pattern scan
-        try:
-            text = content.decode("utf-8", errors="ignore").lower()
-            for pattern in _SCRIPT_PATTERNS:
-                if pattern in text:
-                    threats.append(
-                        f"Script pattern detected in '{filename}': '{pattern}'"
-                    )
-                    break
-        except Exception:  # noqa: S110
-            pass  # Binary decoding failure is non-critical
+        pattern = find_text_pattern(content, _SCRIPT_PATTERNS)
+        if pattern is not None:
+            threats.append(
+                f"Script pattern detected in '{filename}': '{pattern}'"
+            )
 
         return threats
 
@@ -207,18 +199,16 @@ class ContentSecurityInspector(BaseInspector):
         if expected_type not in ("image", "activity"):
             return []
 
-        threats: list[str] = []
         # Skip first 8 bytes (longest common header is
         # PNG at 8 bytes) and search rest for secondary
         # signatures to detect polyglot files
         tail = content[8:]
-        for sig in self._polyglot_sigs:
-            if sig in tail:
-                threats.append(
-                    f"Polyglot file detected"
-                    f" in '{filename}':"
-                    f" secondary signature {sig!r}"
-                    f" found after header"
-                )
-                break
-        return threats
+        sig = find_embedded_signature(tail, self._polyglot_sigs)
+        if sig is not None:
+            return [
+                f"Polyglot file detected"
+                f" in '{filename}':"
+                f" secondary signature {sig!r}"
+                f" found after header"
+            ]
+        return []

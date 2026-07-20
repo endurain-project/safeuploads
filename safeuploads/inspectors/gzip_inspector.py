@@ -129,6 +129,9 @@ class GzipContentInspector(BaseInspector):
                                 ),
                                 compression_ratio=ratio,
                                 max_ratio=float(max_ratio),
+                                error_code=(
+                                    ErrorCode.COMPRESSION_RATIO_EXCEEDED
+                                ),
                             )
 
         except ZipBombError:

@@ -3,7 +3,7 @@
 import pytest
 
 from safeuploads.config import FileSecurityConfig
-from safeuploads.exceptions import UnicodeSecurityError
+from safeuploads.exceptions import ErrorCode, UnicodeSecurityError
 from safeuploads.validators.unicode_validator import UnicodeSecurityValidator
 
 
@@ -207,3 +207,7 @@ class TestUnicodeSecurityValidator:
             # Verify it's about normalization resulting in dangerous char
             assert "normalization" in str(exc_info.value).lower()
             assert "dangerous character" in str(exc_info.value).lower()
+            assert (
+                exc_info.value.error_code
+                == ErrorCode.UNICODE_NORMALIZATION_ERROR
+            )

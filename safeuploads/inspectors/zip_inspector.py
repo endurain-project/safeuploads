@@ -17,6 +17,7 @@ from ..enums import (
     ZipThreatCategory,
 )
 from ..exceptions import ErrorCode, FileProcessingError, ZipContentError
+from ..utils import find_text_pattern, matches_signature_prefix
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -300,8 +301,8 @@ class ZipContentInspector(BaseInspector):
         for ext, count in file_types.items():
             if count > self.config.limits.max_number_files_same_type:
                 threats.append(
-                    f"Excessive number of {ext} files:"
-                    f" {self.config.limits.max_number_files_same_type}"
+                    f"Excessive number of {ext} files: {count}"
+                    f" (max: {self.config.limits.max_number_files_same_type})"
                 )
 
         return threats
@@ -423,15 +424,15 @@ class ZipContentInspector(BaseInspector):
             with zip_file.open(entry, "r") as file:
                 content_sample = file.read(512)  # Read first 512 bytes
 
-                # Check for executable signatures
-                for signature in self._exec_signatures:
-                    if content_sample.startswith(signature):
-                        threats.append(
-                            "Executable content"
-                            f" detected in"
-                            f" '{entry.filename}'"
-                        )
-                        break
+                # Executable signatures are matched against the
+                # entry header (anchored): the entry either is or
+                # is not an executable.
+                if matches_signature_prefix(
+                    content_sample, self._exec_signatures
+                ):
+                    threats.append(
+                        f"Executable content detected in '{entry.filename}'"
+                    )
 
                 ext = os.path.splitext(entry.filename)[1].lower()
                 if (
@@ -464,23 +465,7 @@ class ZipContentInspector(BaseInspector):
         Returns:
             True if script patterns found.
         """
-        try:
-            # Try to decode as text
-            text_content = content.decode("utf-8", errors="ignore").lower()
-
-            # Check for common script patterns
-            for pattern in self._script_patterns:
-                if pattern in text_content:
-                    return True
-
-        except Exception:
-            # If we can't decode as text, it's probably binary
-            logger.debug(
-                "Could not decode content of '%s' as text",
-                filename,
-            )
-
-        return False
+        return find_text_pattern(content, self._script_patterns) is not None
 
     # ----------------------------------------------------------------
     # Recursive / quine / complexity detection

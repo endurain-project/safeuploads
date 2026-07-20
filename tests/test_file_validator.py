@@ -1147,6 +1147,79 @@ class TestValidateFileSignatureEdgeCases:
             validator._validate_file_signature(b"", "image")
 
 
+class TestEnforceMimeAndWiredErrorCodes:
+    """Tests for the shared MIME helper and wired error codes."""
+
+    def test_enforce_mime_allows_permitted_type(self):
+        """Permitted MIME types pass without raising."""
+        validator = FileValidator()
+        validator._enforce_mime(
+            "application/zip",
+            validator.config.ALLOWED_ZIP_MIMES,
+            "a.zip",
+        )
+
+    def test_enforce_mime_allows_octet_stream_when_enabled(self):
+        """octet-stream is accepted only when explicitly allowed."""
+        validator = FileValidator()
+        validator._enforce_mime(
+            "application/octet-stream",
+            validator.config.ALLOWED_ZIP_MIMES,
+            "a.zip",
+            allow_octet_stream=True,
+        )
+
+    def test_enforce_mime_rejects_octet_stream_by_default(self):
+        """octet-stream is rejected when not explicitly allowed."""
+        validator = FileValidator()
+        with pytest.raises(MimeTypeError):
+            validator._enforce_mime(
+                "application/octet-stream",
+                validator.config.ALLOWED_ZIP_MIMES,
+                "a.zip",
+            )
+
+    def test_enforce_mime_wires_mismatch_error_code(self):
+        """A disallowed MIME type raises with the supplied code."""
+        validator = FileValidator()
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator._enforce_mime(
+                "text/plain",
+                validator.config.ALLOWED_ZIP_MIMES,
+                "a.zip",
+                error_code=ErrorCode.MIME_TYPE_MISMATCH,
+            )
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+
+    def test_validate_extension_missing_reports_missing_code(
+        self, mock_upload_file
+    ):
+        """A file with no extension reports EXTENSION_MISSING."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="noext", content=b"data")
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._validate_file_extension(
+                file, validator.config.ALLOWED_IMAGE_EXTENSIONS
+            )
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MISSING
+
+    @pytest.mark.asyncio
+    async def test_empty_file_reports_empty_code(self, mock_upload_file):
+        """An empty upload reports FILE_EMPTY, not FILE_TOO_LARGE."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="empty.jpg", content=b"")
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._validate_file_size(file, max_file_size=1024)
+        assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
+
+    def test_signature_too_small_reports_missing_code(self):
+        """A too-small header reports FILE_SIGNATURE_MISSING."""
+        validator = FileValidator()
+        with pytest.raises(FileSignatureError) as exc_info:
+            validator._validate_file_signature(b"\xff\xd8", "image")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISSING
+
+
 class TestSanitizeFilenameEdgeCases:
     """Tests for _sanitize_filename edge cases."""
 

@@ -197,6 +197,8 @@ class UnicodeSecurityError(FilenameSecurityError):
         filename: Optional filename containing dangerous Unicode.
         dangerous_chars: Optional list of (char, code_point, position)
             tuples for each dangerous character found.
+        error_code: Optional error code (defaults to
+            UNICODE_DANGEROUS_CHARS).
 
     Attributes:
         dangerous_chars: List of dangerous character tuples.
@@ -207,13 +209,14 @@ class UnicodeSecurityError(FilenameSecurityError):
         message: str,
         filename: str | None = None,
         dangerous_chars: list[tuple[str, int, int]] | None = None,
+        error_code: str | None = None,
     ):
         """Initialize with dangerous characters."""
         self.dangerous_chars = dangerous_chars or []
         super().__init__(
             message,
             filename=filename,
-            error_code=ErrorCode.UNICODE_DANGEROUS_CHARS,
+            error_code=error_code or ErrorCode.UNICODE_DANGEROUS_CHARS,
         )
 
 
@@ -290,6 +293,7 @@ class FileSizeError(FileValidationError):
         filename: Optional filename that exceeded size limits.
         size: Optional actual file size in bytes.
         max_size: Optional maximum allowed size in bytes.
+        error_code: Optional error code (defaults to FILE_TOO_LARGE).
 
     Attributes:
         size: The actual file size in bytes.
@@ -302,12 +306,15 @@ class FileSizeError(FileValidationError):
         filename: str | None = None,
         size: int | None = None,
         max_size: int | None = None,
+        error_code: str | None = None,
     ):
         """Initialize with size details."""
         self.size = size
         self.max_size = max_size
         super().__init__(
-            message, filename=filename, error_code=ErrorCode.FILE_TOO_LARGE
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.FILE_TOO_LARGE,
         )
 
 
@@ -354,6 +361,8 @@ class FileSignatureError(FileValidationError):
         message: Human-readable error description.
         filename: Optional filename with signature issue.
         expected_type: Optional expected file type based on extension.
+        error_code: Optional error code (defaults to
+            FILE_SIGNATURE_MISMATCH).
 
     Attributes:
         expected_type: The expected file type based on extension.
@@ -364,13 +373,14 @@ class FileSignatureError(FileValidationError):
         message: str,
         filename: str | None = None,
         expected_type: str | None = None,
+        error_code: str | None = None,
     ):
         """Initialize with expected type."""
         self.expected_type = expected_type
         super().__init__(
             message,
             filename=filename,
-            error_code=ErrorCode.FILE_SIGNATURE_MISMATCH,
+            error_code=error_code or ErrorCode.FILE_SIGNATURE_MISMATCH,
         )
 
 
@@ -404,6 +414,8 @@ class ZipBombError(CompressionSecurityError):
         uncompressed_size: Optional total uncompressed size in bytes.
         max_ratio: Optional maximum allowed compression ratio.
         max_size: Optional maximum allowed uncompressed size in bytes.
+        error_code: Optional error code (defaults to
+            ZIP_BOMB_DETECTED).
 
     Attributes:
         compression_ratio: Actual compression ratio detected.
@@ -420,6 +432,7 @@ class ZipBombError(CompressionSecurityError):
         uncompressed_size: int | None = None,
         max_ratio: float | None = None,
         max_size: int | None = None,
+        error_code: str | None = None,
     ):
         """Initialize with compression details."""
         self.compression_ratio = compression_ratio
@@ -429,7 +442,7 @@ class ZipBombError(CompressionSecurityError):
         super().__init__(
             message,
             filename=filename,
-            error_code=ErrorCode.ZIP_BOMB_DETECTED,
+            error_code=error_code or ErrorCode.ZIP_BOMB_DETECTED,
         )
 
 

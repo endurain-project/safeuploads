@@ -203,32 +203,74 @@ class FileValidator:
         # Fallback to filename-based detection
         if not detected_mime:
             logger.info("Fallback to filename-based MIME detection")
-            detected_mime = self._guess_mime_by_name(filename)
+            ext = os.path.splitext(filename)[1].lower()
+            detected_mime = self._guess_mime_by_ext(ext)
 
         return detected_mime or "application/octet-stream"
 
     @staticmethod
     @functools.lru_cache(maxsize=64)
-    def _guess_mime_by_name(filename: str) -> str | None:
+    def _guess_mime_by_ext(ext: str) -> str | None:
         """
-        Guess MIME type from filename extension with caching.
+        Guess MIME type from a file extension with caching.
 
-        Uses only the file extension as input to
-        ``mimetypes.guess_type`` to keep the cache keyspace
-        small and prevent attacker-controlled filenames from
-        bloating the LRU cache.
+        Keyed solely on the lower-cased extension so the LRU
+        cache stays small and attacker-controlled filenames
+        cannot bloat it.
 
         Args:
-            filename: Filename to guess MIME type for.
+            ext: Lower-cased extension including the leading dot
+                (e.g. ".jpg"), or an empty string.
 
         Returns:
             Guessed MIME type or None.
         """
-        ext = os.path.splitext(filename)[1].lower()
         if not ext:
             return None
         mime, _ = mimetypes.guess_type(f"file{ext}")
         return mime
+
+    def _enforce_mime(
+        self,
+        detected_mime: str,
+        allowed_mimes: frozenset[str],
+        filename: str,
+        *,
+        allow_octet_stream: bool = False,
+        error_code: str | None = None,
+    ) -> None:
+        """
+        Raise if a detected MIME type is not permitted.
+
+        Args:
+            detected_mime: MIME type reported for the content.
+            allowed_mimes: Permitted MIME types for the category.
+            filename: Sanitized filename for error context.
+            allow_octet_stream: Accept ``application/octet-stream``
+                when a valid magic signature already passed.
+            error_code: Optional error code for the raised error.
+
+        Raises:
+            MimeTypeError: If the MIME type is not allowed.
+        """
+        if detected_mime in allowed_mimes:
+            return
+        if allow_octet_stream and detected_mime == "application/octet-stream":
+            logger.debug(
+                "Accepting application/octet-stream for '%s'"
+                " on a valid signature",
+                filename,
+            )
+            return
+        raise MimeTypeError(
+            "Invalid file type."
+            f" Detected: {detected_mime}."
+            f" Allowed: {', '.join(sorted(allowed_mimes))}",
+            filename=filename,
+            detected_mime=detected_mime,
+            allowed_mimes=list(allowed_mimes),
+            error_code=error_code,
+        )
 
     def _validate_file_signature(
         self, file_content: bytes, expected_type: str
@@ -248,6 +290,7 @@ class FileValidator:
             raise FileSignatureError(
                 f"File too small to verify {expected_type} signature",
                 expected_type=expected_type,
+                error_code=ErrorCode.FILE_SIGNATURE_MISSING,
             )
 
         # Common file signatures
@@ -453,6 +496,13 @@ class FileValidator:
             )
 
         _, ext = os.path.splitext(file.filename.lower())
+        if not ext:
+            raise ExtensionSecurityError(
+                "File has no extension",
+                filename=file.filename,
+                extension="",
+                error_code=ErrorCode.EXTENSION_MISSING,
+            )
         if ext not in allowed_extensions:
             raise ExtensionSecurityError(
                 (
@@ -540,6 +590,7 @@ class FileValidator:
                 "Empty file not allowed",
                 size=0,
                 max_size=max_file_size,
+                error_code=ErrorCode.FILE_EMPTY,
             )
 
         return file_content, file_size
@@ -598,6 +649,7 @@ class FileValidator:
                     "Empty file not allowed",
                     size=0,
                     max_size=max_file_size,
+                    error_code=ErrorCode.FILE_EMPTY,
                 )
 
             temp.seek(0)
@@ -770,18 +822,11 @@ class FileValidator:
             filename = file.filename or "unknown"
             detected_mime = self._detect_mime_type(file_content, filename)
 
-            if detected_mime not in self.config.ALLOWED_IMAGE_MIMES:
-                raise MimeTypeError(
-                    (
-                        "Invalid file type."
-                        f" Detected: {detected_mime}."
-                        " Allowed:"
-                        f" {', '.join(self.config.ALLOWED_IMAGE_MIMES)}"
-                    ),
-                    filename=filename,
-                    detected_mime=detected_mime,
-                    allowed_mimes=list(self.config.ALLOWED_IMAGE_MIMES),
-                )
+            self._enforce_mime(
+                detected_mime,
+                self.config.ALLOWED_IMAGE_MIMES,
+                filename,
+            )
 
             # Validate file signature (raises exceptions on failure)
             self._validate_file_signature(file_content, "image")
@@ -899,23 +944,13 @@ class FileValidator:
         )
 
         # Check MIME type, allow octet-stream if signature valid
-        if detected_mime not in self.config.ALLOWED_ZIP_MIMES:
-            if detected_mime == "application/octet-stream":
-                logger.debug(
-                    "ZIP file detected as "
-                    "application/octet-stream, "
-                    "but signature is valid: %s",
-                    filename,
-                )
-            else:
-                raise MimeTypeError(
-                    f"Invalid file type. "
-                    f"Detected: {detected_mime}. "
-                    f"Expected ZIP file.",
-                    filename=filename,
-                    detected_mime=detected_mime,
-                    allowed_mimes=list(self.config.ALLOWED_ZIP_MIMES),
-                )
+        self._enforce_mime(
+            detected_mime,
+            self.config.ALLOWED_ZIP_MIMES,
+            filename,
+            allow_octet_stream=True,
+            error_code=ErrorCode.MIME_TYPE_MISMATCH,
+        )
 
         # Validate ZIP compression ratio
         self.compression_validator.validate_zip_compression_ratio(
@@ -1045,16 +1080,12 @@ class FileValidator:
 
         # MIME check — be lenient for FIT
         if not is_fit:
-            allowed = self.config.ALLOWED_ACTIVITY_MIMES
-            if detected_mime not in allowed:
-                raise MimeTypeError(
-                    "Invalid file type."
-                    f" Detected: {detected_mime}."
-                    " Expected activity file.",
-                    filename=filename,
-                    detected_mime=detected_mime,
-                    allowed_mimes=list(allowed),
-                )
+            self._enforce_mime(
+                detected_mime,
+                self.config.ALLOWED_ACTIVITY_MIMES,
+                filename,
+                error_code=ErrorCode.MIME_TYPE_MISMATCH,
+            )
 
         # XXE-safe XML validation for GPX/TCX
         if not is_fit:
@@ -1151,20 +1182,13 @@ class FileValidator:
         )
 
         # MIME check — allow octet-stream
-        allowed = self.config.ALLOWED_GZIP_MIMES
-        if (
-            detected_mime not in allowed
-            and detected_mime != "application/octet-stream"
-        ):
-            raise MimeTypeError(
-                "Invalid file type."
-                f" Detected:"
-                f" {detected_mime}."
-                " Expected gzip file.",
-                filename=filename,
-                detected_mime=detected_mime,
-                allowed_mimes=list(allowed),
-            )
+        self._enforce_mime(
+            detected_mime,
+            self.config.ALLOWED_GZIP_MIMES,
+            filename,
+            allow_octet_stream=True,
+            error_code=ErrorCode.MIME_TYPE_MISMATCH,
+        )
 
         # Decompression bomb check
         self.gzip_inspector.inspect_gzip_content(temp_file, file_size)

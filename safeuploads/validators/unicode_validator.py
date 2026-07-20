@@ -6,7 +6,7 @@ import logging
 import unicodedata
 from typing import TYPE_CHECKING
 
-from ..exceptions import UnicodeSecurityError
+from ..exceptions import ErrorCode, UnicodeSecurityError
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -140,6 +140,7 @@ class UnicodeSecurityValidator(BaseValidator):
                     ),
                     filename=filename,
                     dangerous_chars=[(char, char_code, 0)],
+                    error_code=ErrorCode.UNICODE_NORMALIZATION_ERROR,
                 )
 
         logger.debug("Unicode validation passed")

@@ -87,6 +87,7 @@ class ZipContentInspector(BaseInspector):
         try:
             file_obj.seek(0)
             threats_found = []
+            logger.debug("Starting ZIP content inspection")
 
             # Start analysis timer
             start_time = time.monotonic()
@@ -644,7 +645,13 @@ class ZipContentInspector(BaseInspector):
         except ZipContentError:
             raise
         except zipfile.BadZipFile:
-            pass  # Let outer handler deal with it
+            # A corrupt archive at this nesting level is not itself a
+            # threat signal; log for traceability and stop descending
+            # this branch rather than failing the whole inspection.
+            logger.debug(
+                "Skipping corrupt nested archive at depth %d",
+                depth,
+            )
         except Exception as err:
             logger.warning(
                 "Error during recursive inspection at depth %d: %s",

@@ -95,6 +95,8 @@ class ContentSecurityInspector(BaseInspector):
         """
         threats: list[str] = []
 
+        logger.debug("Scanning content of '%s' for embedded threats", filename)
+
         # 1. Executable signature scan
         threats.extend(self._check_executable_signatures(content, filename))
 
@@ -118,6 +120,8 @@ class ContentSecurityInspector(BaseInspector):
                     cid,
                     "; ".join(threats),
                 )
+        else:
+            logger.debug("Content scan clean for '%s'", filename)
 
         return threats
 

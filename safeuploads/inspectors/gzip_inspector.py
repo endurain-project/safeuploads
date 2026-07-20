@@ -59,6 +59,10 @@ class GzipContentInspector(BaseInspector):
         chunk_size = self.config.limits.chunk_size
         max_ratio = self.config.limits.max_compression_ratio
         max_uncompressed = self.config.limits.max_uncompressed_size
+        logger.debug(
+            "Inspecting gzip stream (compressed size %d bytes)",
+            compressed_size,
+        )
 
         try:
             with gzip.open(file_obj, "rb") as gz:

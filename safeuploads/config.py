@@ -1,5 +1,6 @@
 """File security configuration module."""
 
+import itertools
 import logging
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
@@ -13,6 +14,38 @@ from .exceptions import ConfigValidationError, FileSecurityConfigurationError
 from .utils import bytes_to_mb
 
 logger = logging.getLogger(__name__)
+
+
+def _config_error(
+    error_type: str,
+    message: str,
+    component: str,
+    recommendation: str,
+    severity: str = "error",
+) -> ConfigValidationError:
+    """
+    Build a ConfigValidationError with a default severity.
+
+    Centralizes construction so the many validation branches
+    share one call shape instead of repeating every field.
+
+    Args:
+        error_type: Machine-readable error category.
+        message: Human-readable description of the issue.
+        component: Configuration component that failed.
+        recommendation: Suggested remediation.
+        severity: Severity level ('error', 'warning', 'info').
+
+    Returns:
+        Populated ConfigValidationError instance.
+    """
+    return ConfigValidationError(
+        error_type=error_type,
+        message=message,
+        severity=severity,
+        component=component,
+        recommendation=recommendation,
+    )
 
 
 @dataclass
@@ -41,6 +74,9 @@ class SecurityLimits:
         max_zip_depth: Maximum directory nesting depth in ZIP.
         max_filename_length: Maximum length for filenames in ZIP.
         max_path_length: Maximum length for full paths in ZIP.
+        max_sanitized_name_length: Maximum length of the base
+            name (extension excluded) kept when sanitizing an
+            uploaded filename.
         max_number_files_same_type: Maximum number of files
             sharing the same extension inside a ZIP.
         allow_nested_archives: Whether nested archives are permitted.
@@ -94,6 +130,9 @@ class SecurityLimits:
     max_zip_depth: int = 10  # Maximum nesting depth for directories in ZIP
     max_filename_length: int = 255  # Maximum length for individual file names
     max_path_length: int = 1024  # Maximum length for full file paths
+    # Maximum length of the base name (extension excluded) kept when
+    # sanitizing an uploaded filename; longer names are truncated.
+    max_sanitized_name_length: int = 100
     # Maximum number of files of the same type
     max_number_files_same_type: int = 1000
     # Whether to allow nested archive files
@@ -253,20 +292,22 @@ class FileSecurityConfig:
         return frozenset(dangerous_chars)
 
     # Dangerous file extensions (generated from enums)
-    BLOCKED_EXTENSIONS: frozenset[str] = _generate_blocked_extensions()
+    BLOCKED_EXTENSIONS: ClassVar[frozenset[str]] = (
+        _generate_blocked_extensions()
+    )
 
     # Compound dangerous extensions (multi-part)
-    COMPOUND_BLOCKED_EXTENSIONS: frozenset[str] = (
+    COMPOUND_BLOCKED_EXTENSIONS: ClassVar[frozenset[str]] = (
         _generate_compound_blocked_extensions()
     )
 
     # Dangerous Unicode characters for filename attacks
-    DANGEROUS_UNICODE_CHARS: frozenset[int] = (
+    DANGEROUS_UNICODE_CHARS: ClassVar[frozenset[int]] = (
         _generate_dangerous_unicode_chars()
     )
 
     # Windows reserved names
-    WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset(
+    WINDOWS_RESERVED_NAMES: ClassVar[frozenset[str]] = frozenset(
         {
             "con",
             "prn",
@@ -488,85 +529,90 @@ class FileSecurityConfig:
         # Check image size limits
         if limits.max_image_size <= 0:
             errors.append(
-                ConfigValidationError(
-                    error_type="invalid_size_limit",
-                    message="max_image_size must be greater than 0",
-                    severity="error",
-                    component="file_sizes",
-                    recommendation=(
-                        "Set max_image_size to a positive value (e.g., 20MB)"
-                    ),
+                _config_error(
+                    "invalid_size_limit",
+                    "max_image_size must be greater than 0",
+                    "file_sizes",
+                    "Set max_image_size to a positive value (e.g., 20MB)",
                 )
             )
 
         if limits.max_image_size > 100 * 1024 * 1024:  # 100MB
             errors.append(
-                ConfigValidationError(
-                    error_type="excessive_size_limit",
-                    message=(
+                _config_error(
+                    "excessive_size_limit",
+                    (
                         "max_image_size"
                         f" ({bytes_to_mb(limits.max_image_size)}"
                         "MB) is very large"
                     ),
-                    severity="warning",
-                    component="file_sizes",
-                    recommendation=(
+                    "file_sizes",
+                    (
                         "Consider reducing image size"
                         " limit to prevent resource"
                         " exhaustion"
                     ),
+                    severity="warning",
                 )
             )
 
         # Check ZIP size limits
         if limits.max_zip_size <= 0:
             errors.append(
-                ConfigValidationError(
-                    error_type="invalid_size_limit",
-                    message="max_zip_size must be greater than 0",
-                    severity="error",
-                    component="file_sizes",
-                    recommendation=(
-                        "Set max_zip_size to a positive value (e.g., 500MB)"
-                    ),
+                _config_error(
+                    "invalid_size_limit",
+                    "max_zip_size must be greater than 0",
+                    "file_sizes",
+                    "Set max_zip_size to a positive value (e.g., 500MB)",
                 )
             )
 
         if limits.max_zip_size > 2 * 1024 * 1024 * 1024:  # 2GB
             errors.append(
-                ConfigValidationError(
-                    error_type="excessive_size_limit",
-                    message=(
+                _config_error(
+                    "excessive_size_limit",
+                    (
                         "max_zip_size"
                         f" ({bytes_to_mb(limits.max_zip_size)}"
                         "MB) is very large"
                     ),
-                    severity="warning",
-                    component="file_sizes",
-                    recommendation=(
+                    "file_sizes",
+                    (
                         "Consider reducing ZIP size"
                         " limit to prevent resource"
                         " exhaustion"
                     ),
+                    severity="warning",
                 )
             )
 
         # Validate size relationship
         if limits.max_zip_size <= limits.max_image_size:
             errors.append(
-                ConfigValidationError(
-                    error_type="inconsistent_size_limits",
-                    message=(
+                _config_error(
+                    "inconsistent_size_limits",
+                    (
                         "max_zip_size should typically be"
                         " larger than max_image_size"
                     ),
-                    severity="warning",
-                    component="file_sizes",
-                    recommendation=(
+                    "file_sizes",
+                    (
                         "ZIP files usually contain"
                         " multiple files and should"
                         " have higher limits"
                     ),
+                    severity="warning",
+                )
+            )
+
+        # Validate sanitized filename length
+        if limits.max_sanitized_name_length <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_name_length",
+                    "max_sanitized_name_length must be greater than 0",
+                    "file_sizes",
+                    "Set max_sanitized_name_length to a positive value",
                 )
             )
 
@@ -585,12 +631,11 @@ class FileSecurityConfig:
         # Check image MIME types
         if not cls.ALLOWED_IMAGE_MIMES:
             errors.append(
-                ConfigValidationError(
-                    error_type="empty_mime_set",
-                    message="ALLOWED_IMAGE_MIMES cannot be empty",
-                    severity="error",
-                    component="mime_types",
-                    recommendation="Add at least one allowed image MIME type",
+                _config_error(
+                    "empty_mime_set",
+                    "ALLOWED_IMAGE_MIMES cannot be empty",
+                    "mime_types",
+                    "Add at least one allowed image MIME type",
                 )
             )
 
@@ -598,32 +643,31 @@ class FileSecurityConfig:
         for mime_type in cls.ALLOWED_IMAGE_MIMES:
             if not mime_type.startswith("image/"):
                 errors.append(
-                    ConfigValidationError(
-                        error_type="invalid_image_mime",
-                        message=(
+                    _config_error(
+                        "invalid_image_mime",
+                        (
                             "Image MIME type"
                             f" '{mime_type}' should"
                             " start with 'image/'"
                         ),
-                        severity="warning",
-                        component="mime_types",
-                        recommendation=(
+                        "mime_types",
+                        (
                             "Use standard image MIME"
                             " types like 'image/jpeg',"
                             " 'image/png'"
                         ),
+                        severity="warning",
                     )
                 )
 
         # Check ZIP MIME types
         if not cls.ALLOWED_ZIP_MIMES:
             errors.append(
-                ConfigValidationError(
-                    error_type="empty_mime_set",
-                    message="ALLOWED_ZIP_MIMES cannot be empty",
-                    severity="error",
-                    component="mime_types",
-                    recommendation="Add at least one allowed ZIP MIME type",
+                _config_error(
+                    "empty_mime_set",
+                    "ALLOWED_ZIP_MIMES cannot be empty",
+                    "mime_types",
+                    "Add at least one allowed ZIP MIME type",
                 )
             )
 
@@ -632,14 +676,12 @@ class FileSecurityConfig:
         duplicates = {mime for mime in all_mimes if all_mimes.count(mime) > 1}
         if duplicates:
             errors.append(
-                ConfigValidationError(
-                    error_type="duplicate_mime_types",
-                    message=f"Duplicate MIME types found: {duplicates}",
+                _config_error(
+                    "duplicate_mime_types",
+                    f"Duplicate MIME types found: {duplicates}",
+                    "mime_types",
+                    "Remove duplicate MIME types to avoid confusion",
                     severity="warning",
-                    component="mime_types",
-                    recommendation=(
-                        "Remove duplicate MIME types to avoid confusion"
-                    ),
                 )
             )
 
@@ -662,46 +704,37 @@ class FileSecurityConfig:
         ]:
             if not ext_set:
                 errors.append(
-                    ConfigValidationError(
-                        error_type="empty_extension_set",
-                        message=f"{ext_set_name} cannot be empty",
-                        severity="error",
-                        component="extensions",
-                        recommendation=(
-                            f"Add at least one extension to {ext_set_name}"
-                        ),
+                    _config_error(
+                        "empty_extension_set",
+                        f"{ext_set_name} cannot be empty",
+                        "extensions",
+                        f"Add at least one extension to {ext_set_name}",
                     )
                 )
 
             for ext in ext_set:
                 if not ext.startswith("."):
                     errors.append(
-                        ConfigValidationError(
-                            error_type="invalid_extension_format",
-                            message=(
+                        _config_error(
+                            "invalid_extension_format",
+                            (
                                 f"Extension '{ext}'"
                                 f" in {ext_set_name}"
                                 " should start with '.'"
                             ),
-                            severity="error",
-                            component="extensions",
-                            recommendation=(
-                                "Use format '.ext' for file extensions"
-                            ),
+                            "extensions",
+                            "Use format '.ext' for file extensions",
                         )
                     )
 
         # Check blocked extensions
         if not cls.BLOCKED_EXTENSIONS:
             errors.append(
-                ConfigValidationError(
-                    error_type="empty_blocked_extensions",
-                    message="BLOCKED_EXTENSIONS is empty - security risk",
-                    severity="error",
-                    component="extensions",
-                    recommendation=(
-                        "Ensure dangerous extensions are properly blocked"
-                    ),
+                _config_error(
+                    "empty_blocked_extensions",
+                    "BLOCKED_EXTENSIONS is empty - security risk",
+                    "extensions",
+                    "Ensure dangerous extensions are properly blocked",
                 )
             )
 
@@ -711,15 +744,14 @@ class FileSecurityConfig:
         )
         if image_blocked:
             errors.append(
-                ConfigValidationError(
-                    error_type="extension_conflict",
-                    message=(
+                _config_error(
+                    "extension_conflict",
+                    (
                         f"Image extensions {image_blocked}"
                         " are both allowed and blocked"
                     ),
-                    severity="error",
-                    component="extensions",
-                    recommendation=(
+                    "extensions",
+                    (
                         "Remove conflicts between"
                         " allowed and blocked"
                         " extensions"
@@ -732,15 +764,14 @@ class FileSecurityConfig:
         )
         if zip_blocked:
             errors.append(
-                ConfigValidationError(
-                    error_type="extension_conflict",
-                    message=(
+                _config_error(
+                    "extension_conflict",
+                    (
                         f"ZIP extensions {zip_blocked}"
                         " are both allowed and blocked"
                     ),
-                    severity="error",
-                    component="extensions",
-                    recommendation=(
+                    "extensions",
+                    (
                         "Remove conflicts between"
                         " allowed and blocked"
                         " extensions"
@@ -754,20 +785,20 @@ class FileSecurityConfig:
         )
         if compound_overlap:
             errors.append(
-                ConfigValidationError(
-                    error_type="compound_extension_overlap",
-                    message=(
+                _config_error(
+                    "compound_extension_overlap",
+                    (
                         f"Extensions {compound_overlap}"
                         " appear in both blocked and"
                         " compound blocked lists"
                     ),
-                    severity="warning",
-                    component="extensions",
-                    recommendation=(
+                    "extensions",
+                    (
                         "Compound extensions should"
                         " only be in"
                         " COMPOUND_BLOCKED_EXTENSIONS"
                     ),
+                    severity="warning",
                 )
             )
 
@@ -791,79 +822,71 @@ class FileSecurityConfig:
         # Validate compression ratio
         if limits.max_compression_ratio <= 0:
             errors.append(
-                ConfigValidationError(
-                    error_type="invalid_compression_ratio",
-                    message="max_compression_ratio must be greater than 0",
-                    severity="error",
-                    component="compression",
-                    recommendation=(
-                        "Set a reasonable compression"
-                        " ratio limit (e.g., 100:1)"
-                    ),
+                _config_error(
+                    "invalid_compression_ratio",
+                    "max_compression_ratio must be greater than 0",
+                    "compression",
+                    "Set a reasonable compression ratio limit (e.g., 100:1)",
                 )
             )
 
         if limits.max_compression_ratio < 10:
             errors.append(
-                ConfigValidationError(
-                    error_type="too_strict_compression",
-                    message=(
+                _config_error(
+                    "too_strict_compression",
+                    (
                         "max_compression_ratio"
                         f" ({limits.max_compression_ratio})"
                         " is very strict"
                     ),
-                    severity="warning",
-                    component="compression",
-                    recommendation=(
+                    "compression",
+                    (
                         "Consider allowing higher"
                         " compression ratios for"
                         " legitimate files"
                     ),
+                    severity="warning",
                 )
             )
 
         if limits.max_compression_ratio > 1000:
             errors.append(
-                ConfigValidationError(
-                    error_type="too_permissive_compression",
-                    message=(
+                _config_error(
+                    "too_permissive_compression",
+                    (
                         "max_compression_ratio"
                         f" ({limits.max_compression_ratio})"
                         " may allow zip bombs"
                     ),
-                    severity="warning",
-                    component="compression",
-                    recommendation=(
+                    "compression",
+                    (
                         "Reduce compression ratio"
                         " limit to prevent zip bomb"
                         " attacks"
                     ),
+                    severity="warning",
                 )
             )
 
         # Validate uncompressed size limit
         if limits.max_uncompressed_size <= 0:
             errors.append(
-                ConfigValidationError(
-                    error_type="invalid_uncompressed_size",
-                    message="max_uncompressed_size must be greater than 0",
-                    severity="error",
-                    component="compression",
-                    recommendation="Set a reasonable uncompressed size limit",
+                _config_error(
+                    "invalid_uncompressed_size",
+                    "max_uncompressed_size must be greater than 0",
+                    "compression",
+                    "Set a reasonable uncompressed size limit",
                 )
             )
 
         # Validate individual file size limit
         if limits.max_individual_file_size <= 0:
             errors.append(
-                ConfigValidationError(
-                    error_type="invalid_individual_file_size",
-                    message="max_individual_file_size must be greater than 0",
-                    severity="error",
-                    component="compression",
-                    recommendation=(
-                        "Set a reasonable individual file size limit"
-                    ),
+                _config_error(
+                    "invalid_individual_file_size",
+                    "max_individual_file_size must be greater than 0",
+                    "compression",
+                    "Set a reasonable individual file size limit",
                 )
             )
 
@@ -872,77 +895,73 @@ class FileSecurityConfig:
             ind_mb = bytes_to_mb(limits.max_individual_file_size)
             uncomp_mb = bytes_to_mb(limits.max_uncompressed_size)
             errors.append(
-                ConfigValidationError(
-                    error_type="inconsistent_size_limits",
-                    message=(
+                _config_error(
+                    "inconsistent_size_limits",
+                    (
                         "max_individual_file_size"
                         f" ({ind_mb}MB) exceeds"
                         " max_uncompressed_size"
                         f" ({uncomp_mb}MB)"
                     ),
-                    severity="warning",
-                    component="compression",
-                    recommendation=(
+                    "compression",
+                    (
                         "Individual file size limit"
                         " should not exceed total"
                         " uncompressed size limit"
                     ),
+                    severity="warning",
                 )
             )
 
         # Validate ZIP entry limits
         if limits.max_zip_entries <= 0:
             errors.append(
-                ConfigValidationError(
-                    error_type="invalid_zip_entries",
-                    message="max_zip_entries must be greater than 0",
-                    severity="error",
-                    component="compression",
-                    recommendation=(
-                        "Set a reasonable limit for ZIP file entries"
-                    ),
+                _config_error(
+                    "invalid_zip_entries",
+                    "max_zip_entries must be greater than 0",
+                    "compression",
+                    "Set a reasonable limit for ZIP file entries",
                 )
             )
 
         if limits.max_zip_entries > 100000:
             errors.append(
-                ConfigValidationError(
-                    error_type="excessive_zip_entries",
-                    message=(
+                _config_error(
+                    "excessive_zip_entries",
+                    (
                         "max_zip_entries"
                         f" ({limits.max_zip_entries})"
                         " is very high"
                     ),
+                    "compression",
+                    "High entry limits may impact performance",
                     severity="warning",
-                    component="compression",
-                    recommendation="High entry limits may impact performance",
                 )
             )
 
         # Validate timeout settings
         if limits.zip_analysis_timeout <= 0:
             errors.append(
-                ConfigValidationError(
-                    error_type="invalid_timeout",
-                    message="zip_analysis_timeout must be greater than 0",
-                    severity="error",
-                    component="compression",
-                    recommendation="Set a reasonable timeout for ZIP analysis",
+                _config_error(
+                    "invalid_timeout",
+                    "zip_analysis_timeout must be greater than 0",
+                    "compression",
+                    "Set a reasonable timeout for ZIP analysis",
                 )
             )
 
         if limits.zip_analysis_timeout > 30:
             errors.append(
-                ConfigValidationError(
-                    error_type="excessive_timeout",
-                    message=(
+                _config_error(
+                    "excessive_timeout",
+                    (
                         "zip_analysis_timeout"
                         f" ({limits.zip_analysis_timeout}s)"
                         " is very long"
                     ),
+                    "compression",
+                    "Long timeouts may impact user experience",
                     severity="warning",
-                    component="compression",
-                    recommendation="Long timeouts may impact user experience",
                 )
             )
 
@@ -962,91 +981,92 @@ class FileSecurityConfig:
         for dangerous_category in DangerousExtensionCategory:
             if not dangerous_category.value:
                 errors.append(
-                    ConfigValidationError(
-                        error_type="empty_enum_category",
-                        message=(
+                    _config_error(
+                        "empty_enum_category",
+                        (
                             "Extension category"
                             f" {dangerous_category.name} is empty"
                         ),
-                        severity="warning",
-                        component="enums",
-                        recommendation=(
+                        "enums",
+                        (
                             "Add extensions to"
                             f" {dangerous_category.name} or remove"
                             " unused category"
                         ),
+                        severity="warning",
                     )
                 )
 
         for compound_category in CompoundExtensionCategory:
             if not compound_category.value:
                 errors.append(
-                    ConfigValidationError(
-                        error_type="empty_enum_category",
-                        message=(
+                    _config_error(
+                        "empty_enum_category",
+                        (
                             "Compound extension"
                             " category"
                             f" {compound_category.name} is empty"
                         ),
-                        severity="warning",
-                        component="enums",
-                        recommendation=(
+                        "enums",
+                        (
                             "Add extensions to"
                             f" {compound_category.name} or remove"
                             " unused category"
                         ),
+                        severity="warning",
                     )
                 )
 
         for unicode_category in UnicodeAttackCategory:
             if not unicode_category.value:
                 errors.append(
-                    ConfigValidationError(
-                        error_type="empty_enum_category",
-                        message=(
+                    _config_error(
+                        "empty_enum_category",
+                        (
                             "Unicode attack category"
                             f" {unicode_category.name} is empty"
                         ),
-                        severity="warning",
-                        component="enums",
-                        recommendation=(
+                        "enums",
+                        (
                             "Add Unicode characters to"
                             f" {unicode_category.name} or remove"
                             " unused category"
                         ),
+                        severity="warning",
                     )
                 )
 
-        # Check for overlapping extensions between categories
-        all_extensions_by_category = {}
-        for dangerous_category in DangerousExtensionCategory:
-            all_extensions_by_category[dangerous_category.name] = (
-                dangerous_category.value
-            )
+        # Check for overlapping extensions between categories.
+        # Use combinations so each unordered pair is reported once.
+        all_extensions_by_category = {
+            category.name: category.value
+            for category in DangerousExtensionCategory
+        }
 
-        for cat1_name, cat1_exts in all_extensions_by_category.items():
-            for cat2_name, cat2_exts in all_extensions_by_category.items():
-                if cat1_name != cat2_name:
-                    overlap = cat1_exts.intersection(cat2_exts)
-                    if overlap:
-                        errors.append(
-                            ConfigValidationError(
-                                error_type="category_overlap",
-                                message=(
-                                    f"Categories {cat1_name}"
-                                    f" and {cat2_name}"
-                                    " share extensions:"
-                                    f" {overlap}"
-                                ),
-                                severity="info",
-                                component="enums",
-                                recommendation=(
-                                    "Consider if extensions"
-                                    " should belong to"
-                                    " multiple categories"
-                                ),
-                            )
-                        )
+        for (cat1_name, cat1_exts), (
+            cat2_name,
+            cat2_exts,
+        ) in itertools.combinations(all_extensions_by_category.items(), 2):
+            overlap = cat1_exts.intersection(cat2_exts)
+            if overlap:
+                errors.append(
+                    _config_error(
+                        "category_overlap",
+                        (
+                            f"Categories {cat1_name}"
+                            f" and {cat2_name}"
+                            " share extensions:"
+                            f" {overlap}"
+                        ),
+                        "enums",
+                        (
+                            "Consider if extensions"
+                            " should belong to"
+                            " multiple categories"
+                        ),
+                        severity="info",
+                    )
+                )
 
         return errors
 
@@ -1064,20 +1084,20 @@ class FileSecurityConfig:
         for name in cls.WINDOWS_RESERVED_NAMES:
             if not name.islower():
                 errors.append(
-                    ConfigValidationError(
-                        error_type="case_sensitive_reserved_name",
-                        message=(
+                    _config_error(
+                        "case_sensitive_reserved_name",
+                        (
                             "Windows reserved name"
                             f" '{name}' should be"
                             " lowercase"
                         ),
-                        severity="warning",
-                        component="reserved_names",
-                        recommendation=(
+                        "reserved_names",
+                        (
                             "Use lowercase for"
                             " consistent"
                             " case-insensitive matching"
                         ),
+                        severity="warning",
                     )
                 )
 
@@ -1085,32 +1105,28 @@ class FileSecurityConfig:
         for char_code in cls.DANGEROUS_UNICODE_CHARS:
             if not isinstance(char_code, int):
                 errors.append(
-                    ConfigValidationError(
-                        error_type="invalid_unicode_char",
-                        message=(
+                    _config_error(
+                        "invalid_unicode_char",
+                        (
                             "Unicode character code"
                             f" {char_code} is not"
                             " an integer"
                         ),
-                        severity="error",
-                        component="unicode",
-                        recommendation="Use integer Unicode code points",
+                        "unicode",
+                        "Use integer Unicode code points",
                     )
                 )
             elif char_code < 0 or char_code > 0x10FFFF:
                 errors.append(
-                    ConfigValidationError(
-                        error_type="invalid_unicode_range",
-                        message=(
+                    _config_error(
+                        "invalid_unicode_range",
+                        (
                             "Unicode character code"
                             f" {char_code} is outside"
                             " valid range"
                         ),
-                        severity="error",
-                        component="unicode",
-                        recommendation=(
-                            "Use valid Unicode code points (0-0x10FFFF)"
-                        ),
+                        "unicode",
+                        "Use valid Unicode code points (0-0x10FFFF)",
                     )
                 )
 

@@ -55,6 +55,8 @@ class UnicodeSecurityValidator(BaseValidator):
         if not filename:
             return filename
 
+        logger.debug("Validating Unicode safety of filename")
+
         # Check for dangerous Unicode characters
         dangerous_chars_found = []
         for i, char in enumerate(filename):
@@ -140,6 +142,7 @@ class UnicodeSecurityValidator(BaseValidator):
                     dangerous_chars=[(char, char_code, 0)],
                 )
 
+        logger.debug("Unicode validation passed")
         return normalized_filename
 
     def validate(self, filename: str) -> str:

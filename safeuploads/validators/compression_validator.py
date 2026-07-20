@@ -68,6 +68,10 @@ class CompressionSecurityValidator(BaseValidator):
         try:
             # Seek to start for zipfile analysis
             file_obj.seek(0)
+            logger.debug(
+                "Analyzing ZIP compression (compressed size %d bytes)",
+                compressed_size,
+            )
 
             # Track analysis metrics
             total_uncompressed_size = 0

@@ -94,6 +94,9 @@ select = [
     "D",      # no docstring enforcement in examples
     "T201",   # print is expected in examples
 ]
+".forgejo/scripts/**/*.py" = [
+    "T201",   # print is the intended output channel for CI scripts
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"

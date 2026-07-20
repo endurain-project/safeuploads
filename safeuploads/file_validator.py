@@ -12,15 +12,21 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import magic
 
-# Optional FastAPI integration - fallback to protocol if not available
-try:
-    from fastapi import UploadFile
-except ImportError:
+# Optional FastAPI integration - fallback to protocol if not available.
+# For type checking we always bind to the protocol so the interface is
+# consistent regardless of whether FastAPI is installed; at runtime we
+# prefer FastAPI's UploadFile when present.
+if TYPE_CHECKING:
     from .protocols import UploadFileProtocol as UploadFile
+else:
+    try:
+        from fastapi import UploadFile
+    except ImportError:
+        from .protocols import UploadFileProtocol as UploadFile
 
 from .audit import (
     SecurityAuditLogger,
@@ -273,6 +279,9 @@ class FileValidator:
 
         for signature in expected_signatures:
             if file_content.startswith(signature):
+                logger.debug(
+                    "File signature matched for type '%s'", expected_type
+                )
                 return  # Signature matched
 
         # FIT files: ".FIT" at bytes 8-11
@@ -349,8 +358,14 @@ class FileValidator:
 
         # Limit filename length (preserve extension)
         name_part, ext_part = os.path.splitext(filename)
-        if len(name_part) > 100:
-            name_part = name_part[:100]
+        max_name_len = self.config.limits.max_sanitized_name_length
+        if len(name_part) > max_name_len:
+            logger.debug(
+                "Truncating sanitized name from %d to %d chars",
+                len(name_part),
+                max_name_len,
+            )
+            name_part = name_part[:max_name_len]
             filename = name_part + ext_part
 
         # Ensure we don't end up with just an extension or empty name
@@ -458,6 +473,8 @@ class FileValidator:
                 extension=ext,
                 error_code=ErrorCode.EXTENSION_BLOCKED,
             )
+
+        logger.debug("File extension '%s' accepted", ext)
 
     async def _validate_file_size(
         self, file: UploadFile, max_file_size: int
@@ -661,6 +678,7 @@ class FileValidator:
         cid = set_correlation_id()
         filename = file.filename or "unknown"
         self._audit.start(filename, cid)
+        logger.debug("Starting %s file validation: %s", file_type, filename)
         t0 = time.monotonic()
         try:
             await body(file)

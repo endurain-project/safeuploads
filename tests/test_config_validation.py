@@ -117,6 +117,24 @@ class TestFileSizeLimitValidation:
         ]
         assert len(warnings) >= 1
 
+    def test_nonpositive_sanitized_name_length_generates_error(
+        self, monkeypatch
+    ):
+        """
+        Test that a non-positive sanitized name length errors.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_sanitized_name_length=0),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_name_length" in error_types
+
 
 class TestMimeConfigurationValidation:
     """Tests for _validate_mime_configurations validation branches."""

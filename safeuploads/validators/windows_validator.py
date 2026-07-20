@@ -48,6 +48,7 @@ class WindowsSecurityValidator(BaseValidator):
         # to handle compound extensions
         # e.g., "CON.tar.gz" -> check "con.tar" and "con"
         current_name = filename
+        logger.debug("Checking filename for Windows reserved names")
 
         while current_name:
             # Get basename without extension
@@ -91,6 +92,8 @@ class WindowsSecurityValidator(BaseValidator):
                 break
 
             current_name = name_without_ext
+
+        logger.debug("No Windows reserved name detected")
 
     def validate(self, filename: str) -> None:
         """

@@ -57,7 +57,7 @@ _HEADER_RE = re.compile(
     (?P<type>[A-Za-z]+)
     (?:\((?P<scope>[^)]+)\))?
     (?P<breaking>!)?
-    :\ 
+    :\x20
     (?P<description>.+?)
     \s*$
     """,
@@ -102,6 +102,7 @@ def _safe_log_value(value: str) -> str:
 
 
 def _iter_messages(args: argparse.Namespace) -> Iterable[str]:
+    """Yield messages from stdin or CLI arguments."""
     if args.stdin:
         for line in sys.stdin:
             stripped = line.rstrip("\n")
@@ -112,6 +113,7 @@ def _iter_messages(args: argparse.Namespace) -> Iterable[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Validate all messages and return a process exit code."""
     parser = argparse.ArgumentParser(
         description="Validate Conventional Commits headers.",
     )
@@ -150,8 +152,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if failures:
         print(
-            f"\n{failures} of {checked} message(s) failed Conventional Commits "
-            "validation.",
+            f"\n{failures} of {checked} message(s) failed "
+            "Conventional Commits validation.",
             file=sys.stderr,
         )
         return 1

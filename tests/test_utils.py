@@ -95,9 +95,9 @@ class TestResourceMonitorMemory:
         with ResourceMonitor(max_time_seconds=30.0, max_memory_mb=512):
             _ = b"x" * 1024  # Tiny allocation
 
-    def test_get_rss_bytes_returns_positive(self):
-        """Test that RSS measurement returns positive value."""
-        rss = ResourceMonitor._get_rss_bytes()
+    def test_get_peak_rss_bytes_returns_positive(self):
+        """Test that peak RSS measurement returns positive value."""
+        rss = ResourceMonitor._get_peak_rss_bytes()
         assert rss > 0
 
 
@@ -197,7 +197,7 @@ class TestResourceMonitorMemoryExceeded:
             return 700 * 1024 * 1024
 
         monkeypatch.setattr(
-            ResourceMonitor, "_get_rss_bytes", staticmethod(_fake_rss)
+            ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
         )
 
         with (
@@ -212,3 +212,36 @@ class TestResourceMonitorMemoryExceeded:
         assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
         assert exc_info.value.memory_bytes is not None
         assert "memory limit" in str(exc_info.value).lower()
+
+    def test_check_memory_passes_within_limit(self):
+        """Test that check_memory does not raise within the limit."""
+        with ResourceMonitor(
+            max_time_seconds=30.0, max_memory_mb=512
+        ) as monitor:
+            monitor.check_memory()  # Should not raise
+
+    def test_check_memory_raises_when_exceeded(self, monkeypatch):
+        """
+        Test that check_memory raises mid-operation on growth.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        _calls = {"n": 0}
+
+        def _fake_rss() -> int:
+            _calls["n"] += 1
+            if _calls["n"] == 1:
+                return 100 * 1024 * 1024  # 100 MB at entry
+            return 700 * 1024 * 1024  # 700 MB later → delta 600 MB
+
+        monkeypatch.setattr(
+            ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
+        )
+
+        monitor = ResourceMonitor(max_time_seconds=30.0, max_memory_mb=512)
+        monitor.__enter__()
+        with pytest.raises(ResourceLimitError) as exc_info:
+            monitor.check_memory()
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED

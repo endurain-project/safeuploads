@@ -58,6 +58,7 @@ class XmlSecurityValidator(BaseValidator):
         """
         file_obj.seek(0)
 
+        logger.debug("Parsing activity XML with XXE protections")
         try:
             # defusedxml blocks external entities and
             # entity expansion by default.
@@ -85,6 +86,7 @@ class XmlSecurityValidator(BaseValidator):
             logger.warning("XML validation failed: %s", err)
             raise FileProcessingError("XML validation failed") from err
 
+        logger.debug("XML safety validation passed")
         file_obj.seek(0)
 
     def validate(self, file_obj: SeekableFile) -> None:

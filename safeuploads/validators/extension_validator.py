@@ -51,6 +51,7 @@ class ExtensionSecurityValidator(BaseValidator):
         # Check for compound dangerous extensions first
         # (e.g., .tar.xz, .user.js)
         filename_lower = filename.lower()
+        logger.debug("Validating extensions in filename")
         for compound_ext in self._compound_blocked:
             if filename_lower.endswith(compound_ext):
                 logger.warning(
@@ -98,6 +99,8 @@ class ExtensionSecurityValidator(BaseValidator):
                         extension=ext,
                         error_code=ErrorCode.EXTENSION_BLOCKED,
                     )
+
+        logger.debug("Extension validation passed")
 
     def validate(self, filename: str) -> None:
         """

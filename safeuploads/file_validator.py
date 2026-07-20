@@ -720,13 +720,10 @@ class FileValidator:
             FileProcessingError: If the content scan reports one
                 or more threats.
         """
-        threats = self.content_inspector.scan_content(
-            sample, filename, kind
-        )
+        threats = self.content_inspector.scan_content(sample, filename, kind)
         if threats:
             raise FileProcessingError(
-                "Content analysis threats detected:"
-                f" {'; '.join(threats)}"
+                f"Content analysis threats detected: {'; '.join(threats)}"
             )
 
     async def _run_validation(

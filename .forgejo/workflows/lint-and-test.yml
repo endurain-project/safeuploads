@@ -68,7 +68,7 @@ jobs:
           working-directory: .
 
       - name: Install dependencies
-        run: uv sync --frozen --dev
+        run: uv sync --frozen --dev --extra fastapi
 
       - name: Audit Python dependencies
         run: uvx pip-audit --require-hashes --disable-pip -r <(uv export --frozen --no-header --no-emit-project --no-dev)

@@ -1,12 +1,12 @@
 name: Conventional Commits
 
 on:
+  push:
+    branches:
+      - main
+      - master
   pull_request:
     types: [opened, edited, synchronize, reopened]
-
-permissions:
-  contents: read
-  pull-requests: read
 
 concurrency:
   group: ${{ forgejo.workflow }}-${{ forgejo.event.pull_request.number }}

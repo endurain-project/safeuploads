@@ -5,11 +5,6 @@ on:
   schedule:
     - cron: '0 4 * * 0'
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
 concurrency:
   group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
   cancel-in-progress: false

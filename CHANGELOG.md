@@ -43,7 +43,7 @@ project adheres to
   (`ALLOWED_IMAGE_MIMES`, `ALLOWED_ZIP_MIMES`,
   `ALLOWED_IMAGE_EXTENSIONS`, `ALLOWED_ZIP_EXTENSIONS`) are now
   immutable `frozenset`s. Read-only use is unaffected; in-place
-  mutation (e.g. `.add(...)`) is no longer supported — assign a new
+  mutation (e.g. `.add(...)`) is no longer supported, assign a new
   set instead.
 
 ### Fixed

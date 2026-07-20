@@ -1,3 +1,6 @@
+> [!NOTE]
+> **GitHub Mirror** - If you are viewing this on GitHub, please be aware that this repository is a read-only mirror. Issues, pull requests, and all project activity are tracked on Codeberg: [https://codeberg.org/endurain-project/safeuploads](https://codeberg.org/endurain-project/safeuploads)
+
 # safeuploads
 
 [![License](https://img.shields.io/badge/license-MIT-green)](https://codeberg.org/endurain-project/safeuploads/src/branch/main/LICENSE.md)

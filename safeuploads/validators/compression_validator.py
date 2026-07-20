@@ -52,6 +52,13 @@ class CompressionSecurityValidator(BaseValidator):
         """
         Validate ZIP archive against security limits.
 
+        Size and ratio checks read the declared ``file_size`` and
+        ``compress_size`` from the archive's central directory,
+        which an attacker can forge. Enable
+        ``limits.verify_zip_decompression`` to additionally
+        decompress every entry and reject archives whose real
+        content does not match the declared metadata.
+
         Args:
             file_obj: Seekable file-like object containing ZIP data.
             compressed_size: Size of the compressed archive in bytes.

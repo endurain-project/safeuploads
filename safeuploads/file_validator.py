@@ -312,10 +312,6 @@ class FileValidator:
                 b"<?xml",  # XML header (GPX/TCX)
                 b"\xef\xbb\xbf<?xml",  # XML with BOM
             ],
-            "fit": [
-                # FIT header: size byte, protocol, profile,
-                # data size (4 bytes), then ".FIT" at byte 8
-            ],
         }
 
         expected_signatures = signatures.get(expected_type, [])
@@ -372,6 +368,10 @@ class FileValidator:
         if not filename:
             raise ValueError("Filename cannot be empty")
 
+        # Preserve the raw input for truthful logging; every step
+        # below reassigns ``filename`` as it sanitizes.
+        original_filename = filename
+
         # Unicode security validation (must be first)
         # This detects and blocks Unicode-based attacks
         # before any other processing
@@ -419,9 +419,11 @@ class FileValidator:
         # doesn't become a reserved name
         self.windows_validator.validate_windows_reserved_names(filename)
 
+        # Log with %r so control characters in the raw input are
+        # escaped rather than injected into the log stream.
         logger.debug(
-            "Filename sanitized: original='%s' -> sanitized='%s'",
-            os.path.basename(filename if filename else "None"),
+            "Filename sanitized: original=%r -> sanitized=%r",
+            os.path.basename(original_filename),
             filename,
         )
 
@@ -701,6 +703,32 @@ class FileValidator:
             ) from err
         return header, detected_mime
 
+    def _raise_on_content_threats(
+        self, sample: bytes, filename: str, kind: str
+    ) -> None:
+        """
+        Scan a content sample and raise if threats are found.
+
+        Args:
+            sample: Raw bytes to scan (typically up to
+                ``content_scan_max_size``).
+            filename: Sanitized filename for error context.
+            kind: Logical file type passed to the scanner
+                (e.g. "image", "zip").
+
+        Raises:
+            FileProcessingError: If the content scan reports one
+                or more threats.
+        """
+        threats = self.content_inspector.scan_content(
+            sample, filename, kind
+        )
+        if threats:
+            raise FileProcessingError(
+                "Content analysis threats detected:"
+                f" {'; '.join(threats)}"
+            )
+
     async def _run_validation(
         self,
         file: UploadFile,
@@ -841,18 +869,12 @@ class FileValidator:
                 await file.seek(0)
                 sample = await file.read(scan_size)
                 await file.seek(0)
-                threats = await self._to_thread(
-                    self.content_inspector.scan_content,
+                await self._to_thread(
+                    self._raise_on_content_threats,
                     sample,
                     filename,
                     "image",
                 )
-                if threats:
-                    raise FileProcessingError(
-                        "Content analysis threats"
-                        " detected:"
-                        f" {'; '.join(threats)}"
-                    )
 
             logger.debug(
                 "Image file validation passed: %s (%s, %s bytes)",
@@ -968,15 +990,7 @@ class FileValidator:
             scan_size = self.config.limits.content_scan_max_size
             sample = temp_file.read(scan_size)
             temp_file.seek(0)
-            threats = self.content_inspector.scan_content(
-                sample,
-                filename,
-                "zip",
-            )
-            if threats:
-                raise FileProcessingError(
-                    f"Content analysis threats detected: {'; '.join(threats)}"
-                )
+            self._raise_on_content_threats(sample, filename, "zip")
 
         logger.debug(
             "ZIP file validation passed: %s (%s, %s bytes)",

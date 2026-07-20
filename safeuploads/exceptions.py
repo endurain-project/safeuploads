@@ -1,6 +1,7 @@
 """File security exception classes and error codes."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 # ============================================================================
 # Configuration Validation
@@ -54,13 +55,16 @@ class FileSecurityConfigurationError(Exception):
 # ============================================================================
 
 
-class ErrorCode:
+class ErrorCode(StrEnum):
     """
     Machine-readable error codes for file validation failures.
 
-    Error codes are class-level string constants grouped by
+    Error codes are string-valued enum members grouped by
     validation failure type (filename, extension, MIME, size,
-    signature, compression, resource, and processing).
+    signature, compression, resource, and processing). As a
+    ``StrEnum`` each member compares equal to its string value,
+    so existing string comparisons and JSON serialization keep
+    working unchanged.
     """
 
     # Filename validation errors

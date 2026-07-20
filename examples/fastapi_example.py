@@ -44,7 +44,7 @@ from safeuploads.exceptions import (
 app = FastAPI(
     title="SafeUploads FastAPI Example",
     description="Example API demonstrating safeuploads integration",
-    version="1.0.1",
+    version="1.1.0",
 )
 
 # Optional: configure rate limiting if slowapi is installed
@@ -407,7 +407,7 @@ async def root():
     """Root endpoint with API information."""
     return {
         "name": "SafeUploads FastAPI Example",
-        "version": "1.0.1",
+        "version": "1.1.0",
         "endpoints": {
             "POST /upload/image": "Upload image with default validation",
             "POST /upload/image/strict": "Upload image with strict validation",

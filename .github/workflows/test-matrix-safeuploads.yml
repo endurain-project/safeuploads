@@ -1,0 +1,104 @@
+name: Test matrix safeuploads
+
+# Portability matrix on top of the fast default `Lint & Test` workflow:
+#   * every supported Python version (3.13, 3.14) with the full
+#     dependency set (dev group + fastapi extra), proving the suite
+#     passes on every Python the package declares support for; and
+#   * a bare `import safeuploads` with only the base dependencies
+#     installed (no optional extras, no dev group), proving
+#     python-magic and defusedxml are truly sufficient on their own
+#     and the `fastapi` extra stays optional.
+
+on:
+  push:
+    branches:
+      - main
+    paths: &paths
+      - safeuploads/**
+      - tests/**
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/test-matrix-safeuploads.yml
+      - .github/scripts/smoke_import.py
+  pull_request:
+    branches:
+      - main
+    paths: *paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 1. Every supported Python version, with the full dependency set.
+  test-python-matrix:
+    name: safeuploads (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # Resolve uv from `[tool.uv] required-version` in pyproject.toml, so CI
+          # and local development are held to the same floor and ceiling.
+          version-file: pyproject.toml
+
+      - name: Sync dependencies
+        run: uv sync --frozen --dev --extra fastapi --python ${{ matrix.python }}
+
+      - name: Run tests
+        run: uv run --no-sync --python ${{ matrix.python }} pytest
+
+  # 2. Bare import with only the base dependencies (no extras, no dev group):
+  #    proves `import safeuploads` works with zero extras installed.
+  import-base-deps:
+    name: safeuploads (bare import, no extras)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # Resolve uv from `[tool.uv] required-version` in pyproject.toml, so CI
+          # and local development are held to the same floor and ceiling.
+          version-file: pyproject.toml
+
+      - name: Install base dependencies only (no optional extras, no dev group)
+        # --no-dev installs the base runtime dependencies + the project only;
+        # the fastapi extra and the dev dependency group stay out.
+        # --no-editable installs safeuploads as a real distribution (not a
+        # path into the checkout), so the smoke test actually validates an
+        # install.
+        run: uv sync --frozen --no-dev --no-editable
+
+      # Run from outside the repository root so the local `safeuploads/`
+      # package directory cannot shadow the installed distribution:
+      # otherwise this would validate the working tree rather than what a
+      # user actually gets.
+      - name: Import safeuploads without optional extras
+        run: |
+          set -euo pipefail
+          cp -r .venv "$RUNNER_TEMP/base-venv"
+          cd "$RUNNER_TEMP"
+          VIRTUAL_ENV="$RUNNER_TEMP/base-venv" uv run --no-project python "$GITHUB_WORKSPACE/.github/scripts/smoke_import.py"

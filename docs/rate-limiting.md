@@ -281,5 +281,5 @@ Client Request
 - **safeuploads**: Validates file content, detects attacks,
   enforces resource limits via `ResourceMonitor`.
 
-See [examples/fastapi_example.py](https://codeberg.org/endurain-project/safeuploads/src/branch/main/examples/fastapi_example.py)
+See [examples/fastapi_example.py](https://github.com/endurain-project/safeuploads/blob/main/examples/fastapi_example.py)
 for a complete working example with rate limiting integrated.

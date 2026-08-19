@@ -5,16 +5,19 @@ on:
     types: [opened, edited, synchronize, reopened]
 
 concurrency:
-  group: ${{ forgejo.workflow }}-${{ forgejo.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   validate:
-    runs-on: local-runner
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: https://data.forgejo.org/actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -22,19 +25,19 @@ jobs:
         # The PR title is passed through an environment variable to prevent
         # shell injection via crafted titles (see security-and-owasp guidelines).
         env:
-          PR_TITLE: ${{ forgejo.event.pull_request.title }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          python3 .forgejo/scripts/check_conventional_commits.py "$PR_TITLE"
+          python3 .github/scripts/check_conventional_commits.py "$PR_TITLE"
 
       - name: Validate commits in PR
         # Validates every commit subject between the PR base and head. Use the
         # base/head SHAs from the event payload so we don't depend on the local
         # checkout ref layout.
         env:
-          BASE_SHA: ${{ forgejo.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA"
           git log --no-merges --format=%s "$BASE_SHA".."$HEAD_SHA" \
-            | python3 .forgejo/scripts/check_conventional_commits.py --stdin
+            | python3 .github/scripts/check_conventional_commits.py --stdin

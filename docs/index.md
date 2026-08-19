@@ -1,14 +1,14 @@
 # safeuploads
 
 <div>
-    <a href="https://codeberg.org/endurain-project/safeuploads/src/branch/main/LICENSE.md">
+    <a href="https://github.com/endurain-project/safeuploads/blob/main/LICENSE.md">
       <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     </a>
-    <a href="https://codeberg.org/endurain-project/safeuploads/releases">
-      <img src="https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads/releases/latest&query=$.tag_name&label=release&color=blue" alt="Release">
+    <a href="https://github.com/endurain-project/safeuploads/releases">
+      <img src="https://img.shields.io/github/v/release/endurain-project/safeuploads?label=release&color=blue" alt="Release">
     </a>
-    <a href="https://codeberg.org/endurain-project/safeuploads">
-      <img src="https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads&query=$.stars_count&label=stars&logo=codeberg" alt="Stars">
+    <a href="https://github.com/endurain-project/safeuploads">
+      <img src="https://img.shields.io/github/stars/endurain-project/safeuploads?label=stars&logo=github" alt="Stars">
     </a>
 </div>
 
@@ -144,12 +144,12 @@ except FileValidationError as err:
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](https://codeberg.org/endurain-project/safeuploads/src/branch/main/LICENSE.md) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/endurain-project/safeuploads/blob/main/LICENSE.md) file for details.
 
 ## Contributing
 
-Contributions welcome! See [Contributing Guidelines](https://codeberg.org/endurain-project/safeuploads/src/branch/main/CONTRIBUTING.md) for guidelines.
+Contributions welcome! See [Contributing Guidelines](https://github.com/endurain-project/safeuploads/blob/main/CONTRIBUTING.md) for guidelines.
 
 <div align="center">
-  <sub>Built with ❤️ from Portugal | Part of the <a href="https://codeberg.org/endurain-project">Endurain</a> ecosystem</sub>
+  <sub>Built with ❤️ from Portugal | Part of the <a href="https://github.com/endurain-project">Endurain</a> ecosystem</sub>
 </div>

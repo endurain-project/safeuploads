@@ -6,28 +6,31 @@ on:
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # Cancel in-progress runs for the same branch to avoid wasted
 # runner minutes.
 concurrency:
-  group: ${{ forge.workflow }}-${{ forge.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   fuzz:
     name: Fuzz
-    runs-on: local-runner
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: https://data.forgejo.org/actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
-        run: apt-get update && apt-get install -y libmagic1
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
 
       - name: Install uv
-        uses: https://data.forgejo.org/astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          working-directory: .
+          version-file: pyproject.toml
 
       - name: Install dependencies
         run: uv sync --frozen --dev

@@ -139,9 +139,9 @@ Initial release.
 - Framework-agnostic async validation, a rich exception hierarchy with
   machine-readable error codes, secure defaults, and full type hints.
 
-[1.1.0]: https://codeberg.org/endurain-project/safeuploads/compare/v1.0.1...v1.1.0
-[1.0.1]: https://codeberg.org/endurain-project/safeuploads/releases/tag/v1.0.1
-[1.0.0]: https://codeberg.org/endurain-project/safeuploads/releases/tag/v1.0.0
-[0.1.2]: https://codeberg.org/endurain-project/safeuploads/releases/tag/v0.1.2
-[0.1.1]: https://codeberg.org/endurain-project/safeuploads/releases/tag/v0.1.1
-[0.1.0]: https://codeberg.org/endurain-project/safeuploads/releases/tag/v0.1.0
+[1.1.0]: https://github.com/endurain-project/safeuploads/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/endurain-project/safeuploads/releases/tag/v1.0.1
+[1.0.0]: https://github.com/endurain-project/safeuploads/releases/tag/v1.0.0
+[0.1.2]: https://github.com/endurain-project/safeuploads/releases/tag/v0.1.2
+[0.1.1]: https://github.com/endurain-project/safeuploads/releases/tag/v0.1.1
+[0.1.0]: https://github.com/endurain-project/safeuploads/releases/tag/v0.1.0

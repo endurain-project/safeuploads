@@ -1,15 +1,12 @@
-> [!NOTE]
-> **GitHub Mirror** - If you are viewing this on GitHub, please be aware that this repository is a read-only mirror. Issues, pull requests, and all project activity are tracked on Codeberg: [https://codeberg.org/endurain-project/safeuploads](https://codeberg.org/endurain-project/safeuploads)
-
 # safeuploads
 
-[![License](https://img.shields.io/badge/license-MIT-green)](https://codeberg.org/endurain-project/safeuploads/src/branch/main/LICENSE.md)
-[![Release](https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads/releases/latest&query=$.tag_name&label=release&color=blue)](https://codeberg.org/endurain-project/safeuploads/releases)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/endurain-project/safeuploads/blob/main/LICENSE.md)
+[![Release](https://img.shields.io/github/v/release/endurain-project/safeuploads?label=release&color=blue)](https://github.com/endurain-project/safeuploads/releases)
 [![PyPI version](https://img.shields.io/pypi/v/safeuploads)](https://pypi.org/project/safeuploads/)
 [![PyPI downloads](https://img.shields.io/pypi/dm/safeuploads)](https://pypi.org/project/safeuploads/)
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://pypi.org/project/safeuploads/)
-[![Docs](https://img.shields.io/badge/docs-endurain--project.codeberg.page-blue)](https://safeuploads.endurain.com/)
-[![Stars](https://img.shields.io/badge/dynamic/json?url=https://codeberg.org/api/v1/repos/endurain-project/safeuploads&query=$.stars_count&label=stars&logo=codeberg)](https://codeberg.org/endurain-project/safeuploads)
+[![Docs](https://img.shields.io/badge/docs-safeuploads.endurain.com-blue)](https://safeuploads.endurain.com/)
+[![Stars](https://img.shields.io/github/stars/endurain-project/safeuploads?label=stars&logo=github)](https://github.com/endurain-project/safeuploads)
 
 Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 
@@ -146,5 +143,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE.md) f
 Contributions welcome! See [Contributing Guidelines](CONTRIBUTING.md) for guidelines.
 
 <div align="center">
-  <sub>Built with ❤️ from Portugal | Part of the <a href="https://codeberg.org/endurain-project">Endurain</a> ecosystem</sub>
+  <sub>Built with ❤️ from Portugal | Part of the <a href="https://github.com/endurain-project">Endurain</a> ecosystem</sub>
 </div>

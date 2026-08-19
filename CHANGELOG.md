@@ -7,7 +7,20 @@ The format is based on
 project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-08-19
+
+### Changed
+
+- Migrated CI/CD from Forgejo/Codeberg to GitHub Actions: lint & test,
+  scheduled fuzz, docs deploy, PyPI publish, and Conventional Commits
+  checks.
+- Added Dependabot configuration, a `CODEOWNERS` file, and a
+  scheduled dependency-vulnerability audit workflow (`pip-audit`).
+- Updated all repository, documentation, and badge links from
+  Codeberg to GitHub.
+
 ## [1.1.0] - 2026-07-20
+
 
 ### Added
 
@@ -139,6 +152,7 @@ Initial release.
 - Framework-agnostic async validation, a rich exception hierarchy with
   machine-readable error codes, secure defaults, and full type hints.
 
+[1.1.1]: https://github.com/endurain-project/safeuploads/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/endurain-project/safeuploads/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/endurain-project/safeuploads/releases/tag/v1.0.1
 [1.0.0]: https://github.com/endurain-project/safeuploads/releases/tag/v1.0.0

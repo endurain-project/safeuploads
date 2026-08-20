@@ -101,6 +101,10 @@ class ErrorCode(StrEnum):
     FILE_SIGNATURE_MISSING = "FILE_SIGNATURE_MISSING"
     FILE_SIGNATURE_MISMATCH = "FILE_SIGNATURE_MISMATCH"
 
+    # Image content errors
+    IMAGE_DIMENSIONS_EXCEEDED = "IMAGE_DIMENSIONS_EXCEEDED"
+    IMAGE_DIMENSIONS_UNREADABLE = "IMAGE_DIMENSIONS_UNREADABLE"
+
     # Compression and ZIP errors
     ZIP_BOMB_DETECTED = "ZIP_BOMB_DETECTED"
     ZIP_CONTENT_THREAT = "ZIP_CONTENT_THREAT"
@@ -385,6 +389,45 @@ class FileSignatureError(FileValidationError):
             message,
             filename=filename,
             error_code=error_code or ErrorCode.FILE_SIGNATURE_MISMATCH,
+        )
+
+
+class ImageSecurityError(FileValidationError):
+    """
+    Image header declares unsafe or unreadable dimensions.
+
+    Args:
+        message: Human-readable error description.
+        filename: Optional filename that failed the check.
+        width: Optional declared width in pixels.
+        height: Optional declared height in pixels.
+        max_pixels: Optional maximum allowed pixel count.
+        error_code: Optional error code (defaults to
+            IMAGE_DIMENSIONS_EXCEEDED).
+
+    Attributes:
+        width: Declared width in pixels.
+        height: Declared height in pixels.
+        max_pixels: Maximum allowed pixel count.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        max_pixels: int | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with image dimension details."""
+        self.width = width
+        self.height = height
+        self.max_pixels = max_pixels
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.IMAGE_DIMENSIONS_EXCEEDED,
         )
 
 

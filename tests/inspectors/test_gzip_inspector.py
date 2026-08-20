@@ -10,9 +10,28 @@ from safeuploads.exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipBombError,
 )
 from safeuploads.inspectors.gzip_inspector import GzipContentInspector
+from safeuploads.utils import ResourceMonitor
+
+
+class TestGzipInspectionResourceLimits:
+    """A spent time budget aborts inflation mid-stream."""
+
+    def test_chunk_loop_aborts_on_time_limit(self, default_config):
+        """Test the per-chunk check surfaces ResourceLimitError."""
+        inspector = GzipContentInspector(default_config)
+        payload = gzip.compress(b"x" * 1024)
+
+        with (
+            pytest.raises(ResourceLimitError),
+            ResourceMonitor(max_time_seconds=0.0) as monitor,
+        ):
+            inspector.inspect_gzip_content(
+                io.BytesIO(payload), len(payload), monitor
+            )
 
 
 class TestGzipContentInspector:

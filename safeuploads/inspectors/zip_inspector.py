@@ -16,16 +16,31 @@ from ..enums import (
     SuspiciousFilePattern,
     ZipThreatCategory,
 )
-from ..exceptions import ErrorCode, FileProcessingError, ZipContentError
+from ..exceptions import (
+    ErrorCode,
+    FileProcessingError,
+    ResourceLimitError,
+    ZipContentError,
+)
 from ..utils import find_text_pattern, matches_signature_prefix
 from .base import BaseInspector
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
     from ..protocols import SeekableFile
+    from ..utils import ResourceMonitor
 
 
 logger = logging.getLogger(__name__)
+
+# Entry extensions that must never appear inside an accepted
+# archive, keyed by the threat category they belong to so the
+# rejection message names the category.
+_DANGEROUS_ENTRY_CATEGORIES: tuple[ZipThreatCategory, ...] = (
+    ZipThreatCategory.EXECUTABLE_FILES,
+    ZipThreatCategory.SCRIPT_FILES,
+    ZipThreatCategory.SYSTEM_FILES,
+)
 
 
 class ZipContentInspector(BaseInspector):
@@ -70,18 +85,31 @@ class ZipContentInspector(BaseInspector):
         self._recursable_exts: frozenset[str] = frozenset(
             ZipThreatCategory.RECURSABLE_ARCHIVES.value
         )
+        self._dangerous_entry_exts: dict[str, str] = {
+            ext.lower(): category.name
+            for category in _DANGEROUS_ENTRY_CATEGORIES
+            for ext in category.value
+        }
 
-    def inspect_zip_content(self, file_obj: SeekableFile) -> None:
+    def inspect_zip_content(
+        self,
+        file_obj: SeekableFile,
+        monitor: ResourceMonitor | None = None,
+    ) -> None:
         """
         Inspect ZIP archive for potential security threats.
 
         Args:
             file_obj: Seekable file-like object containing ZIP data.
+            monitor: Optional resource monitor checked once per
+                entry so a runaway archive is aborted mid-scan.
 
         Raises:
             ZipContentError: If security threats are detected in ZIP
                 content such as directory traversal, symlinks, nested
                 archives, or suspicious patterns.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded during inspection.
             FileProcessingError: If ZIP structure is invalid or
                 unexpected error occurs during inspection.
         """
@@ -98,6 +126,9 @@ class ZipContentInspector(BaseInspector):
 
                 # Analyze each entry in the ZIP
                 for entry in zip_entries:
+                    if monitor is not None:
+                        monitor.check()
+
                     # Check for timeout
                     if (
                         time.monotonic() - start_time
@@ -169,10 +200,14 @@ class ZipContentInspector(BaseInspector):
             # when nested archives are allowed
             if self.config.limits.allow_nested_archives:
                 file_obj.seek(0)
-                self.inspect_nested_archives(file_obj)
+                self.inspect_nested_archives(file_obj, monitor=monitor)
 
         except ZipContentError:
             # Re-raise our own exceptions
+            raise
+        except ResourceLimitError:
+            # A breached time/memory budget must abort the request,
+            # not be reported as an internal processing failure.
             raise
         except zipfile.BadZipFile as err:
             logger.error(
@@ -256,13 +291,40 @@ class ZipContentInspector(BaseInspector):
         ):
             threats.append(f"Nested archive detected: '{filename}'")
 
-        # 9. Check file content if enabled
+        # 9. Check for dangerous entry extensions
+        threats.extend(self._check_dangerous_extension(filename))
+
+        # 10. Check file content if enabled
         # Only first 512 bytes are read, so no size gate needed
         if self.config.limits.scan_zip_content and not entry.is_dir():
             content_threats = self._inspect_entry_content(entry, zip_file)
             threats.extend(content_threats)
 
         return threats
+
+    def _check_dangerous_extension(self, filename: str) -> list[str]:
+        """
+        Check an entry name for dangerous file extensions.
+
+        Every dot-separated suffix is checked, so a disguised
+        name such as ``shell.php.txt`` is still rejected.
+
+        Args:
+            filename: ZIP entry name to check.
+
+        Returns:
+            List of threat descriptions.
+        """
+        basename = os.path.basename(filename).lower()
+        parts = basename.split(".")
+        for part in parts[1:]:
+            category = self._dangerous_entry_exts.get(f".{part}")
+            if category is not None:
+                return [
+                    f"Dangerous entry extension '.{part}'"
+                    f" ({category}) in '{filename}'"
+                ]
+        return []
 
     def _inspect_zip_structure(
         self, entries: list[zipfile.ZipInfo]
@@ -499,6 +561,7 @@ class ZipContentInspector(BaseInspector):
         seen_hashes: set[str] | None = None,
         entry_counter: list[int] | None = None,
         start_time: float | None = None,
+        monitor: ResourceMonitor | None = None,
     ) -> None:
         """
         Recursively inspect nested archives.
@@ -516,10 +579,14 @@ class ZipContentInspector(BaseInspector):
                 cumulative entry count shared across all
                 recursion branches.
             start_time: Monotonic timestamp of initial call.
+            monitor: Optional resource monitor checked once per
+                entry so a runaway archive is aborted mid-scan.
 
         Raises:
             ZipContentError: If recursive structure, quine,
                 or complexity attack is detected.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded during inspection.
         """
         if seen_hashes is None:
             seen_hashes = set()
@@ -578,6 +645,9 @@ class ZipContentInspector(BaseInspector):
                     )
 
                 for entry in entries:
+                    if monitor is not None:
+                        monitor.check()
+
                     # Timeout
                     elapsed = time.monotonic() - start_time
                     if elapsed > timeout:
@@ -625,9 +695,14 @@ class ZipContentInspector(BaseInspector):
                         seen_hashes=seen_hashes,
                         entry_counter=entry_counter,
                         start_time=start_time,
+                        monitor=monitor,
                     )
 
         except ZipContentError:
+            raise
+        except ResourceLimitError:
+            # A breached time/memory budget must abort the request,
+            # not be downgraded to a skipped branch.
             raise
         except zipfile.BadZipFile:
             # A corrupt archive at this nesting level is not itself a

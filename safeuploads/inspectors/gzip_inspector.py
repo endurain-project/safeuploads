@@ -11,6 +11,7 @@ from ..exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipBombError,
 )
 from ..utils import bytes_to_mb
@@ -18,6 +19,7 @@ from .base import BaseInspector
 
 if TYPE_CHECKING:
     from ..protocols import SeekableFile
+    from ..utils import ResourceMonitor
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ class GzipContentInspector(BaseInspector):
         self,
         file_obj: SeekableFile,
         compressed_size: int,
+        monitor: ResourceMonitor | None = None,
     ) -> None:
         """
         Inspect gzip archive for decompression bombs.
@@ -46,12 +49,16 @@ class GzipContentInspector(BaseInspector):
         Args:
             file_obj: Seekable file containing gzip data.
             compressed_size: Size of the compressed file in bytes.
+            monitor: Optional resource monitor checked once per
+                chunk so a slow stream is aborted mid-inflation.
 
         Raises:
             ZipBombError: If compression ratio or uncompressed
                 size exceeds configured limits.
             CompressionSecurityError: If the gzip structure is
                 invalid or corrupted.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded during inspection.
             FileProcessingError: If an unexpected error occurs.
         """
         file_obj.seek(0)
@@ -67,6 +74,9 @@ class GzipContentInspector(BaseInspector):
         try:
             with gzip.open(file_obj, "rb") as gz:
                 while True:
+                    if monitor is not None:
+                        monitor.check()
+
                     chunk = gz.read(chunk_size)
                     if not chunk:
                         break
@@ -135,6 +145,10 @@ class GzipContentInspector(BaseInspector):
                             )
 
         except ZipBombError:
+            raise
+        except ResourceLimitError:
+            # A breached time/memory budget must abort the request,
+            # not be reported as an internal processing failure.
             raise
         except gzip.BadGzipFile as err:
             logger.error(

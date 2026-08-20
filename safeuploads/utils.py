@@ -106,6 +106,121 @@ def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
     return None
 
 
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+# Start-of-frame markers that carry the frame dimensions. 0xC4
+# (DHT), 0xC8 (JPG) and 0xCC (DAC) share the range but are not
+# start-of-frame markers, so they are excluded.
+_JPEG_SOF_MARKERS: frozenset[int] = frozenset(
+    {
+        0xC0,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC5,
+        0xC6,
+        0xC7,
+        0xC9,
+        0xCA,
+        0xCB,
+        0xCD,
+        0xCE,
+        0xCF,
+    }
+)
+
+
+def _parse_png_dimensions(content: bytes) -> tuple[int, int] | None:
+    """
+    Read width and height from a PNG IHDR chunk.
+
+    Args:
+        content: Raw bytes starting at the PNG signature.
+
+    Returns:
+        ``(width, height)`` tuple, or None if the IHDR chunk is
+        missing or truncated.
+    """
+    # IHDR is required to be the first chunk: 8-byte signature,
+    # 4-byte length, 4-byte type, then two big-endian uint32.
+    if len(content) < 24 or content[12:16] != b"IHDR":
+        return None
+    width = int.from_bytes(content[16:20], "big")
+    height = int.from_bytes(content[20:24], "big")
+    return width, height
+
+
+def _parse_jpeg_dimensions(content: bytes) -> tuple[int, int] | None:
+    """
+    Walk JPEG segments to the first start-of-frame marker.
+
+    Args:
+        content: Raw bytes starting at the SOI marker.
+
+    Returns:
+        ``(width, height)`` tuple, or None if no start-of-frame
+        segment is present before the entropy-coded data.
+    """
+    pos = 2  # Skip the SOI marker.
+    total = len(content)
+
+    while pos + 3 < total:
+        # Segments are contiguous; anything else is malformed.
+        if content[pos] != 0xFF:
+            return None
+
+        marker = content[pos + 1]
+
+        # 0xFF fill bytes may pad the gap before a marker.
+        if marker == 0xFF:
+            pos += 1
+            continue
+
+        # Standalone markers carry no length field.
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+            pos += 2
+            continue
+
+        # EOI or the start of scan data: no frame header found.
+        if marker in (0xD9, 0xDA):
+            return None
+
+        segment_len = int.from_bytes(content[pos + 2 : pos + 4], "big")
+        if segment_len < 2:
+            return None
+
+        if marker in _JPEG_SOF_MARKERS:
+            # SOF payload: precision, height, width.
+            sof = content[pos + 4 : pos + 9]
+            if len(sof) < 5:
+                return None
+            height = int.from_bytes(sof[1:3], "big")
+            width = int.from_bytes(sof[3:5], "big")
+            return width, height
+
+        pos += 2 + segment_len
+
+    return None
+
+
+def parse_image_dimensions(content: bytes) -> tuple[int, int] | None:
+    """
+    Extract pixel dimensions from a PNG or JPEG header.
+
+    Args:
+        content: Leading bytes of the image file.
+
+    Returns:
+        ``(width, height)`` tuple, or None if the format is
+        unsupported or the header is malformed or truncated.
+    """
+    if content.startswith(_PNG_SIGNATURE):
+        return _parse_png_dimensions(content)
+    if content.startswith(b"\xff\xd8"):
+        return _parse_jpeg_dimensions(content)
+    return None
+
+
 class ResourceMonitor:
     """
     Context manager that enforces wall-clock and memory limits.
@@ -115,9 +230,10 @@ class ResourceMonitor:
     process peak RSS (``ru_maxrss``), a monotonic high-water
     mark for the whole process, so the reported delta is a
     coarse, best-effort upper bound rather than the exact
-    memory used by this validation. Call ``check_time`` and
-    ``check_memory`` inside long loops for early enforcement;
-    otherwise limits are checked on context exit.
+    memory used by this validation. Call ``check`` (or the
+    individual ``check_time`` / ``check_memory``) inside long
+    loops so a runaway operation is aborted while it runs;
+    otherwise limits are only checked on context exit.
 
     Attributes:
         max_time_seconds: Maximum allowed wall-clock seconds.
@@ -210,6 +326,17 @@ class ResourceMonitor:
         """
         delta = max(0, self._get_peak_rss_bytes() - self.start_memory)
         self._raise_if_memory_exceeded(delta)
+
+    def check(self) -> None:
+        """
+        Check both time and memory limits mid-operation.
+
+        Raises:
+            ResourceLimitError: If the wall-clock or memory limit
+                has been exceeded since context entry.
+        """
+        self.check_time()
+        self.check_memory()
 
     def _raise_if_time_exceeded(self, elapsed: float) -> None:
         """

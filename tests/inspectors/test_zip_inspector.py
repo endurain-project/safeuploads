@@ -9,9 +9,117 @@ from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipContentError,
 )
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
+from safeuploads.utils import ResourceMonitor
+
+
+class TestDangerousEntryExtensions:
+    """Entry names are checked against the dangerous categories."""
+
+    @pytest.mark.parametrize(
+        "entry_name",
+        [
+            "payload.exe",
+            "shell.php",
+            "hook.ps1",
+            "inject.dll",
+            "settings.ini",
+        ],
+    )
+    def test_dangerous_entry_rejected(self, default_config, entry_name):
+        """Test executable, script and system entries are rejected."""
+        inspector = ZipContentInspector(default_config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(entry_name, b"harmless looking bytes")
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+        assert "Dangerous entry extension" in str(exc_info.value)
+
+    def test_disguised_double_extension_rejected(self, default_config):
+        """Test a dangerous extension hidden mid-name is caught."""
+        inspector = ZipContentInspector(default_config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("invoice.php.txt", b"just some text")
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+        assert ".php" in str(exc_info.value)
+
+    def test_dangerous_entry_rejected_without_content_scan(self):
+        """Test the check is metadata-level, not content-gated."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(scan_zip_content=False)
+        inspector = ZipContentInspector(config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("payload.exe", b"harmless looking bytes")
+
+        with pytest.raises(ZipContentError):
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+    def test_benign_entry_accepted(self, default_config):
+        """Test ordinary document entries still pass."""
+        inspector = ZipContentInspector(default_config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("notes.txt", b"hello")
+            zf.writestr("track.gpx", b"<gpx></gpx>")
+
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+
+class TestZipInspectionResourceLimits:
+    """A spent time budget aborts inspection mid-scan."""
+
+    def test_entry_loop_aborts_on_time_limit(self, default_config):
+        """Test the per-entry check surfaces ResourceLimitError."""
+        inspector = ZipContentInspector(default_config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("notes.txt", b"hello")
+
+        with (
+            pytest.raises(ResourceLimitError),
+            ResourceMonitor(max_time_seconds=0.0) as monitor,
+        ):
+            inspector.inspect_zip_content(
+                io.BytesIO(zip_buffer.getvalue()), monitor
+            )
+
+    def test_recursive_scan_aborts_on_time_limit(self):
+        """Test nested inspection surfaces ResourceLimitError."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        inspector = ZipContentInspector(config)
+
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("notes.txt", b"hello")
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr("nested.zip", inner.getvalue())
+
+        with (
+            pytest.raises(ResourceLimitError),
+            ResourceMonitor(max_time_seconds=0.0) as monitor,
+        ):
+            inspector.inspect_nested_archives(
+                io.BytesIO(outer.getvalue()), monitor=monitor
+            )
 
 
 class TestZipContentInspector:
@@ -431,7 +539,7 @@ class TestZipContentInspector:
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("file.bin", pe_content)
+            zf.writestr("file.dat", pe_content)
 
         # Should not raise when content scanning disabled
         inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
@@ -678,7 +786,7 @@ class TestZipContentInspector:
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             # Pure binary content with no ASCII patterns
             # Use invalid UTF-8 sequences
-            zf.writestr("data.bin", b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8")
+            zf.writestr("data.dat", b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8")
 
         # Should handle decode errors gracefully without raising
         # The decode error is caught and logged but doesn't cause failure

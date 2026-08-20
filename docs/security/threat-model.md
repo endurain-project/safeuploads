@@ -166,9 +166,13 @@ hidden inside ZIP archives.
 
 **Mitigations:**
 
-- Entry extensions are checked against
-  `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, and
-  `SYSTEM_FILES`.
+- `ZipContentInspector._check_dangerous_extension()` rejects any
+  entry whose name carries an extension from
+  `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, or
+  `SYSTEM_FILES`. Every dot-separated suffix is checked, so a
+  disguised name such as `invoice.php.txt` is still rejected.
+  This check is metadata-level and runs even when
+  `scan_zip_content=False`.
 - Binary content is scanned for executable magic bytes from
   `SuspiciousFilePattern.EXECUTABLE_SIGNATURES`.
 - Text content is scanned for script injection patterns
@@ -187,6 +191,29 @@ arbitrary system files when extracted.
 ---
 
 ## File Content Attacks
+
+### Image Decompression Bombs (CWE-409)
+
+**Attack:** A small PNG or JPEG that declares enormous pixel
+dimensions. A ~10 KB file claiming 30000x30000 passes every
+byte-size check but expands to several gigabytes in any
+downstream decoder (Pillow, ImageMagick, a browser).
+
+**Mitigations:**
+
+- `FileValidator` parses the declared dimensions directly from
+  the header: the PNG `IHDR` chunk, or the first JPEG
+  start-of-frame segment.
+- `width * height` is bounded by `max_image_pixels` (default
+  89,478,485, matching Pillow's `MAX_IMAGE_PIXELS`). Breaches
+  raise `ImageSecurityError` with
+  `IMAGE_DIMENSIONS_EXCEEDED`.
+- The header is searched across the first 1 MiB, so padding the
+  EXIF block to push the frame header past the MIME sample does
+  not bypass the check.
+- The check fails closed: an image whose dimensions cannot be
+  read, or which declares a zero dimension, is rejected with
+  `IMAGE_DIMENSIONS_UNREADABLE`.
 
 ### MIME Type Mismatch (CWE-434)
 
@@ -277,12 +304,23 @@ paths (e.g., ZIP with many entries, deeply nested structures).
 **Mitigations:**
 
 - `ResourceMonitor` enforces `max_validation_time_seconds`
-  (default 30 s) using `time.monotonic()`.
+  (default 30 s) using `time.monotonic()`. The budget is
+  checked on every chunk of the streaming reads, every ZIP
+  entry, every recursive nesting step, and every gzip chunk, so
+  a runaway file is aborted while it runs rather than reported
+  after the fact.
 - ZIP analysis has its own `zip_analysis_timeout` (default 5 s),
   compared against `time.monotonic()` on each entry during
   iteration.
 - `max_zip_entries` (default 10,000) caps per-archive entry
   count.
+
+**Memory accounting caveat:** the memory limit samples the
+process-wide peak RSS (`ru_maxrss`), a monotonic high-water
+mark. It is a coarse upper bound, not a per-validation
+measurement, and under concurrency it may attribute another
+request's allocation to this one. Treat it as defence in depth
+behind the byte-size limits, not as a precise control.
 
 ### Gzip Decompression Bombs
 

@@ -15,6 +15,7 @@ import pytest
 
 from safeuploads import FileValidator
 from safeuploads.config import FileSecurityConfig, SecurityLimits
+from tests.conftest import JPEG_SOF0
 
 
 def create_test_image(size_kb: int) -> bytes:
@@ -56,10 +57,13 @@ def create_test_image(size_kb: int) -> bytes:
 
     # Add padding to reach desired size
     target_size = size_kb * 1024
-    padding_size = max(0, target_size - len(jpeg_header) - len(jpeg_footer))
+    padding_size = max(
+        0,
+        target_size - len(jpeg_header) - len(JPEG_SOF0) - len(jpeg_footer),
+    )
     padding = b"\x00" * padding_size
 
-    return jpeg_header + padding + jpeg_footer
+    return jpeg_header + JPEG_SOF0 + padding + jpeg_footer
 
 
 def create_test_zip(num_files: int, file_size_kb: int = 1) -> bytes:

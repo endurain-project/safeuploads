@@ -55,6 +55,9 @@ class SecurityLimits:
 
     Attributes:
         max_image_size: Maximum size in bytes for image files.
+        max_image_pixels: Maximum width x height product allowed
+            for an image, guarding against decompression bombs
+            that are small on the wire but huge once decoded.
         max_zip_size: Maximum size in bytes for ZIP archives.
         max_activity_file_size: Maximum size in bytes for
             GPX/TCX/FIT activity files.
@@ -100,6 +103,11 @@ class SecurityLimits:
     max_zip_size: int = 500 * 1024 * 1024  # 500MB for ZIP files
     max_activity_file_size: int = 50 * 1024 * 1024  # 50MB for GPX/TCX/FIT
     max_gzip_size: int = 500 * 1024 * 1024  # 500MB for gzip files
+
+    # Decoded image size limit. Matches Pillow's default
+    # MAX_IMAGE_PIXELS, the de facto decompression-bomb
+    # threshold (~0.25GB uncompressed at 3 bytes per pixel).
+    max_image_pixels: int = 89_478_485
 
     # Streaming validation settings
     max_memory_buffer_size: int = (
@@ -613,6 +621,20 @@ class FileSecurityConfig:
                     "max_sanitized_name_length must be greater than 0",
                     "file_sizes",
                     "Set max_sanitized_name_length to a positive value",
+                )
+            )
+
+        # Validate decoded image size limit
+        if limits.max_image_pixels <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_pixel_limit",
+                    "max_image_pixels must be greater than 0",
+                    "file_sizes",
+                    (
+                        "Set max_image_pixels to a positive"
+                        " value (e.g., 89478485)"
+                    ),
                 )
             )
 

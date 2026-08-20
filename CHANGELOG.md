@@ -7,6 +7,43 @@ The format is based on
 project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Image decompression bomb detection. PNG `IHDR` and JPEG
+  start-of-frame headers are parsed and the declared pixel count is
+  bounded by the new `max_image_pixels` limit (default 89,478,485,
+  matching Pillow's `MAX_IMAGE_PIXELS`). Breaches raise the new
+  `ImageSecurityError`.
+- ZIP entries are now rejected when their name carries an extension
+  from `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, or
+  `SYSTEM_FILES`. Every dot-separated suffix is checked, so a
+  disguised name such as `invoice.php.txt` is caught. The threat
+  model documented this mitigation but it was not implemented.
+- `ResourceMonitor.check()`, which enforces the wall-clock and memory
+  budgets together.
+
+### Changed
+
+- **Potentially breaking:** the validation time and memory budgets are
+  now enforced *during* validation instead of only on completion.
+  `ResourceMonitor` is threaded through the streaming reads, the ZIP
+  entry loop, recursive nested-archive inspection, strict
+  decompression verification, and the gzip inflation loop, so a
+  runaway upload is aborted while it runs. Uploads that previously
+  completed after exceeding the budget now raise `ResourceLimitError`
+  earlier.
+- `ResourceLimitError` now propagates out of the ZIP and gzip
+  inspectors instead of being wrapped as an internal
+  `FileProcessingError`.
+- Documentation and the FastAPI example no longer return `str(err)` to
+  clients. Exception messages embed the client-supplied filename, so
+  reflecting them hands attacker-controlled bytes back to the browser;
+  the examples now log the detail and return `err.error_code`.
+- The `ResourceMonitor` memory limit is documented as a coarse,
+  process-wide upper bound rather than a per-validation measurement.
+
 ## [1.1.1] - 2026-08-19
 
 ### Changed

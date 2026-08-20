@@ -8,7 +8,83 @@ from safeuploads.exceptions import (
     ErrorCode,
     ResourceLimitError,
 )
-from safeuploads.utils import ResourceMonitor
+from safeuploads.utils import ResourceMonitor, parse_image_dimensions
+from tests.conftest import JPEG_SOF0
+
+
+def _png(width: int, height: int) -> bytes:
+    """Build a PNG header declaring the given dimensions."""
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\x0d"
+        + b"IHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+    )
+
+
+class TestParseImageDimensions:
+    """Tests for PNG/JPEG dimension extraction."""
+
+    def test_png_dimensions(self):
+        """Test PNG IHDR dimensions are read."""
+        assert parse_image_dimensions(_png(1920, 1080)) == (1920, 1080)
+
+    def test_png_truncated_returns_none(self):
+        """Test truncated PNG header yields no dimensions."""
+        assert parse_image_dimensions(_png(10, 10)[:20]) is None
+
+    def test_png_without_ihdr_returns_none(self):
+        """Test PNG whose first chunk is not IHDR is rejected."""
+        content = (
+            b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0d" + b"IDAT" + b"\x00" * 8
+        )
+        assert parse_image_dimensions(content) is None
+
+    def test_jpeg_dimensions(self):
+        """Test JPEG SOF0 dimensions are read."""
+        assert parse_image_dimensions(b"\xff\xd8" + JPEG_SOF0) == (16, 16)
+
+    def test_jpeg_skips_app_segment(self):
+        """Test segments before the frame header are skipped."""
+        app0 = b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+        content = b"\xff\xd8" + app0 + JPEG_SOF0
+        assert parse_image_dimensions(content) == (16, 16)
+
+    def test_jpeg_tolerates_fill_bytes(self):
+        """Test 0xFF padding before a marker is skipped."""
+        content = b"\xff\xd8" + b"\xff" * 4 + JPEG_SOF0
+        assert parse_image_dimensions(content) == (16, 16)
+
+    def test_jpeg_skips_standalone_marker(self):
+        """Test standalone markers carry no length field."""
+        content = b"\xff\xd8" + b"\xff\xd0" + JPEG_SOF0
+        assert parse_image_dimensions(content) == (16, 16)
+
+    def test_jpeg_desynchronised_returns_none(self):
+        """Test a non-marker byte where a segment must start."""
+        content = b"\xff\xd8" + b"\x00\x11\x22\x33" + JPEG_SOF0
+        assert parse_image_dimensions(content) is None
+
+    @pytest.mark.parametrize("marker", [b"\xff\xd9", b"\xff\xda"])
+    def test_jpeg_scan_end_before_frame(self, marker):
+        """Test EOI or SOS before any frame header."""
+        content = b"\xff\xd8" + marker + JPEG_SOF0
+        assert parse_image_dimensions(content) is None
+
+    def test_jpeg_invalid_segment_length(self):
+        """Test a segment length below the minimum is rejected."""
+        content = b"\xff\xd8" + b"\xff\xe0\x00\x01" + JPEG_SOF0
+        assert parse_image_dimensions(content) is None
+
+    def test_jpeg_truncated_frame_header(self):
+        """Test a frame header cut short yields no dimensions."""
+        content = b"\xff\xd8" + JPEG_SOF0[:6] + b"\x00\x00"
+        assert parse_image_dimensions(content) is None
+
+    def test_unsupported_format_returns_none(self):
+        """Test a non-PNG, non-JPEG payload yields no dimensions."""
+        assert parse_image_dimensions(b"GIF89a" + b"\x00" * 32) is None
 
 
 class TestResourceMonitorInit:
@@ -25,6 +101,20 @@ class TestResourceMonitorInit:
         monitor = ResourceMonitor(max_time_seconds=5.0, max_memory_mb=128)
         assert monitor.max_time_seconds == 5.0
         assert monitor.max_memory_bytes == 128 * 1024 * 1024
+
+    def test_check_enforces_time_budget(self):
+        """Test check() raises once the time budget is spent."""
+        with (
+            pytest.raises(ResourceLimitError) as exc_info,
+            ResourceMonitor(max_time_seconds=0.0) as monitor,
+        ):
+            monitor.check()
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_check_passes_within_budget(self):
+        """Test check() is a no-op while within limits."""
+        with ResourceMonitor(max_time_seconds=30.0) as monitor:
+            monitor.check()
 
 
 class TestResourceMonitorTime:

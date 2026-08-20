@@ -42,13 +42,14 @@ from .exceptions import (
     FileSignatureError,
     FileSizeError,
     FileValidationError,
+    ImageSecurityError,
     MimeTypeError,
     ResourceLimitError,
 )
 from .inspectors import ZipContentInspector
 from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
-from .utils import ResourceMonitor, bytes_to_mb
+from .utils import ResourceMonitor, bytes_to_mb, parse_image_dimensions
 from .validators import (
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
@@ -60,6 +61,11 @@ from .validators.xml_validator import XmlSecurityValidator
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+# A large EXIF or preview block can push a JPEG frame header
+# well past the 8 KB MIME sample. Anything beyond this window
+# is treated as malformed rather than scanned indefinitely.
+_IMAGE_DIMENSION_SCAN_BYTES = 1024 * 1024
 
 
 class FileValidator:
@@ -346,6 +352,68 @@ class FileValidator:
             expected_type=expected_type,
         )
 
+    def _enforce_image_dimensions(
+        self, dimensions: tuple[int, int] | None, filename: str
+    ) -> None:
+        """
+        Reject images whose decoded pixel count is unsafe.
+
+        Byte-size limits do not bound decoded size: a small
+        PNG or JPEG can declare dimensions that expand to
+        gigabytes in any downstream decoder.
+
+        Args:
+            dimensions: Parsed ``(width, height)`` pair, or None
+                if the header could not be read.
+            filename: Sanitized filename for error context.
+
+        Raises:
+            ImageSecurityError: If the dimensions are unreadable,
+                non-positive, or exceed ``max_image_pixels``.
+        """
+        if dimensions is None:
+            logger.warning("Image dimensions unreadable for '%s'", filename)
+            raise ImageSecurityError(
+                "Image dimensions could not be read from the file header",
+                filename=filename,
+                error_code=ErrorCode.IMAGE_DIMENSIONS_UNREADABLE,
+            )
+
+        width, height = dimensions
+        if width <= 0 or height <= 0:
+            raise ImageSecurityError(
+                f"Image declares invalid dimensions: {width}x{height}",
+                filename=filename,
+                width=width,
+                height=height,
+                error_code=ErrorCode.IMAGE_DIMENSIONS_UNREADABLE,
+            )
+
+        max_pixels = self.config.limits.max_image_pixels
+        pixels = width * height
+        if pixels > max_pixels:
+            logger.warning(
+                "Image decompression bomb rejected: %dx%d = %d pixels"
+                " (max %d)",
+                width,
+                height,
+                pixels,
+                max_pixels,
+            )
+            raise ImageSecurityError(
+                (
+                    "Image too large when decoded:"
+                    f" {width}x{height} = {pixels} pixels."
+                    f" Maximum: {max_pixels} pixels"
+                ),
+                filename=filename,
+                width=width,
+                height=height,
+                max_pixels=max_pixels,
+            )
+
+        logger.debug("Image dimensions accepted: %dx%d", width, height)
+
     def _sanitize_filename(self, filename: str) -> str:
         """
         Sanitize user-provided filename to prevent security risks.
@@ -529,7 +597,10 @@ class FileValidator:
         logger.debug("File extension '%s' accepted", ext)
 
     async def _validate_file_size(
-        self, file: UploadFile, max_file_size: int
+        self,
+        file: UploadFile,
+        max_file_size: int,
+        monitor: ResourceMonitor | None = None,
     ) -> tuple[bytes, int]:
         """
         Validate uploaded file size by sampling content.
@@ -539,6 +610,8 @@ class FileValidator:
         Args:
             file: Uploaded file supporting asynchronous read and seek.
             max_file_size: Maximum allowed file size in bytes.
+            monitor: Optional resource monitor checked once per
+                chunk so a slow upload is aborted mid-read.
 
         Returns:
             Tuple containing first 8 KB of file content and detected file
@@ -546,6 +619,8 @@ class FileValidator:
 
         Raises:
             FileSizeError: File size exceeds maximum or file is empty.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded while reading.
         """
         # Read first chunk for content analysis
         file_content = await file.read(8192)  # Read first 8KB
@@ -574,6 +649,8 @@ class FileValidator:
         chunk_size = self.config.limits.chunk_size
         file_size = 0
         while True:
+            if monitor is not None:
+                monitor.check()
             chunk = await file.read(chunk_size)
             if not chunk:
                 break
@@ -598,7 +675,10 @@ class FileValidator:
         return file_content, file_size
 
     async def _stream_to_temp_file(
-        self, file: UploadFile, max_file_size: int
+        self,
+        file: UploadFile,
+        max_file_size: int,
+        monitor: ResourceMonitor | None = None,
     ) -> tuple[tempfile.SpooledTemporaryFile[bytes], int]:
         """
         Stream uploaded file to a SpooledTemporaryFile with size validation.
@@ -611,6 +691,8 @@ class FileValidator:
         Args:
             file: Uploaded file supporting asynchronous read/seek.
             max_file_size: Maximum allowed file size in bytes.
+            monitor: Optional resource monitor checked once per
+                chunk so a slow upload is aborted mid-read.
 
         Returns:
             Tuple of SpooledTemporaryFile positioned at start and
@@ -619,6 +701,8 @@ class FileValidator:
 
         Raises:
             FileSizeError: File exceeds maximum or is empty.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded while reading.
         """
         temp = tempfile.SpooledTemporaryFile(  # noqa: SIM115
             max_size=self.config.limits.max_memory_buffer_size
@@ -630,6 +714,8 @@ class FileValidator:
 
         try:
             while True:
+                if monitor is not None:
+                    monitor.check()
                 chunk = await file.read(chunk_size)
                 if not chunk:
                     break
@@ -810,6 +896,9 @@ class FileValidator:
             MimeTypeError: MIME type is not in allowed image types.
             FileSignatureError: File signature doesn't match expected image
                 format.
+            ImageSecurityError: Decoded pixel count exceeds
+                ``max_image_pixels`` or the header dimensions cannot
+                be read.
             FileProcessingError: Unexpected error during validation.
         """
         await self._run_validation(file, "image", self._validate_image_body)
@@ -836,11 +925,11 @@ class FileValidator:
         with ResourceMonitor(
             max_time_seconds=self.config.limits.max_validation_time_seconds,
             max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
+        ) as monitor:
             # Validate file size (raises on failure,
             # returns content and size on success)
             file_content, file_size = await self._validate_file_size(
-                file, self.config.limits.max_image_size
+                file, self.config.limits.max_image_size, monitor
             )
 
             # Detect MIME type
@@ -855,6 +944,16 @@ class FileValidator:
 
             # Validate file signature (raises exceptions on failure)
             self._validate_file_signature(file_content, "image")
+
+            # Reject decompression bombs: a small file can declare
+            # dimensions that expand to gigabytes once decoded.
+            dimensions = parse_image_dimensions(file_content)
+            if dimensions is None and file_size > len(file_content):
+                await file.seek(0)
+                wider = await file.read(_IMAGE_DIMENSION_SCAN_BYTES)
+                await file.seek(0)
+                dimensions = parse_image_dimensions(wider)
+            self._enforce_image_dimensions(dimensions, filename)
 
             # Optional content analysis (offloaded — scans up to
             # content_scan_max_size bytes and is CPU-bound)
@@ -922,17 +1021,21 @@ class FileValidator:
         with ResourceMonitor(
             max_time_seconds=self.config.limits.max_validation_time_seconds,
             max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
+        ) as monitor:
             # Stream file to SpooledTemporaryFile with size validation
             temp_file, file_size = await self._stream_to_temp_file(
-                file, self.config.limits.max_zip_size
+                file, self.config.limits.max_zip_size, monitor
             )
 
             try:
                 # Offload the CPU/IO-bound ZIP inspection off the loop
                 filename = file.filename or "unknown"
                 await self._to_thread(
-                    self._inspect_zip_sync, temp_file, file_size, filename
+                    self._inspect_zip_sync,
+                    temp_file,
+                    file_size,
+                    filename,
+                    monitor,
                 )
             finally:
                 temp_file.close()
@@ -942,6 +1045,7 @@ class FileValidator:
         temp_file: tempfile.SpooledTemporaryFile[bytes],
         file_size: int,
         filename: str,
+        monitor: ResourceMonitor | None = None,
     ) -> None:
         """
         Run synchronous ZIP inspection off the event loop.
@@ -950,11 +1054,15 @@ class FileValidator:
             temp_file: Spooled temp file holding the ZIP data.
             file_size: Compressed archive size in bytes.
             filename: Sanitized filename for context.
+            monitor: Optional resource monitor checked once per
+                entry so a runaway archive is aborted mid-scan.
 
         Raises:
             MimeTypeError: If the MIME type is not allowed.
             FileSignatureError: If the signature mismatches.
             CompressionSecurityError: If a zip bomb is detected.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded during inspection.
             FileProcessingError: If content analysis finds threats.
         """
         # Read header for MIME/signature checks
@@ -973,13 +1081,13 @@ class FileValidator:
 
         # Validate ZIP compression ratio
         self.compression_validator.validate_zip_compression_ratio(
-            temp_file, file_size
+            temp_file, file_size, monitor
         )
 
         # Perform ZIP content inspection if enabled
         if self.config.limits.scan_zip_content:
             temp_file.seek(0)
-            self.zip_inspector.inspect_zip_content(temp_file)
+            self.zip_inspector.inspect_zip_content(temp_file, monitor)
 
         # Optional content analysis
         if self.config.limits.enable_content_analysis:
@@ -1042,10 +1150,11 @@ class FileValidator:
         with ResourceMonitor(
             max_time_seconds=self.config.limits.max_validation_time_seconds,
             max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
+        ) as monitor:
             temp_file, file_size = await self._stream_to_temp_file(
                 file,
                 self.config.limits.max_activity_file_size,
+                monitor,
             )
 
             try:
@@ -1151,10 +1260,11 @@ class FileValidator:
         with ResourceMonitor(
             max_time_seconds=self.config.limits.max_validation_time_seconds,
             max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
+        ) as monitor:
             temp_file, file_size = await self._stream_to_temp_file(
                 file,
                 self.config.limits.max_gzip_size,
+                monitor,
             )
 
             try:
@@ -1164,6 +1274,7 @@ class FileValidator:
                     temp_file,
                     file_size,
                     filename,
+                    monitor,
                 )
             finally:
                 temp_file.close()
@@ -1173,6 +1284,7 @@ class FileValidator:
         temp_file: tempfile.SpooledTemporaryFile[bytes],
         file_size: int,
         filename: str,
+        monitor: ResourceMonitor | None = None,
     ) -> None:
         """
         Run synchronous gzip inspection off the event loop.
@@ -1181,11 +1293,15 @@ class FileValidator:
             temp_file: Spooled temp file holding the gzip data.
             file_size: Compressed size in bytes.
             filename: Sanitized filename for context.
+            monitor: Optional resource monitor checked once per
+                chunk so a slow stream is aborted mid-inflation.
 
         Raises:
             MimeTypeError: If the MIME type is not allowed.
             FileSignatureError: If the signature mismatches.
             ZipBombError: If a decompression bomb is detected.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded during inspection.
             CompressionSecurityError: If the gzip is invalid.
         """
         _, detected_mime = self._read_header_and_detect(
@@ -1202,7 +1318,7 @@ class FileValidator:
         )
 
         # Decompression bomb check
-        self.gzip_inspector.inspect_gzip_content(temp_file, file_size)
+        self.gzip_inspector.inspect_gzip_content(temp_file, file_size, monitor)
 
         logger.debug(
             "Gzip file validation passed: %s (%s, %s bytes)",

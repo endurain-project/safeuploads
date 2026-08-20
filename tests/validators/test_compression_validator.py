@@ -11,11 +11,58 @@ from safeuploads.exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipBombError,
 )
+from safeuploads.utils import ResourceMonitor
 from safeuploads.validators.compression_validator import (
     CompressionSecurityValidator,
 )
+
+
+class TestCompressionResourceLimits:
+    """A spent time budget aborts analysis mid-scan."""
+
+    @staticmethod
+    def _archive() -> bytes:
+        """Build a small multi-entry archive."""
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("a.txt", b"a" * 512)
+            zf.writestr("b.txt", b"b" * 512)
+        return buffer.getvalue()
+
+    def test_entry_loop_aborts_on_time_limit(self, default_config):
+        """Test the per-entry check surfaces ResourceLimitError."""
+        validator = CompressionSecurityValidator(default_config)
+        payload = self._archive()
+
+        with (
+            pytest.raises(ResourceLimitError),
+            ResourceMonitor(max_time_seconds=0.0) as monitor,
+        ):
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(payload), len(payload), monitor
+            )
+
+    def test_decompression_check_aborts_on_time_limit(self):
+        """Test strict verification surfaces ResourceLimitError."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            verify_zip_decompression=True,
+            chunk_size=16,
+        )
+        validator = CompressionSecurityValidator(config)
+        payload = self._archive()
+
+        with (
+            pytest.raises(ResourceLimitError),
+            ResourceMonitor(max_time_seconds=0.0) as monitor,
+            zipfile.ZipFile(io.BytesIO(payload), "r") as zip_file,
+        ):
+            validator._verify_entries_decompress(
+                zip_file, zip_file.infolist(), monitor
+            )
 
 
 class TestCompressionSecurityValidator:

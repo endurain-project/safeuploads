@@ -7,6 +7,7 @@ import os
 from typing import TYPE_CHECKING
 
 from ..exceptions import WindowsReservedNameError
+from ..utils import safe_label
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -67,13 +68,13 @@ class WindowsSecurityValidator(BaseValidator):
                     "Windows reserved name detected",
                     extra={
                         "error_type": "windows_reserved_name",
-                        "file_name": filename,
+                        "file_name": safe_label(filename),
                         "reserved_name": name_to_check.upper(),
                     },
                 )
                 raise WindowsReservedNameError(
                     message=(
-                        f"Filename '{filename}' uses"
+                        f"Filename '{safe_label(filename)}' uses"
                         f" Windows reserved name"
                         f" '{name_to_check.upper()}'."
                         f" Reserved names:"

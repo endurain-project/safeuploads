@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..exceptions import ErrorCode, ExtensionSecurityError
+from ..utils import safe_label
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -58,7 +59,7 @@ class ExtensionSecurityValidator(BaseValidator):
                     "Dangerous compound extension detected",
                     extra={
                         "error_type": "compound_extension_blocked",
-                        "file_name": filename,
+                        "file_name": safe_label(filename),
                         "extension": compound_ext,
                     },
                 )
@@ -84,7 +85,7 @@ class ExtensionSecurityValidator(BaseValidator):
                         "Dangerous extension detected",
                         extra={
                             "error_type": "extension_blocked",
-                            "file_name": filename,
+                            "file_name": safe_label(filename),
                             "extension": ext,
                         },
                     )

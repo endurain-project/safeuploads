@@ -264,8 +264,7 @@ Windows shortcuts) embedded within uploaded files.
 ### XML External Entity Injection (CWE-611)
 
 **Attack:** GPX and TCX files are XML-based; malicious DTD
-declarations can trigger external entity resolution, leading
-to server-side file reads or SSRF.
+declarations can trigger external entity resolution, leadingto server-side file reads or SSRF.
 
 **Mitigations:**
 
@@ -275,6 +274,41 @@ to server-side file reads or SSRF.
 - `DTDForbidden`, `EntitiesForbidden`, and
   `ExternalReferenceForbidden` are caught and reported as
   validation failures.
+
+### Arbitrary XML Behind an Activity Extension
+
+**Attack:** Well-formed XML is not a GPX file. An attacker
+uploads `<html><script>...</script></html>` named `track.gpx`;
+it passes the `<?xml` signature check and parses cleanly. If
+the application later serves the stored file with a sniffable
+content type, the payload executes (stored XSS).
+
+**Mitigations:**
+
+- The document root must match the uploaded extension:
+  `.gpx` requires a `gpx` root and `.tcx` requires a
+  `TrainingCenterDatabase` root, per
+  `FileSecurityConfig.ACTIVITY_XML_ROOTS`.
+- Namespaces are stripped before matching, so a namespaced
+  `{http://www.topografix.com/GPX/1/1}gpx` root is accepted.
+- Mismatches raise `FileProcessingError` with
+  `XML_INVALID_ROOT`. A TCX document uploaded as `.gpx` is
+  rejected.
+
+### XML Element Amplification
+
+**Attack:** `defusedxml` blocks entity expansion, but a flat
+document needs no entities: 50 MB of `<a/>` is roughly twelve
+million elements, and a full DOM of those costs an order of
+magnitude more memory than the file itself.
+
+**Mitigations:**
+
+- Parsing is incremental (`iterparse`); completed elements and
+  the accumulated root children are discarded as they close, so
+  peak memory stays flat regardless of document length.
+- The element count is capped by `max_xml_elements`
+  (default 1,000,000), raising `XML_TOO_MANY_ELEMENTS`.
 
 ---
 
@@ -290,11 +324,15 @@ significantly during validation consumes all available memory.
 - Streaming validation via `SpooledTemporaryFile` keeps memory
   usage under `max_memory_buffer_size` (default 10 MB) by
   spilling to disk for larger files.
-- `ResourceMonitor` tracks memory delta via
-  `resource.getrusage()` and enforces
-  `max_validation_memory_mb` (default 512 MB).
+- Every buffer the library allocates is bounded by an explicit
+  byte limit: `chunk_size`, `content_scan_max_size`,
+  `max_uncompressed_size`, and `max_xml_elements`.
 - File size is enforced progressively during chunked reads,
   not after loading the entire file.
+- `ResourceMonitor` additionally reports peak-RSS growth against
+  `max_validation_memory_mb`. See the caveat under CPU
+  Exhaustion: this is telemetry, not a limit, unless
+  `enforce_memory_limit` is set.
 
 ### CPU Exhaustion (CWE-400)
 
@@ -315,12 +353,18 @@ paths (e.g., ZIP with many entries, deeply nested structures).
 - `max_zip_entries` (default 10,000) caps per-archive entry
   count.
 
-**Memory accounting caveat:** the memory limit samples the
+**Memory accounting caveat:** the memory budget samples the
 process-wide peak RSS (`ru_maxrss`), a monotonic high-water
-mark. It is a coarse upper bound, not a per-validation
-measurement, and under concurrency it may attribute another
-request's allocation to this one. Treat it as defence in depth
-behind the byte-size limits, not as a precise control.
+mark. It cannot be attributed to a single validation: after the
+first peak the measured delta is near zero, and under
+concurrency it picks up other requests' allocations. It is
+therefore **best-effort telemetry, not a limit** — exceeding
+`max_validation_memory_mb` is logged, not enforced. Set
+`enforce_memory_limit=True` to make it fail the validation, and
+only do so in a process that validates one upload at a time.
+The real memory bounds are structural: `max_memory_buffer_size`,
+`chunk_size`, `content_scan_max_size`, `max_uncompressed_size`
+and `max_xml_elements` cap every buffer the library allocates.
 
 ### Gzip Decompression Bombs
 
@@ -328,16 +372,42 @@ behind the byte-size limits, not as a precise control.
 size, similar to ZIP bombs.
 
 **Mitigations:**
-
 - `GzipContentInspector` reads gzip streams in chunks, checking
   the compression ratio and uncompressed size against
   `SecurityLimits` progressively.
 - Exceeding either limit raises a validation error immediately,
   without reading the rest of the stream.
+- Inflation is additionally bounded by `gzip_analysis_timeout`
+  (default 5 s), so a stream that stays inside the ratio and
+  size limits still cannot burn unbounded CPU. The bound does
+  not depend on the caller supplying a `ResourceMonitor`.
 
 ---
 
 ## Audit & Observability
+
+### Log Injection (CWE-117)
+
+**Attack:** A filename or ZIP entry name containing a newline
+(`upload.jpg\nWARNING forged entry`) forges an extra log line,
+or uses directional and zero-width characters to hide the real
+name from an analyst reading the log.
+
+**Mitigations:**
+
+- `safe_label()` escapes control, format, surrogate and
+  line-separator characters to `\uXXXX` and bounds the length
+  before any untrusted text reaches a log record, an audit
+  event, or an exception message.
+- The raw client filename is escaped in `FileValidator` before
+  the first audit event is emitted, which happens before any
+  sanitization has run.
+- `SecurityAuditLogger.log_event()` escapes the filename,
+  result and details fields again at the emission point, so
+  every caller is covered regardless of how the event was
+  built.
+- Unicode validation errors report the offending code point and
+  its Unicode name rather than echoing the character itself.
 
 ### Undetected Security Events (CWE-778)
 

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from ..audit import get_correlation_id, log_extra
 from ..enums import MalwareSignatureCategory, SuspiciousFilePattern
-from ..utils import find_embedded_signature, find_text_pattern
+from ..utils import find_embedded_signature, find_text_pattern, safe_label
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -95,34 +95,35 @@ class ContentSecurityInspector(BaseInspector):
             means content is clean.
         """
         threats: list[str] = []
+        label = safe_label(filename)
 
-        logger.debug("Scanning content of '%s' for embedded threats", filename)
+        logger.debug("Scanning content of '%s' for embedded threats", label)
 
         # 1. Executable signature scan
-        threats.extend(self._check_executable_signatures(content, filename))
+        threats.extend(self._check_executable_signatures(content, label))
 
         # 2. Script injection scan
-        threats.extend(self._check_script_patterns(content, filename))
+        threats.extend(self._check_script_patterns(content, label))
 
         # 3. Polyglot detection
-        threats.extend(self._check_polyglot(content, filename, expected_type))
+        threats.extend(self._check_polyglot(content, label, expected_type))
 
         if threats:
             logger.warning(
                 "Content analysis threats detected in '%s': %s",
-                filename,
+                label,
                 "; ".join(threats),
                 extra=log_extra(),
             )
             cid = get_correlation_id()
             if cid:
                 self._audit.threat(
-                    filename,
+                    label,
                     cid,
                     "; ".join(threats),
                 )
         else:
-            logger.debug("Content scan clean for '%s'", filename)
+            logger.debug("Content scan clean for '%s'", label)
 
         return threats
 

@@ -23,10 +23,11 @@ Secure file upload validation for Python 3.13+ applications. Catches dangerous f
 - Dangerous ZIP entry rejection (executables, scripts, system files)
 - Image decompression bomb detection via declared pixel dimensions
 - MIME type verification with file signature validation
-- Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing
+- Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing and root-element enforcement
 - Gzip archive validation with decompression bomb detection
 - Streaming validation for memory-efficient large file processing
-- Resource monitoring (wall-clock and memory limits) enforced inside the validation loops
+- Wall-clock limits enforced inside the validation loops
+- Log-injection-safe logging of untrusted filenames
 - Content analysis with malware signature and polyglot detection
 - Structured audit logging with correlation IDs
 - Rich exception hierarchy with machine-readable error codes
@@ -140,9 +141,9 @@ except FileValidationError as err:
 - **Image Bomb Protection**: PNG and JPEG headers are parsed and the declared pixel count is bounded by `max_image_pixels`
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
-- **Resource Monitoring**: Wall-clock and memory limits enforced by `ResourceMonitor`, checked inside the streaming, ZIP, and gzip loops so a runaway upload is aborted while it runs
-- **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing
-- **Gzip Support**: Gzip archive validation with decompression bomb detection
+- **Resource Monitoring**: Wall-clock limits enforced by `ResourceMonitor`, checked inside the streaming, ZIP, and gzip loops so a runaway upload is aborted while it runs. Memory is best-effort telemetry (see Known Limitations)
+- **Activity File Support**: GPX, TCX, and FIT validation with XXE-safe XML parsing, a required root element per extension, and a cap on parsed element count
+- **Gzip Support**: Gzip archive validation with decompression bomb detection and an inflation timeout
 - **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
 - **Audit Logging**: Structured security event logging with correlation IDs via `contextvars`
 - **Performance Optimizations**: Pre-compiled pattern sets, `frozenset` lookups, LRU-cached MIME guessing
@@ -154,7 +155,8 @@ except FileValidationError as err:
 - No built-in rate limiting (application-level concern — see [Rate Limiting](rate-limiting.md) guide)
 - MIME detection covers first 8 KB; advanced polyglot attacks may require `enable_content_analysis`
 - Image dimensions are read from the declared PNG/IHDR or JPEG/SOF header within the first 1 MiB; images whose dimensions cannot be read are rejected
-- Memory accounting uses the process-wide peak RSS, so it is a coarse upper bound rather than a per-validation measurement
+- `max_validation_memory_mb` is best-effort telemetry, not a limit: it samples the process-wide peak RSS, so it cannot be attributed to a single validation. Exceeding it is logged; set `enforce_memory_limit=True` to enforce, and only in a process that validates one upload at a time
+- `verify_zip_decompression` is off by default; enable it if anything other than Python's `zipfile` extracts your archives (see [Integration Checklist](security/integration-checklist.md))
 - `SpooledTemporaryFile` uses the system default temp directory
 
 ## Documentation

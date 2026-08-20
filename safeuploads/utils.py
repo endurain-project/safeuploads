@@ -1,8 +1,11 @@
 """Utility helpers for resource monitoring and content scanning."""
 
+import functools
 import logging
+import re
 import sys
 import time
+import unicodedata
 from collections.abc import Iterable
 from types import TracebackType
 
@@ -35,6 +38,37 @@ def bytes_to_mb(num_bytes: int) -> int:
         Size in whole megabytes using floor division.
     """
     return num_bytes // (1024 * 1024)
+
+
+# Control, format, surrogate and line/paragraph separator
+# characters. These are what let an attacker-supplied name forge
+# or hide inside a log line.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def safe_label(value: str, max_length: int = 256) -> str:
+    """
+    Escape untrusted text for inclusion in a log record.
+
+    Args:
+        value: Untrusted text such as a filename or ZIP entry name.
+        max_length: Characters kept before truncation.
+
+    Returns:
+        Escaped, length-bounded text safe to log.
+    """
+    if not value:
+        return ""
+
+    escaped = "".join(
+        f"\\u{ord(char):04x}"
+        if unicodedata.category(char) in _UNSAFE_CATEGORIES
+        else char
+        for char in value[:max_length]
+    )
+    if len(value) > max_length:
+        escaped += "..."
+    return escaped
 
 
 def matches_signature_prefix(
@@ -81,29 +115,46 @@ def find_embedded_signature(
     return None
 
 
+@functools.lru_cache(maxsize=8)
+def _compile_text_patterns(patterns: tuple[str, ...]) -> re.Pattern[bytes]:
+    """
+    Build a cached case-insensitive alternation over patterns.
+
+    Args:
+        patterns: Lower-case ASCII substrings to search for.
+
+    Returns:
+        Compiled byte-level pattern matching any of the inputs.
+    """
+    return re.compile(
+        b"|".join(re.escape(p.encode("utf-8")) for p in patterns),
+        re.IGNORECASE,
+    )
+
+
 def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
     """
-    Return the first text pattern present in decoded content.
+    Return the first text pattern present in the content.
 
-    Content is decoded as UTF-8 with errors ignored and lower-
-    cased so binary data degrades gracefully. Any decoding
-    failure is treated as "no match".
+    Matching runs directly over the raw bytes in a single pass so
+    a large scan window is never copied or decoded.
 
     Args:
         content: Raw bytes to scan.
-        patterns: Lower-case substrings to search for.
+        patterns: Lower-case ASCII substrings to search for.
 
     Returns:
-        The first matching pattern, or None if none present.
+        The matching pattern in its canonical lower-case form, or
+        None if none are present.
     """
-    try:
-        text = content.decode("utf-8", errors="ignore").lower()
-    except Exception:
+    candidates = tuple(patterns)
+    if not candidates:
         return None
-    for pattern in patterns:
-        if pattern in text:
-            return pattern
-    return None
+
+    match = _compile_text_patterns(candidates).search(content)
+    if match is None:
+        return None
+    return match.group().lower().decode("utf-8", errors="replace")
 
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -223,21 +274,27 @@ def parse_image_dimensions(content: bytes) -> tuple[int, int] | None:
 
 class ResourceMonitor:
     """
-    Context manager that enforces wall-clock and memory limits.
+    Context manager that enforces a wall-clock limit.
 
-    Tracks elapsed time continuously and samples memory usage
-    via ``resource.getrusage``. Memory accounting uses the
-    process peak RSS (``ru_maxrss``), a monotonic high-water
-    mark for the whole process, so the reported delta is a
-    coarse, best-effort upper bound rather than the exact
-    memory used by this validation. Call ``check`` (or the
-    individual ``check_time`` / ``check_memory``) inside long
+    Elapsed time is a hard limit: call ``check`` inside long
     loops so a runaway operation is aborted while it runs;
-    otherwise limits are only checked on context exit.
+    otherwise it is only checked on context exit.
+
+    Memory is **best-effort telemetry, not a limit**. Accounting
+    uses the process peak RSS (``ru_maxrss``), a monotonic
+    high-water mark for the whole process, so it never decreases
+    and may attribute concurrent work to this validation.
+    Exceeding ``max_memory_mb`` is logged as a warning; set
+    ``enforce_memory`` to raise instead, and only do so when the
+    process handles one validation at a time. Real memory bounds
+    come from the byte limits in ``SecurityLimits``, which cap
+    every buffer the library allocates.
 
     Attributes:
         max_time_seconds: Maximum allowed wall-clock seconds.
-        max_memory_bytes: Maximum allowed peak-RSS growth in bytes.
+        max_memory_bytes: Peak-RSS growth budget in bytes.
+        enforce_memory: Whether exceeding the memory budget
+            raises instead of logging a warning.
         start_time: Timestamp when the context was entered.
         start_memory: Peak process RSS in bytes at context entry.
     """
@@ -246,16 +303,20 @@ class ResourceMonitor:
         self,
         max_time_seconds: float = 30.0,
         max_memory_mb: int = 512,
+        enforce_memory: bool = False,
     ):
         """
         Initialize the resource monitor.
 
         Args:
             max_time_seconds: Wall-clock timeout in seconds.
-            max_memory_mb: Maximum memory delta in megabytes.
+            max_memory_mb: Peak-RSS growth budget in megabytes.
+            enforce_memory: Raise when the memory budget is
+                exceeded instead of logging a warning.
         """
         self.max_time_seconds = max_time_seconds
         self.max_memory_bytes = max_memory_mb * 1024 * 1024
+        self.enforce_memory = enforce_memory
         self.start_time: float = 0.0
         self.start_memory: int = 0
         self._elapsed: float = 0.0
@@ -287,8 +348,9 @@ class ResourceMonitor:
             exc_tb: Exception traceback if raised inside block.
 
         Raises:
-            ResourceLimitError: If time or memory limits were
-                exceeded during the monitored block.
+            ResourceLimitError: If the wall-clock limit was
+                exceeded, or the memory budget was exceeded and
+                enforcement is on.
         """
         if exc_type is not None:
             return
@@ -316,27 +378,32 @@ class ResourceMonitor:
         """
         Check peak memory growth mid-operation.
 
-        Enables early enforcement inside long-running loops
-        instead of waiting for context exit. Uses the process
-        peak RSS high-water mark, so it is a coarse upper bound.
+        Uses the process peak RSS high-water mark, so it is a
+        coarse upper bound. Only raises when ``enforce_memory``
+        is set; otherwise an over-budget reading is logged.
 
         Raises:
             ResourceLimitError: If peak-RSS growth since context
-                entry exceeds the configured memory limit.
+                entry exceeds the budget and enforcement is on.
         """
         delta = max(0, self._get_peak_rss_bytes() - self.start_memory)
         self._raise_if_memory_exceeded(delta)
 
     def check(self) -> None:
         """
-        Check both time and memory limits mid-operation.
+        Check the resource budgets mid-operation.
+
+        Memory is only sampled when ``enforce_memory`` is set, so
+        the common path costs a single clock read per call.
 
         Raises:
-            ResourceLimitError: If the wall-clock or memory limit
-                has been exceeded since context entry.
+            ResourceLimitError: If the wall-clock limit has been
+                exceeded, or the memory budget has been exceeded
+                and enforcement is on.
         """
         self.check_time()
-        self.check_memory()
+        if self.enforce_memory:
+            self.check_memory()
 
     def _raise_if_time_exceeded(self, elapsed: float) -> None:
         """
@@ -367,18 +434,27 @@ class ResourceMonitor:
 
     def _raise_if_memory_exceeded(self, delta: int) -> None:
         """
-        Raise if peak-RSS growth exceeds the limit.
+        Report peak-RSS growth beyond the budget.
 
         Args:
             delta: Peak-RSS growth in bytes since context entry.
 
         Raises:
-            ResourceLimitError: If the memory limit is exceeded.
+            ResourceLimitError: If the budget is exceeded and
+                ``enforce_memory`` is set.
         """
         if delta <= self.max_memory_bytes:
             return
         delta_mb = bytes_to_mb(delta)
         max_mb = bytes_to_mb(self.max_memory_bytes)
+        if not self.enforce_memory:
+            logger.warning(
+                "Validation memory budget exceeded: %dMB > %dMB"
+                " (not enforced; peak RSS is process-wide)",
+                delta_mb,
+                max_mb,
+            )
+            return
         logger.error(
             "Validation memory limit exceeded: %dMB > %dMB",
             delta_mb,

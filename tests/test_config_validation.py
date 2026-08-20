@@ -151,6 +151,38 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_pixel_limit" in error_types
 
+    def test_nonpositive_xml_element_cap_generates_error(self, monkeypatch):
+        """
+        Test that a non-positive XML element cap errors.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_xml_elements=0),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_xml_element_limit" in error_types
+
+    def test_nonpositive_gzip_timeout_generates_error(self, monkeypatch):
+        """
+        Test that a non-positive gzip timeout errors.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(gzip_analysis_timeout=0.0),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_timeout" in error_types
+
 
 class TestMimeConfigurationValidation:
     """Tests for _validate_mime_configurations validation branches."""

@@ -35,12 +35,50 @@ that addresses it.
     - `max_gzip_size` — set if accepting gzip files.
     - `max_compression_ratio` — default 100:1 is reasonable
       for most workloads; lower for stricter environments.
+    - `max_xml_elements` — default 1,000,000; lower if you only
+      accept small GPX/TCX files.
+    - `gzip_analysis_timeout` — default 5 s for gzip inflation.
     - `max_validation_time_seconds` — default 30 s; lower in
       latency-sensitive services.
-    - `max_validation_memory_mb` — default 512 MB; adjust based
-      on container memory limits.
+    - `max_validation_memory_mb` — default 512 MB. This is
+      **telemetry, not a limit** (see below).
 - [ ] Allowed extensions and MIME types reviewed and narrowed
   to only what your application accepts.
+
+## ZIP Metadata Verification
+
+safeuploads reads the declared entry sizes from the ZIP central
+directory, which an attacker controls. `verify_zip_decompression`
+is **off by default** because enabling it decompresses every
+entry, costing up to `max_uncompressed_size` of inflation per
+upload. That default is safe only because of who consumes the
+archive afterwards:
+
+- [ ] Determine how your application extracts the archive.
+    - Python's `zipfile` caps reads at the declared size and
+      raises `BadZipFile` on the resulting CRC mismatch, so
+      forged metadata cannot bomb it. The default is fine.
+    - Anything that inflates the raw DEFLATE stream directly
+      (`zlib`), or an external tool that trusts local headers
+      (`unzip`, `7z`), is **not** protected by the declared
+      sizes. Set `verify_zip_decompression=True`.
+- [ ] If enabling it, confirm `max_validation_time_seconds` is
+  large enough for the archive sizes you accept, since the
+  whole archive is now inflated during validation.
+
+## Memory Enforcement
+
+- [ ] Leave `enforce_memory_limit` at its default (`False`)
+  unless the process validates one upload at a time. The
+  underlying metric is the process-wide peak RSS, so under
+  concurrency it attributes other requests' allocations to this
+  one and will reject legitimate uploads.
+- [ ] Rely on the byte limits (`max_image_size`, `max_zip_size`,
+  `max_uncompressed_size`, `max_memory_buffer_size`,
+  `content_scan_max_size`, `max_xml_elements`) as the real
+  memory bound, plus a container memory limit.
+- [ ] Alert on the "memory budget exceeded (not enforced)"
+  warning rather than treating it as a control.
 
 ## Content Analysis
 
@@ -100,8 +138,7 @@ that addresses it.
 
 - [ ] Container or process memory limits set — safeuploads
   `max_validation_memory_mb` should be below the container
-  limit.
-- [ ] Request timeout configured at the reverse proxy and
+  limit.- [ ] Request timeout configured at the reverse proxy and
   application level — should be above
   `max_validation_time_seconds`.
 - [ ] Disk space monitored for temporary file spill

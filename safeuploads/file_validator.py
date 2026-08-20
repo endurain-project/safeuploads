@@ -49,7 +49,12 @@ from .exceptions import (
 from .inspectors import ZipContentInspector
 from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
-from .utils import ResourceMonitor, bytes_to_mb, parse_image_dimensions
+from .utils import (
+    ResourceMonitor,
+    bytes_to_mb,
+    parse_image_dimensions,
+    safe_label,
+)
 from .validators import (
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
@@ -154,6 +159,20 @@ class FileValidator:
                 "python-magic not available for content detection: %s",
                 err,
             )
+
+    def _monitor(self) -> ResourceMonitor:
+        """
+        Build a resource monitor from the active configuration.
+
+        Returns:
+            Monitor carrying the configured time budget and the
+            opt-in memory enforcement flag.
+        """
+        return ResourceMonitor(
+            max_time_seconds=self.config.limits.max_validation_time_seconds,
+            max_memory_mb=self.config.limits.max_validation_memory_mb,
+            enforce_memory=self.config.limits.enforce_memory_limit,
+        )
 
     async def _to_thread(self, func: Callable[..., _T], *args: object) -> _T:
         """
@@ -839,14 +858,16 @@ class FileValidator:
                 unexpected internal error.
         """
         cid = set_correlation_id()
-        filename = file.filename or "unknown"
+        # The raw client filename reaches the log before any
+        # sanitization has run, so escape it here.
+        filename = safe_label(file.filename or "unknown")
         self._audit.start(filename, cid)
         logger.debug("Starting %s file validation: %s", file_type, filename)
         t0 = time.monotonic()
         try:
             await body(file)
             ms = (time.monotonic() - t0) * 1000
-            self._audit.success(file.filename or filename, cid, ms)
+            self._audit.success(safe_label(file.filename or filename), cid, ms)
         except (
             FileValidationError,
             ResourceLimitError,
@@ -854,16 +875,16 @@ class FileValidator:
         ) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                file.filename or filename,
+                safe_label(file.filename or filename),
                 cid,
                 ms,
-                str(exc),
+                safe_label(str(exc), max_length=512),
             )
             raise
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                file.filename or filename,
+                safe_label(file.filename or filename),
                 cid,
                 ms,
                 "internal_error",
@@ -922,10 +943,7 @@ class FileValidator:
             file, self.config.ALLOWED_IMAGE_EXTENSIONS
         )
 
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ) as monitor:
+        with self._monitor() as monitor:
             # Validate file size (raises on failure,
             # returns content and size on success)
             file_content, file_size = await self._validate_file_size(
@@ -1018,10 +1036,7 @@ class FileValidator:
         # Validate file extension (raises exceptions on failure)
         self._validate_file_extension(file, self.config.ALLOWED_ZIP_EXTENSIONS)
 
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ) as monitor:
+        with self._monitor() as monitor:
             # Stream file to SpooledTemporaryFile with size validation
             temp_file, file_size = await self._stream_to_temp_file(
                 file, self.config.limits.max_zip_size, monitor
@@ -1147,10 +1162,7 @@ class FileValidator:
             self.config.ALLOWED_ACTIVITY_EXTENSIONS,
         )
 
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ) as monitor:
+        with self._monitor() as monitor:
             temp_file, file_size = await self._stream_to_temp_file(
                 file,
                 self.config.limits.max_activity_file_size,
@@ -1207,9 +1219,13 @@ class FileValidator:
                 error_code=ErrorCode.MIME_TYPE_MISMATCH,
             )
 
-        # XXE-safe XML validation for GPX/TCX
+        # XXE-safe XML validation for GPX/TCX. The root element
+        # must match the extension, so an arbitrary XML document
+        # cannot be accepted under a .gpx name.
         if not is_fit:
-            self.xml_validator.validate_xml_safety(temp_file)
+            self.xml_validator.validate_xml_safety(
+                temp_file, self.config.ACTIVITY_XML_ROOTS.get(ext)
+            )
 
         logger.debug(
             "Activity file validation passed: %s (%s, %s bytes)",
@@ -1257,10 +1273,7 @@ class FileValidator:
             self.config.ALLOWED_GZIP_EXTENSIONS,
         )
 
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ) as monitor:
+        with self._monitor() as monitor:
             temp_file, file_size = await self._stream_to_temp_file(
                 file,
                 self.config.limits.max_gzip_size,

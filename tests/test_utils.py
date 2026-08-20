@@ -8,8 +8,73 @@ from safeuploads.exceptions import (
     ErrorCode,
     ResourceLimitError,
 )
-from safeuploads.utils import ResourceMonitor, parse_image_dimensions
+from safeuploads.utils import (
+    ResourceMonitor,
+    find_text_pattern,
+    parse_image_dimensions,
+    safe_label,
+)
 from tests.conftest import JPEG_SOF0
+
+
+class TestSafeLabel:
+    """Untrusted text is escaped before it reaches a log."""
+
+    def test_plain_text_unchanged(self):
+        """Test ordinary filenames pass through untouched."""
+        assert safe_label("holiday-photo.jpg") == "holiday-photo.jpg"
+
+    def test_non_ascii_preserved(self):
+        """Test legitimate non-ASCII names stay readable."""
+        assert safe_label("caf\u00e9.jpg") == "caf\u00e9.jpg"
+
+    def test_empty_value(self):
+        """Test empty input yields empty output."""
+        assert safe_label("") == ""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("a\nb", "a\\u000ab"),
+            ("a\rb", "a\\u000db"),
+            ("a\u202eb", "a\\u202eb"),
+            ("a\u2028b", "a\\u2028b"),
+            ("a\x00b", "a\\u0000b"),
+        ],
+    )
+    def test_control_characters_escaped(self, raw, expected):
+        """Test newline and format characters cannot break a line."""
+        assert safe_label(raw) == expected
+
+    def test_forged_log_line_neutralised(self):
+        """Test a crafted filename cannot inject a log record."""
+        result = safe_label("ok.jpg\nWARNING forged entry")
+        assert "\n" not in result
+
+    def test_truncates_long_values(self):
+        """Test oversized input is bounded and marked."""
+        result = safe_label("a" * 400, max_length=16)
+        assert result == "a" * 16 + "..."
+
+
+class TestFindTextPattern:
+    """Pattern scanning runs over raw bytes."""
+
+    def test_match_is_case_insensitive(self):
+        """Test uppercase content matches a lower-case pattern."""
+        assert find_text_pattern(b"XX<?PHP", ("<?php",)) == "<?php"
+
+    def test_no_match_returns_none(self):
+        """Test absent patterns yield None."""
+        assert find_text_pattern(b"clean content", ("<?php",)) is None
+
+    def test_empty_pattern_set_returns_none(self):
+        """Test an empty pattern set never matches."""
+        assert find_text_pattern(b"anything", ()) is None
+
+    def test_undecodable_bytes_do_not_raise(self):
+        """Test invalid UTF-8 is scanned without decoding."""
+        assert find_text_pattern(b"\xff\xfe\xfd", ("<?php",)) is None
 
 
 def _png(width: int, height: int) -> bytes:
@@ -295,6 +360,7 @@ class TestResourceMonitorMemoryExceeded:
             ResourceMonitor(
                 max_time_seconds=30.0,
                 max_memory_mb=512,
+                enforce_memory=True,
             ),
         ):
             pass  # Immediate exit
@@ -302,6 +368,87 @@ class TestResourceMonitorMemoryExceeded:
         assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
         assert exc_info.value.memory_bytes is not None
         assert "memory limit" in str(exc_info.value).lower()
+
+    def test_memory_overrun_warns_when_not_enforced(self, monkeypatch, caplog):
+        """
+        Test the default posture reports but does not fail.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+            caplog: pytest log capture fixture.
+        """
+        _calls = {"n": 0}
+
+        def _fake_rss() -> int:
+            _calls["n"] += 1
+            if _calls["n"] == 1:
+                return 100 * 1024 * 1024
+            return 700 * 1024 * 1024
+
+        monkeypatch.setattr(
+            ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
+        )
+
+        with (
+            caplog.at_level("WARNING", logger="safeuploads.utils"),
+            ResourceMonitor(max_time_seconds=30.0, max_memory_mb=512),
+        ):
+            pass
+
+        assert "not enforced" in caplog.text
+
+    def test_check_skips_memory_when_not_enforced(self, monkeypatch):
+        """
+        Test check() does not sample memory unless enforcing.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        _calls = {"n": 0}
+
+        def _fake_rss() -> int:
+            _calls["n"] += 1
+            return 100 * 1024 * 1024
+
+        monkeypatch.setattr(
+            ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
+        )
+
+        with ResourceMonitor(max_time_seconds=30.0) as monitor:
+            baseline = _calls["n"]
+            monitor.check()
+            assert _calls["n"] == baseline
+
+    def test_check_samples_memory_when_enforced(self, monkeypatch):
+        """
+        Test check() enforces the memory budget when enabled.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        _calls = {"n": 0}
+
+        def _fake_rss() -> int:
+            _calls["n"] += 1
+            if _calls["n"] == 1:
+                return 100 * 1024 * 1024
+            return 700 * 1024 * 1024
+
+        monkeypatch.setattr(
+            ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
+        )
+
+        with (
+            pytest.raises(ResourceLimitError) as exc_info,
+            ResourceMonitor(
+                max_time_seconds=30.0,
+                max_memory_mb=512,
+                enforce_memory=True,
+            ) as monitor,
+        ):
+            monitor.check()
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
 
     def test_check_memory_passes_within_limit(self):
         """Test that check_memory does not raise within the limit."""
@@ -329,7 +476,9 @@ class TestResourceMonitorMemoryExceeded:
             ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
         )
 
-        monitor = ResourceMonitor(max_time_seconds=30.0, max_memory_mb=512)
+        monitor = ResourceMonitor(
+            max_time_seconds=30.0, max_memory_mb=512, enforce_memory=True
+        )
         monitor.__enter__()
         with pytest.raises(ResourceLimitError) as exc_info:
             monitor.check_memory()

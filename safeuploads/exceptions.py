@@ -105,6 +105,12 @@ class ErrorCode(StrEnum):
     IMAGE_DIMENSIONS_EXCEEDED = "IMAGE_DIMENSIONS_EXCEEDED"
     IMAGE_DIMENSIONS_UNREADABLE = "IMAGE_DIMENSIONS_UNREADABLE"
 
+    # XML content errors
+    XML_MALFORMED = "XML_MALFORMED"
+    XML_FORBIDDEN_CONSTRUCT = "XML_FORBIDDEN_CONSTRUCT"
+    XML_INVALID_ROOT = "XML_INVALID_ROOT"
+    XML_TOO_MANY_ELEMENTS = "XML_TOO_MANY_ELEMENTS"
+
     # Compression and ZIP errors
     ZIP_BOMB_DETECTED = "ZIP_BOMB_DETECTED"
     ZIP_CONTENT_THREAT = "ZIP_CONTENT_THREAT"
@@ -531,15 +537,24 @@ class FileProcessingError(FileSecurityError):
     Args:
         message: Human-readable error description.
         original_error: Optional original exception that was caught.
+        error_code: Optional error code (defaults to
+            PROCESSING_ERROR).
 
     Attributes:
         original_error: The original exception that was caught.
     """
 
-    def __init__(self, message: str, original_error: Exception | None = None):
+    def __init__(
+        self,
+        message: str,
+        original_error: Exception | None = None,
+        error_code: str | None = None,
+    ):
         """Initialize with original error."""
         self.original_error = original_error
-        super().__init__(message, error_code=ErrorCode.PROCESSING_ERROR)
+        super().__init__(
+            message, error_code=error_code or ErrorCode.PROCESSING_ERROR
+        )
 
 
 # ============================================================================

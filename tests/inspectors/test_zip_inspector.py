@@ -1079,20 +1079,27 @@ class TestZipInspectorStructureGaps:
         threats = inspector._inspect_zip_entry(bad_info, None)
         assert any("Null byte" in t for t in threats)
 
-    def test_script_pattern_decode_exception_silenced(
+    def test_script_pattern_scan_handles_undecodable_bytes(
         self,
     ):
         config = FileSecurityConfig()
         inspector = ZipContentInspector(config)
 
-        class _BadBytes:
-            def decode(self, *args, **kwargs):
-                raise RuntimeError("decode failed")
-
-        # Passes a non-bytes object whose .decode() raises;
-        # covers the except Exception branch (lines 488-490)
-        result = inspector._contains_script_patterns(_BadBytes(), "file.txt")
+        # Invalid UTF-8 with no script markers must not match;
+        # the scan runs over raw bytes and never decodes.
+        result = inspector._contains_script_patterns(
+            b"\xff\xfe\xfd\xfc\xfb\xfa"
+        )
         assert result is False
+
+    def test_script_pattern_scan_matches_in_binary_noise(self):
+        config = FileSecurityConfig()
+        inspector = ZipContentInspector(config)
+
+        result = inspector._contains_script_patterns(
+            b"\xff\xfe<?PHP echo 1;\xfd"
+        )
+        assert result is True
 
 
 class TestZipInspectorNestedArchives:

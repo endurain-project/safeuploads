@@ -65,8 +65,14 @@ class SecurityLimits:
         max_memory_buffer_size: Bytes kept in memory before a
             streamed upload spills to a temporary file on disk.
         chunk_size: Chunk size in bytes for streaming reads.
-        max_validation_memory_mb: Maximum memory in MB allowed
-            during a single validation.
+        max_validation_memory_mb: Peak-RSS growth budget in MB
+            for a single validation. Best-effort telemetry only
+            unless ``enforce_memory_limit`` is set.
+        enforce_memory_limit: Whether exceeding
+            ``max_validation_memory_mb`` fails the validation
+            instead of logging a warning. Off by default because
+            peak RSS is process-wide and misattributes
+            concurrent work.
         max_validation_time_seconds: Overall validation timeout
             in seconds.
         max_compression_ratio: Maximum expansion ratio for ZIP files.
@@ -74,6 +80,10 @@ class SecurityLimits:
         max_individual_file_size: Maximum size of single file in ZIP.
         max_zip_entries: Maximum number of file entries in ZIP.
         zip_analysis_timeout: Maximum seconds for ZIP analysis.
+        gzip_analysis_timeout: Maximum seconds spent inflating a
+            gzip stream during inspection.
+        max_xml_elements: Maximum number of elements parsed from
+            an XML activity file before it is rejected.
         max_zip_depth: Maximum directory nesting depth in ZIP.
         max_filename_length: Maximum length for filenames in ZIP.
         max_path_length: Maximum length for full paths in ZIP.
@@ -116,7 +126,12 @@ class SecurityLimits:
     chunk_size: int = 65536  # 64KB chunks for streaming reads
 
     # Resource monitoring limits
-    max_validation_memory_mb: int = 512  # Max MB during validation
+    max_validation_memory_mb: int = 512  # Peak-RSS growth budget
+    # Peak RSS is a process-wide high-water mark, so it cannot be
+    # attributed to one validation under concurrency. Enforcement
+    # is opt-in and only sound when the process validates one
+    # upload at a time.
+    enforce_memory_limit: bool = False
     max_validation_time_seconds: float = (
         30.0  # Overall validation timeout in seconds
     )
@@ -133,6 +148,14 @@ class SecurityLimits:
     zip_analysis_timeout: float = (
         5.0  # Maximum seconds to spend analyzing ZIP structure
     )
+    gzip_analysis_timeout: float = (
+        5.0  # Maximum seconds to spend inflating a gzip stream
+    )
+
+    # XML activity file limits. Entity expansion is blocked by
+    # defusedxml, but a flat document with millions of elements
+    # still costs CPU, so cap the element count.
+    max_xml_elements: int = 1_000_000
 
     # ZIP content inspection settings
     max_zip_depth: int = 10  # Maximum nesting depth for directories in ZIP
@@ -185,6 +208,8 @@ class FileSecurityConfig:
         ALLOWED_ACTIVITY_EXTENSIONS: Permitted activity file
             extensions.
         ALLOWED_GZIP_EXTENSIONS: Permitted gzip file extensions.
+        ACTIVITY_XML_ROOTS: Required XML root element per
+            activity extension.
         BLOCKED_EXTENSIONS: Dangerous file extensions to block.
         COMPOUND_BLOCKED_EXTENSIONS: Multi-part extensions to block.
         DANGEROUS_UNICODE_CHARS: Unicode characters for filename attacks.
@@ -247,6 +272,14 @@ class FileSecurityConfig:
         }
     )
     ALLOWED_GZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".gz"})
+
+    # Required root element per XML activity format, lower-cased
+    # and namespace-stripped. Guards against an arbitrary XML
+    # document (or an HTML/SVG payload) wearing a .gpx name.
+    ACTIVITY_XML_ROOTS: ClassVar[dict[str, str]] = {
+        ".gpx": "gpx",
+        ".tcx": "trainingcenterdatabase",
+    }
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod
@@ -638,6 +671,20 @@ class FileSecurityConfig:
                 )
             )
 
+        # Validate XML element cap
+        if limits.max_xml_elements <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_xml_element_limit",
+                    "max_xml_elements must be greater than 0",
+                    "file_sizes",
+                    (
+                        "Set max_xml_elements to a positive"
+                        " value (e.g., 1000000)"
+                    ),
+                )
+            )
+
         return errors
 
     @classmethod
@@ -984,6 +1031,16 @@ class FileSecurityConfig:
                     "compression",
                     "Long timeouts may impact user experience",
                     severity="warning",
+                )
+            )
+
+        if limits.gzip_analysis_timeout <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_timeout",
+                    "gzip_analysis_timeout must be greater than 0",
+                    "compression",
+                    "Set a reasonable timeout for gzip inflation",
                 )
             )
 

@@ -23,17 +23,51 @@ project adheres to
   model documented this mitigation but it was not implemented.
 - `ResourceMonitor.check()`, which enforces the wall-clock and memory
   budgets together.
+- Activity XML files must now declare the root element matching their
+  extension: `.gpx` requires a `gpx` root, `.tcx` requires a
+  `TrainingCenterDatabase` root. Namespaces are stripped before
+  matching. Arbitrary XML (including an HTML or SVG payload) wearing a
+  `.gpx` name is rejected with the new `XML_INVALID_ROOT` code.
+- `max_xml_elements` limit (default 1,000,000). XML is now parsed
+  incrementally and completed elements are discarded as they close, so
+  a flat document with millions of elements can no longer amplify a
+  bounded upload into an unbounded object graph.
+- `gzip_analysis_timeout` limit (default 5 s) bounding gzip inflation
+  independently of any caller-supplied `ResourceMonitor`.
+- `safe_label()` utility, applied to every untrusted filename and ZIP
+  entry name before it reaches a log record, audit event, or exception
+  message.
 
 ### Changed
 
-- **Potentially breaking:** the validation time and memory budgets are
-  now enforced *during* validation instead of only on completion.
-  `ResourceMonitor` is threaded through the streaming reads, the ZIP
-  entry loop, recursive nested-archive inspection, strict
-  decompression verification, and the gzip inflation loop, so a
-  runaway upload is aborted while it runs. Uploads that previously
-  completed after exceeding the budget now raise `ResourceLimitError`
-  earlier.
+- **Breaking:** `max_validation_memory_mb` is no longer enforced by
+  default. It samples the process-wide peak RSS, which never decreases
+  and misattributes concurrent work, so exceeding it is now logged as
+  a warning instead of failing the validation. Set the new
+  `enforce_memory_limit=True` (or
+  `ResourceMonitor(enforce_memory=True)`) to restore the previous
+  behaviour, and only in a process that validates one upload at a
+  time. The real memory bounds are the byte limits in
+  `SecurityLimits`.
+- **Fixed (log injection, CWE-117):** a filename containing a newline
+  could forge an audit log line, and directional or zero-width
+  characters could hide the real name from an analyst. Untrusted text
+  is now escaped at every logging site and again at the audit
+  emission point. Unicode validation errors report the offending code
+  point and its Unicode name instead of echoing the character.
+- `find_text_pattern()` scans raw bytes with a cached compiled pattern
+  instead of decoding and lower-casing the whole buffer, removing two
+  full-size copies of the content-analysis window (up to 50 MB each).
+- `FileProcessingError` accepts an optional `error_code`, and XML
+  failures now carry `XML_MALFORMED`, `XML_FORBIDDEN_CONSTRUCT`,
+  `XML_INVALID_ROOT`, or `XML_TOO_MANY_ELEMENTS`.
+- **Potentially breaking:** the validation time budget is now enforced
+  *during* validation instead of only on completion. `ResourceMonitor`
+  is threaded through the streaming reads, the ZIP entry loop,
+  recursive nested-archive inspection, strict decompression
+  verification, and the gzip inflation loop, so a runaway upload is
+  aborted while it runs. Uploads that previously completed after
+  exceeding the budget now raise `ResourceLimitError` earlier.
 - `ResourceLimitError` now propagates out of the ZIP and gzip
   inspectors instead of being wrapped as an internal
   `FileProcessingError`.
@@ -41,8 +75,12 @@ project adheres to
   clients. Exception messages embed the client-supplied filename, so
   reflecting them hands attacker-controlled bytes back to the browser;
   the examples now log the detail and return `err.error_code`.
-- The `ResourceMonitor` memory limit is documented as a coarse,
-  process-wide upper bound rather than a per-validation measurement.
+- `verify_zip_decompression` was reviewed and its default retained.
+  Enabling it by default would inflate every archive on every upload;
+  the integration checklist now spells out exactly when to turn it on
+  (any consumer that does not extract with Python's `zipfile`).
+- `ZipContentInspector._contains_script_patterns()` no longer takes a
+  `filename` argument, which it never used.
 
 ## [1.1.1] - 2026-08-19
 

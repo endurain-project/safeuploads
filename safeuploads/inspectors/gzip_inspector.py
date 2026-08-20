@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from ..audit import get_correlation_id, log_extra
@@ -54,7 +55,8 @@ class GzipContentInspector(BaseInspector):
 
         Raises:
             ZipBombError: If compression ratio or uncompressed
-                size exceeds configured limits.
+                size exceeds configured limits, or inflation
+                exceeds ``gzip_analysis_timeout``.
             CompressionSecurityError: If the gzip structure is
                 invalid or corrupted.
             ResourceLimitError: If the monitor's time or memory
@@ -66,6 +68,8 @@ class GzipContentInspector(BaseInspector):
         chunk_size = self.config.limits.chunk_size
         max_ratio = self.config.limits.max_compression_ratio
         max_uncompressed = self.config.limits.max_uncompressed_size
+        timeout = self.config.limits.gzip_analysis_timeout
+        start_time = time.monotonic()
         logger.debug(
             "Inspecting gzip stream (compressed size %d bytes)",
             compressed_size,
@@ -76,6 +80,28 @@ class GzipContentInspector(BaseInspector):
                 while True:
                     if monitor is not None:
                         monitor.check()
+
+                    if time.monotonic() - start_time > timeout:
+                        logger.error(
+                            "Gzip inflation timeout after %.1fs",
+                            timeout,
+                            extra=log_extra(),
+                        )
+                        cid = get_correlation_id()
+                        if cid:
+                            self._audit.threat(
+                                "",
+                                cid,
+                                "Gzip inflation timeout",
+                            )
+                        raise ZipBombError(
+                            message=(
+                                "Gzip inflation timeout after"
+                                f" {timeout}s"
+                                " - potential decompression bomb"
+                            ),
+                            compression_ratio=0,
+                        )
 
                     chunk = gz.read(chunk_size)
                     if not chunk:

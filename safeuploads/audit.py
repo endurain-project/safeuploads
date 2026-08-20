@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from .utils import safe_label
+
 # ----------------------------------------------------------------
 # Context variable for correlation ID
 # ----------------------------------------------------------------
@@ -164,20 +166,27 @@ class SecurityAuditLogger:
         """
         Emit an audit event as a structured log record.
 
+        Untrusted fields are escaped here so a crafted filename
+        cannot forge or hide inside a log line, regardless of
+        which caller built the event.
+
         Args:
             event: The audit event to record.
         """
         if not self.enabled:
             return
 
+        filename = safe_label(event.filename)
+        result = safe_label(event.result, max_length=512)
+
         extra = {
             "audit_event_type": event.event_type.value,
             "audit_correlation_id": event.correlation_id,
-            "audit_filename": event.filename,
-            "audit_result": event.result,
-            "audit_details": event.details,
+            "audit_filename": filename,
+            "audit_result": result,
+            "audit_details": safe_label(event.details, max_length=1024),
             "audit_duration_ms": event.duration_ms,
-            "audit_source_ip": event.source_ip or "",
+            "audit_source_ip": safe_label(event.source_ip or ""),
         }
 
         level = logging.INFO
@@ -193,8 +202,8 @@ class SecurityAuditLogger:
             "[%s] %s file=%s result=%s",
             event.correlation_id[:12],
             event.event_type.value,
-            event.filename,
-            event.result,
+            filename,
+            result,
             extra=extra,
         )
 

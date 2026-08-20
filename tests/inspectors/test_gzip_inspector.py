@@ -5,6 +5,7 @@ import io
 
 import pytest
 
+from safeuploads.audit import reset_correlation_id, set_correlation_id
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     CompressionSecurityError,
@@ -32,6 +33,26 @@ class TestGzipInspectionResourceLimits:
             inspector.inspect_gzip_content(
                 io.BytesIO(payload), len(payload), monitor
             )
+
+    def test_inflation_timeout_without_monitor(self):
+        """Test the inspector bounds inflation on its own."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            gzip_analysis_timeout=0.0,
+            chunk_size=1,
+            enable_audit_logging=True,
+        )
+        inspector = GzipContentInspector(config)
+        payload = gzip.compress(b"x" * 4096)
+
+        set_correlation_id("test-correlation-id")
+        try:
+            with pytest.raises(ZipBombError, match="timeout"):
+                inspector.inspect_gzip_content(
+                    io.BytesIO(payload), len(payload)
+                )
+        finally:
+            reset_correlation_id()
 
 
 class TestGzipContentInspector:

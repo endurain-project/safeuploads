@@ -16,7 +16,7 @@ from ..exceptions import (
     ResourceLimitError,
     ZipBombError,
 )
-from ..utils import bytes_to_mb
+from ..utils import bytes_to_mb, safe_label
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -183,6 +183,7 @@ class CompressionSecurityValidator(BaseValidator):
                             compression_ratio
                             > self.config.limits.max_compression_ratio
                         ):
+                            entry_label = safe_label(entry.filename)
                             logger.error(
                                 "Excessive compression ratio",
                                 extra=log_extra(
@@ -190,7 +191,7 @@ class CompressionSecurityValidator(BaseValidator):
                                         "error_type": (
                                             "compression_ratio_exceeded"
                                         ),
-                                        "file_name": entry.filename,
+                                        "file_name": entry_label,
                                         "compression_ratio": (
                                             compression_ratio
                                         ),
@@ -203,7 +204,7 @@ class CompressionSecurityValidator(BaseValidator):
                             cid = get_correlation_id()
                             if cid:
                                 self._audit.threat(
-                                    entry.filename,
+                                    entry_label,
                                     cid,
                                     "Zip bomb — excessive compression ratio",
                                 )
@@ -215,7 +216,7 @@ class CompressionSecurityValidator(BaseValidator):
                                     "Excessive compression"
                                     " ratio detected:"
                                     f" {compression_ratio:.1f}:1"
-                                    f" for '{entry.filename}'."
+                                    f" for '{entry_label}'."
                                     " Maximum allowed:"
                                     f" {max_ratio}:1"
                                 ),
@@ -231,7 +232,7 @@ class CompressionSecurityValidator(BaseValidator):
                         filename_lower.endswith(ext)
                         for ext in self._nested_archive_exts
                     ):
-                        nested_archives.append(entry.filename)
+                        nested_archives.append(safe_label(entry.filename))
 
                     # Check for excessively large individual files
                     # Use the configurable max_individual_file_size limit
@@ -239,12 +240,13 @@ class CompressionSecurityValidator(BaseValidator):
                         uncompressed_size
                         > self.config.limits.max_individual_file_size
                     ):
+                        entry_label = safe_label(entry.filename)
                         logger.warning(
                             "Individual file too large",
                             extra=log_extra(
                                 {
                                     "error_type": "file_too_large",
-                                    "file_name": entry.filename,
+                                    "file_name": entry_label,
                                     "size_mb": bytes_to_mb(uncompressed_size),
                                     "max_size_mb": bytes_to_mb(
                                         self.config.limits.max_individual_file_size
@@ -258,7 +260,7 @@ class CompressionSecurityValidator(BaseValidator):
                         raise CompressionSecurityError(
                             message=(
                                 "Individual file too"
-                                f" large: '{entry.filename}'"
+                                f" large: '{entry_label}'"
                                 " would expand to"
                                 f" {bytes_to_mb(uncompressed_size)}MB."
                                 " Maximum allowed:"

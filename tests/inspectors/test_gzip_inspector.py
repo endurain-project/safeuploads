@@ -47,10 +47,11 @@ class TestGzipInspectionResourceLimits:
 
         set_correlation_id("test-correlation-id")
         try:
-            with pytest.raises(ZipBombError, match="timeout"):
+            with pytest.raises(ZipBombError, match="timeout") as exc_info:
                 inspector.inspect_gzip_content(
                     io.BytesIO(payload), len(payload)
                 )
+            assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
         finally:
             reset_correlation_id()
 

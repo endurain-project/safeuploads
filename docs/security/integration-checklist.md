@@ -140,7 +140,8 @@ archive afterwards:
 
 - [ ] Container or process memory limits set — safeuploads
   `max_validation_memory_mb` should be below the container
-  limit.- [ ] Request timeout configured at the reverse proxy and
+  limit.
+- [ ] Request timeout configured at the reverse proxy and
   application level — should be above
   `max_validation_time_seconds`.
 - [ ] Disk space monitored for temporary file spill

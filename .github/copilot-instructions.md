@@ -14,7 +14,7 @@
 - Ask for clarification if the scope is unclear rather than assuming additional deliverables are wanted.
 
 ## Style Expectations
-- Target Python 3.13+. Use modern type hint syntax (`int | None`, `list[str]`, `dict[str, Any]`) instead of `Optional`, `List`, `Dict`, etc.
+- Target Python 3.11+. Use modern type hint syntax (`int | None`, `list[str]`, `dict[str, Any]`) instead of `Optional`, `List`, `Dict`, etc.
 - Preserve async boundaries in validator methods; do not block event loops with synchronous I/O inside `async` functions.
 - Use module-level `logging.getLogger(__name__)` for security-relevant events; never rely on application-specific loggers.
 - Enforce PEP 8 line limits:

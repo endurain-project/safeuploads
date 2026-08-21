@@ -719,6 +719,33 @@ class FileSecurityConfig:
                 )
             )
 
+        # Someone who tuned the memory budget but left enforcement
+        # off believes they have a control they do not have.
+        if (
+            not limits.enforce_memory_limit
+            and limits.max_validation_memory_mb
+            != SecurityLimits.max_validation_memory_mb
+        ):
+            errors.append(
+                _config_error(
+                    "memory_limit_not_enforced",
+                    (
+                        "max_validation_memory_mb is set to"
+                        f" {limits.max_validation_memory_mb}MB but"
+                        " enforce_memory_limit is False, so exceeding"
+                        " it is only logged"
+                    ),
+                    "resource_limits",
+                    (
+                        "Set enforce_memory_limit=True if this must"
+                        " fail the validation, and only in a process"
+                        " that validates one upload at a time;"
+                        " otherwise rely on the byte limits"
+                    ),
+                    severity="warning",
+                )
+            )
+
         return errors
 
     @classmethod

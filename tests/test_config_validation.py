@@ -204,6 +204,43 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_temp_dir" not in error_types
 
+    def test_customised_memory_budget_without_enforcement_warns(self):
+        """Test a tuned but unenforced memory budget is surfaced."""
+        config = FileSecurityConfig(
+            SecurityLimits(max_validation_memory_mb=128)
+        )
+        warnings = [
+            e.error_type
+            for e in config.validate_instance()
+            if e.severity == "warning"
+        ]
+        assert "memory_limit_not_enforced" in warnings
+
+    def test_customised_memory_budget_with_enforcement_is_quiet(self):
+        """Test opting in to enforcement clears the warning."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                max_validation_memory_mb=128,
+                enforce_memory_limit=True,
+            )
+        )
+        warnings = [
+            e.error_type
+            for e in config.validate_instance()
+            if e.severity == "warning"
+        ]
+        assert "memory_limit_not_enforced" not in warnings
+
+    def test_default_memory_budget_does_not_warn(self):
+        """Test an untouched budget is not flagged."""
+        config = FileSecurityConfig()
+        warnings = [
+            e.error_type
+            for e in config.validate_instance()
+            if e.severity == "warning"
+        ]
+        assert "memory_limit_not_enforced" not in warnings
+
 
 class TestMimeConfigurationValidation:
     """Tests for _validate_mime_configurations validation branches."""

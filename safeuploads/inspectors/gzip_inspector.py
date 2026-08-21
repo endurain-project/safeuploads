@@ -101,6 +101,7 @@ class GzipContentInspector(BaseInspector):
                                 " - potential decompression bomb"
                             ),
                             compression_ratio=0,
+                            error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
                         )
 
                     chunk = gz.read(chunk_size)

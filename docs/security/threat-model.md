@@ -265,7 +265,8 @@ Windows shortcuts) embedded within uploaded files.
 ### XML External Entity Injection (CWE-611)
 
 **Attack:** GPX and TCX files are XML-based; malicious DTD
-declarations can trigger external entity resolution, leadingto server-side file reads or SSRF.
+declarations can trigger external entity resolution, leading
+to server-side file reads or SSRF.
 
 **Mitigations:**
 
@@ -373,6 +374,7 @@ and `max_xml_elements` cap every buffer the library allocates.
 size, similar to ZIP bombs.
 
 **Mitigations:**
+
 - `GzipContentInspector` reads gzip streams in chunks, checking
   the compression ratio and uncompressed size against
   `SecurityLimits` progressively.

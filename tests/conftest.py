@@ -69,7 +69,7 @@ def mock_upload_file():
         ):
             self.filename = filename
             self.content = content
-            self.size = size or len(content)
+            self.size = size if size is not None else len(content)
             self._position = 0
 
         async def read(self, size: int = -1) -> bytes:

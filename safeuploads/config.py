@@ -704,6 +704,19 @@ class FileSecurityConfig:
                 )
             )
 
+        if limits.content_scan_max_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_content_scan_size",
+                    "content_scan_max_size must be greater than 0",
+                    "content_analysis",
+                    (
+                        "Set content_scan_max_size to a positive"
+                        " byte limit (e.g., 50MB)"
+                    ),
+                )
+            )
+
         # A missing temp directory only surfaces when an upload
         # spills to disk, so check it up front.
         if limits.temp_dir is not None and not os.path.isdir(limits.temp_dir):

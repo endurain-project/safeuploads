@@ -1153,14 +1153,16 @@ class FileValidator:
         Run activity-file-specific validation steps.
 
         Handles XXE-safe XML parsing for GPX/TCX and binary
-        signature validation for FIT files.
+        signature validation for FIT files, followed by optional
+        deep content analysis.
 
         Args:
             file: Uploaded activity file to validate.
 
         Raises:
             FileValidationError: If an activity check fails.
-            FileProcessingError: If XML parsing fails.
+            FileProcessingError: If XML parsing or content analysis
+                fails.
         """
         self._validate_filename(file)
         self._validate_file_extension(
@@ -1182,6 +1184,7 @@ class FileValidator:
                     temp_file,
                     file_size,
                     filename,
+                    monitor,
                 )
             finally:
                 temp_file.close()
@@ -1191,22 +1194,27 @@ class FileValidator:
         temp_file: tempfile.SpooledTemporaryFile[bytes],
         file_size: int,
         filename: str,
+        monitor: ResourceMonitor | None = None,
     ) -> None:
         """
         Run synchronous activity-file inspection off the loop.
 
         Handles XXE-safe XML parsing for GPX/TCX and binary
-        signature validation for FIT files.
+        signature validation for FIT files, followed by optional
+        deep content analysis.
 
         Args:
             temp_file: Spooled temp file holding the data.
             file_size: File size in bytes.
             filename: Sanitized filename for context.
+            monitor: Optional resource monitor checked around
+                content analysis.
 
         Raises:
             MimeTypeError: If the MIME type is not allowed.
             FileSignatureError: If the signature mismatches.
-            FileProcessingError: If XML parsing fails.
+            FileProcessingError: If XML parsing or content analysis
+                fails.
         """
         _, ext = os.path.splitext(filename.lower())
         is_fit = ext == ".fit"
@@ -1232,6 +1240,17 @@ class FileValidator:
             self.xml_validator.validate_xml_safety(
                 temp_file, self.config.ACTIVITY_XML_ROOTS.get(ext)
             )
+
+        if self.config.limits.enable_content_analysis:
+            if monitor is not None:
+                monitor.check()
+            temp_file.seek(0)
+            scan_size = self.config.limits.content_scan_max_size
+            sample = temp_file.read(scan_size)
+            temp_file.seek(0)
+            self._raise_on_content_threats(sample, filename, "activity")
+            if monitor is not None:
+                monitor.check()
 
         logger.debug(
             "Activity file validation passed: %s (%s, %s bytes)",

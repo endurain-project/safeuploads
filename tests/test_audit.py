@@ -188,6 +188,18 @@ class TestSecurityAuditLogger:
         assert record.audit_result == "started"
         assert record.audit_source_ip == ""
 
+    def test_correlation_id_is_escaped(self, caplog):
+        """Test a custom correlation ID cannot inject a log line."""
+        audit = SecurityAuditLogger(enabled=True)
+        correlation_id = "cid\nWARNING forged"
+
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            audit.start("photo.jpg", correlation_id)
+
+        record = caplog.records[0]
+        assert record.audit_correlation_id == "cid\\u000aWARNING forged"
+        assert "\n" not in record.getMessage()
+
 
 class TestAuditSourceIp:
     """The client address is carried on the context."""
@@ -567,3 +579,15 @@ class TestLogExtraCorrelationId:
         extra = log_extra()
         assert extra["correlation_id"] == "cid-abc"
         reset_correlation_id()
+
+    def test_log_extra_escapes_correlation_id(self):
+        """Test log extras cannot carry raw line separators."""
+        from safeuploads.audit import log_extra
+
+        set_correlation_id("cid\nWARNING forged")
+        try:
+            extra = log_extra()
+        finally:
+            reset_correlation_id()
+
+        assert extra["correlation_id"] == "cid\\u000aWARNING forged"

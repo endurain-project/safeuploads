@@ -98,7 +98,7 @@ def log_extra(
     merged: dict[str, Any] = dict(extra) if extra else {}
     cid = correlation_id_var.get()
     if cid is not None:
-        merged["correlation_id"] = cid
+        merged["correlation_id"] = safe_label(cid)
     return merged
 
 
@@ -195,12 +195,13 @@ class SecurityAuditLogger:
         if not self.enabled:
             return
 
+        correlation_id = safe_label(event.correlation_id)
         filename = safe_label(event.filename)
         result = safe_label(event.result, max_length=512)
 
         extra = {
             "audit_event_type": event.event_type.value,
-            "audit_correlation_id": event.correlation_id,
+            "audit_correlation_id": correlation_id,
             "audit_filename": filename,
             "audit_result": result,
             "audit_details": safe_label(event.details, max_length=1024),
@@ -219,7 +220,7 @@ class SecurityAuditLogger:
         _audit_logger.log(
             level,
             "[%s] %s file=%s result=%s",
-            event.correlation_id[:12],
+            correlation_id[:12],
             event.event_type.value,
             filename,
             result,

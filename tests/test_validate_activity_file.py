@@ -135,6 +135,12 @@ class TestValidateActivityFileExtensionErrors:
 class TestValidateActivityFileSizeErrors:
     """Tests for file size validation failures."""
 
+    def test_mock_upload_file_preserves_explicit_zero_size(
+        self, mock_upload_file
+    ):
+        f = mock_upload_file("track.gpx", _GPX_CONTENT, size=0)
+        assert f.size == 0
+
     async def test_validate_activity_file_empty_file_raises(
         self, mock_upload_file
     ):
@@ -210,6 +216,47 @@ class TestValidateActivityFileXmlSecurity:
         validator = FileValidator()
         f = mock_upload_file("track.gpx", _MALFORMED_XML)
         with pytest.raises(FileProcessingError):
+            await validator.validate_activity_file(f)
+
+
+class TestValidateActivityFileContentAnalysis:
+    """Tests for optional deep content analysis."""
+
+    async def test_clean_gpx_passes_when_content_analysis_enabled(
+        self, mock_upload_file
+    ):
+        config = FileSecurityConfig(
+            SecurityLimits(enable_content_analysis=True)
+        )
+        validator = FileValidator(config=config)
+        f = mock_upload_file("track.gpx", _GPX_CONTENT)
+
+        await validator.validate_activity_file(f)
+
+    async def test_script_in_gpx_is_rejected(self, mock_upload_file):
+        config = FileSecurityConfig(
+            SecurityLimits(enable_content_analysis=True)
+        )
+        validator = FileValidator(config=config)
+        content = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<gpx version="1.1"><script>alert(1)</script></gpx>'
+        )
+        f = mock_upload_file("track.gpx", content)
+
+        with pytest.raises(FileProcessingError, match="Content analysis"):
+            await validator.validate_activity_file(f)
+
+    async def test_executable_signature_in_fit_is_rejected(
+        self, mock_upload_file
+    ):
+        config = FileSecurityConfig(
+            SecurityLimits(enable_content_analysis=True)
+        )
+        validator = FileValidator(config=config)
+        f = mock_upload_file("activity.fit", _FIT_CONTENT + b"MZpayload")
+
+        with pytest.raises(FileProcessingError, match="Content analysis"):
             await validator.validate_activity_file(f)
 
 

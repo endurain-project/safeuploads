@@ -167,6 +167,20 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_xml_element_limit" in error_types
 
+    @pytest.mark.parametrize("scan_size", [0, -1])
+    def test_nonpositive_content_scan_size_generates_error(
+        self, monkeypatch, scan_size
+    ):
+        """Test that a non-positive content scan limit errors."""
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(content_scan_max_size=scan_size),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_content_scan_size" in error_types
+
     def test_nonpositive_gzip_timeout_generates_error(self, monkeypatch):
         """
         Test that a non-positive gzip timeout errors.

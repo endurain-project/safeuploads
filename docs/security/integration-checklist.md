@@ -45,6 +45,39 @@ that addresses it.
 - [ ] Allowed extensions and MIME types reviewed and narrowed
   to only what your application accepts.
 
+Anything you leave out of `SecurityLimits` keeps its secure
+default, and the limits object is copied, so nothing is shared
+between configs:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+from safeuploads import (
+    FileSecurityConfig,
+    FileValidator,
+    SecurityLimits,
+)
+
+config = FileSecurityConfig(
+    SecurityLimits(
+        max_image_size=10 * 1024 * 1024,  # 10 MiB
+        max_image_pixels=50_000_000,  # Reject bigger decoded images
+        max_compression_ratio=50,
+        # Decompress every ZIP entry to reject archives with
+        # forged central-directory metadata
+        verify_zip_decompression=True,
+        # Keep spilled uploads off the system temp directory
+        temp_dir="/var/lib/myapp/uploads-tmp",
+    )
+)
+
+# Optionally offload blocking inspection to a bounded pool
+validator = FileValidator(
+    config=config,
+    executor=ThreadPoolExecutor(max_workers=4),
+)
+```
+
 ## ZIP Metadata Verification
 
 safeuploads reads the declared entry sizes from the ZIP central
@@ -114,6 +147,40 @@ archive afterwards:
 - [ ] Generic 500 errors for unexpected failures — no stack
   traces in production responses.
 
+!!! warning
+    Exception messages embed the client-supplied filename and
+    other untrusted values. Returning `str(err)` to a client
+    reflects attacker-controlled bytes back to the browser.
+    Branch on the exception type and surface `err.error_code`,
+    which is a stable machine-readable string.
+
+```python
+import logging
+
+from safeuploads.exceptions import (
+    FileValidationError,      # Base exception
+    FileSizeError,            # File too large
+    ExtensionSecurityError,   # Dangerous extension
+    ImageSecurityError,       # Image decompression bomb
+    ZipBombError,             # Compression attack
+)
+
+logger = logging.getLogger(__name__)
+
+try:
+    await validator.validate_image_file(file)
+except FileSizeError as err:
+    return {"error": "File too large", "max_size": err.max_size}
+except ExtensionSecurityError as err:
+    return {"error": "File type not allowed", "code": err.error_code}
+except ImageSecurityError as err:
+    return {"error": "Image too large to decode", "code": err.error_code}
+except FileValidationError as err:
+    # Full detail goes to the log; the client only sees the code.
+    logger.warning("Upload rejected: %s", err)
+    return {"error": "Upload rejected", "code": err.error_code}
+```
+
 ## File Storage Security
 
 - [ ] Uploaded files stored outside the web-accessible
@@ -155,16 +222,35 @@ archive afterwards:
 
 - [ ] `safeuploads` pinned to a specific version in
   `requirements.txt` or `pyproject.toml`.
-- [ ] Release provenance verified before promoting a new version:
-  `uvx pypi-attestations verify pypi --repository
-  https://github.com/endurain-project/safeuploads
-  pypi:safeuploads-<version>-py3-none-any.whl`.
+- [ ] Release provenance verified before promoting a new version
+  (see below).
 - [ ] `pip-audit` or `safety` run in CI to detect known
   vulnerabilities in dependencies.
 - [ ] `defusedxml` and `python-magic` dependencies kept
   up to date.
 - [ ] `libmagic` system library installed and up to date
   on the deployment target.
+
+Releases are built and published by the repository's release
+workflow through PyPI Trusted Publishing, with
+[PEP 740](https://peps.python.org/pep-0740/) attestations, so
+you can confirm a downloaded artifact came from that workflow
+and was not substituted:
+
+```bash
+uvx pypi-attestations verify pypi \
+  --repository https://github.com/endurain-project/safeuploads \
+  pypi:safeuploads-<version>-py3-none-any.whl
+```
+
+A successful run prints `OK: <filename>`. `Provenance for file
+... was not found` means the artifact predates attested
+publishing rather than that verification failed.
+
+Each release run also produces a CycloneDX SBOM and
+`SHA256SUMS`, generated from a clean install of the built wheel.
+These are retained as workflow artifacts on the release run
+rather than published to PyPI.
 
 ## Testing
 

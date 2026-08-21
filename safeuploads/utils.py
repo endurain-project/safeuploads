@@ -71,6 +71,27 @@ def safe_label(value: str, max_length: int = 256) -> str:
     return escaped
 
 
+def strip_unsafe_chars(value: str) -> str:
+    """
+    Remove characters that can forge or hide inside a log line.
+
+    Covers C0 and C1 controls, format and surrogate code points,
+    and the line and paragraph separators, so the result is safe
+    to store and to log without further escaping.
+
+    Args:
+        value: Untrusted text such as a filename.
+
+    Returns:
+        Text with every unsafe character removed.
+    """
+    return "".join(
+        char
+        for char in value
+        if unicodedata.category(char) not in _UNSAFE_CATEGORIES
+    )
+
+
 def matches_signature_prefix(
     content: bytes, signatures: Iterable[bytes]
 ) -> bytes | None:

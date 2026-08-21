@@ -18,8 +18,10 @@ which uploads are accepted. Read the upgrade notes before bumping.
    default.** This is the only change that makes safeuploads accept
    something it previously rejected. If you relied on it, set
    `enforce_memory_limit=True` — and only in a process that validates
-   one upload at a time. Configuration validation warns when the
-   budget is customised but enforcement is off.
+   one upload at a time. Configuration validation reports an
+   informational notice when the budget is customised but enforcement
+   is off; it does not fail strict validation, because leaving
+   enforcement off is the correct choice under concurrency.
 2. **More uploads are rejected than before.** Images whose dimensions
    cannot be read, arbitrary XML behind a `.gpx`/`.tcx` name, and ZIPs
    containing executable, script, or system-file entries all now fail.
@@ -107,6 +109,10 @@ which uploads are accepted. Read the upgrade notes before bumping.
 - `find_text_pattern()` scans raw bytes with a cached compiled pattern
   instead of decoding and lower-casing the whole buffer, removing two
   full-size copies of the content-analysis window (up to 50 MB each).
+  It now returns the match that appears earliest in the content rather
+  than the first pattern in the supplied order. Whether a threat is
+  detected is unchanged; only which pattern name is reported when a
+  buffer matches several can differ.
 - Documentation and the FastAPI example no longer return `str(err)` to
   clients. Exception messages embed the client-supplied filename, so
   reflecting them hands attacker-controlled bytes back to the browser;
@@ -144,8 +150,12 @@ which uploads are accepted. Read the upgrade notes before bumping.
   forge an audit log line, and directional or zero-width characters
   could hide the real name from an analyst. Untrusted text is now
   escaped at every logging site and again at the audit emission point.
-  Unicode validation errors report the offending code point and its
-  Unicode name instead of echoing the character.
+  Filename sanitization now strips every control, format, surrogate
+  and line-separator code point rather than only the C0 range, so
+  U+0085, U+009B, U+2028 and U+2029 no longer survive into the name
+  returned to the caller. Unicode validation errors report the
+  offending code point and its Unicode name instead of echoing the
+  character.
 - ZIP entries are now rejected when their name carries an extension
   from `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, or
   `SYSTEM_FILES`. Every dot-separated suffix is checked, so a

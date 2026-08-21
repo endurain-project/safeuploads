@@ -56,6 +56,7 @@ from .utils import (
     matches_signature_prefix,
     parse_image_dimensions,
     safe_label,
+    strip_unsafe_chars,
 )
 from .validators import (
     CompressionSecurityValidator,
@@ -467,10 +468,11 @@ class FileValidator:
         # Remove path components to prevent directory traversal
         filename = os.path.basename(filename)
 
-        # Remove null bytes and control characters
-        filename = "".join(
-            char for char in filename if ord(char) >= 32 and char != "\x7f"
-        )
+        # Drop control, format and separator code points. C0 alone
+        # is not enough: U+2028, U+2029 and the C1 controls also
+        # break a log line, and the sanitized name is returned to
+        # the caller for storage, not just logged.
+        filename = strip_unsafe_chars(filename)
 
         # Remove dangerous characters that could be used
         # for path traversal or command injection

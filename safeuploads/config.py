@@ -733,7 +733,10 @@ class FileSecurityConfig:
             )
 
         # Someone who tuned the memory budget but left enforcement
-        # off believes they have a control they do not have.
+        # off believes they have a control they do not have. Only
+        # informational: leaving enforcement off is the correct
+        # choice under concurrency, so this must not fail strict
+        # validation for an otherwise sound configuration.
         if (
             not limits.enforce_memory_limit
             and limits.max_validation_memory_mb
@@ -755,7 +758,7 @@ class FileSecurityConfig:
                         " that validates one upload at a time;"
                         " otherwise rely on the byte limits"
                     ),
-                    severity="warning",
+                    severity="info",
                 )
             )
 

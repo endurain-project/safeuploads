@@ -24,6 +24,7 @@ from safeuploads.exceptions import (
     ZipContentError,
 )
 from safeuploads.file_validator import FileValidator
+from safeuploads.utils import safe_label
 from tests.conftest import JPEG_SOF0
 
 
@@ -1313,6 +1314,30 @@ class TestSanitizeFilenameEdgeCases:
         result = validator._sanitize_filename("   .jpg")
         assert result.startswith("file_")
         assert result.endswith(".jpg")
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "a\x85b.jpg",  # C1 next-line
+            "a\x9bb.jpg",  # C1 control sequence introducer
+            "a\u2028b.jpg",  # Line separator
+            "a\u2029b.jpg",  # Paragraph separator
+        ],
+    )
+    def test_sanitize_strips_non_c0_line_breakers(self, raw):
+        """
+        Test that code points beyond C0 cannot break a log line.
+
+        Args:
+            raw: Filename carrying a log-breaking code point.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+        result = validator._sanitize_filename(raw)
+        assert result == "ab.jpg"
+        assert safe_label(result) == result
 
 
 class TestValidateActivityFile:

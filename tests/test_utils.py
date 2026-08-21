@@ -13,6 +13,7 @@ from safeuploads.utils import (
     find_text_pattern,
     parse_image_dimensions,
     safe_label,
+    strip_unsafe_chars,
 )
 from tests.conftest import JPEG_SOF0
 
@@ -64,6 +65,39 @@ class TestSafeLabel:
         """Test the documented default bound is applied."""
         assert safe_label("a" * 300) == "a" * 256 + "..."
         assert safe_label("a" * 256) == "a" * 256
+
+
+class TestStripUnsafeChars:
+    """Log-breaking code points are removed, not escaped."""
+
+    def test_plain_text_unchanged(self):
+        """Test ordinary filenames pass through untouched."""
+        assert strip_unsafe_chars("holiday-photo.jpg") == "holiday-photo.jpg"
+
+    def test_non_ascii_preserved(self):
+        """Test legitimate non-ASCII names stay readable."""
+        assert strip_unsafe_chars("caf\u00e9.jpg") == "caf\u00e9.jpg"
+
+    def test_empty_value(self):
+        """Test empty input yields empty output."""
+        assert strip_unsafe_chars("") == ""
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "a\x00b.jpg",  # C0 null
+            "a\nb.jpg",  # C0 newline
+            "a\x7fb.jpg",  # Delete
+            "a\x85b.jpg",  # C1 next-line
+            "a\x9bb.jpg",  # C1 control sequence introducer
+            "a\u2028b.jpg",  # Line separator
+            "a\u2029b.jpg",  # Paragraph separator
+            "a\u200bb.jpg",  # Zero-width space (format)
+        ],
+    )
+    def test_unsafe_code_points_removed(self, raw):
+        """Test every log-breaking category is stripped."""
+        assert strip_unsafe_chars(raw) == "ab.jpg"
 
 
 class TestFindTextPattern:

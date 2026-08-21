@@ -218,42 +218,51 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_temp_dir" not in error_types
 
-    def test_customised_memory_budget_without_enforcement_warns(self):
+    def test_customised_memory_budget_without_enforcement_is_informational(
+        self,
+    ):
         """Test a tuned but unenforced memory budget is surfaced."""
         config = FileSecurityConfig(
             SecurityLimits(max_validation_memory_mb=128)
         )
-        warnings = [
+        notices = [
             e.error_type
             for e in config.validate_instance()
-            if e.severity == "warning"
+            if e.severity == "info"
         ]
-        assert "memory_limit_not_enforced" in warnings
+        assert "memory_limit_not_enforced" in notices
+
+    def test_customised_memory_budget_passes_strict_validation(self):
+        """Test the notice does not fail strict validation."""
+        config = FileSecurityConfig(
+            SecurityLimits(max_validation_memory_mb=128)
+        )
+        config.validate_and_report_instance(strict=True)
 
     def test_customised_memory_budget_with_enforcement_is_quiet(self):
-        """Test opting in to enforcement clears the warning."""
+        """Test opting in to enforcement clears the notice."""
         config = FileSecurityConfig(
             SecurityLimits(
                 max_validation_memory_mb=128,
                 enforce_memory_limit=True,
             )
         )
-        warnings = [
+        notices = [
             e.error_type
             for e in config.validate_instance()
-            if e.severity == "warning"
+            if e.severity == "info"
         ]
-        assert "memory_limit_not_enforced" not in warnings
+        assert "memory_limit_not_enforced" not in notices
 
     def test_default_memory_budget_does_not_warn(self):
         """Test an untouched budget is not flagged."""
         config = FileSecurityConfig()
-        warnings = [
+        notices = [
             e.error_type
             for e in config.validate_instance()
-            if e.severity == "warning"
+            if e.severity == "info"
         ]
-        assert "memory_limit_not_enforced" not in warnings
+        assert "memory_limit_not_enforced" not in notices
 
 
 class TestMimeConfigurationValidation:

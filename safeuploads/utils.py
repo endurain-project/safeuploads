@@ -1,13 +1,12 @@
 """Utility helpers for resource monitoring and content scanning."""
 
-import functools
 import logging
-import re
 import sys
 import time
 import unicodedata
 from collections.abc import Iterable
 from types import TracebackType
+from typing import TypeVar
 
 from .exceptions import ErrorCode, ResourceLimitError
 
@@ -114,68 +113,79 @@ def matches_signature_prefix(
     return None
 
 
+_TNeedle = TypeVar("_TNeedle", str, bytes)
+
+
+def _canonical_order(needles: Iterable[_TNeedle]) -> tuple[_TNeedle, ...]:
+    """
+    Deduplicate and order needles so scans are reproducible.
+
+    Callers pass sets, whose iteration order is an implementation
+    detail; without this, which of several matching patterns gets
+    reported could vary. Longest-first makes the most specific
+    candidate win when two of them match.
+
+    Args:
+        needles: Patterns or signatures to canonicalize.
+
+    Returns:
+        Deduplicated tuple ordered longest-first, then by value.
+    """
+    return tuple(sorted(set(needles), key=lambda n: (-len(n), n)))
+
+
 def find_embedded_signature(
-    content: bytes, signatures: Iterable[bytes]
+    content: bytes, signatures: Iterable[bytes], start: int = 0
 ) -> bytes | None:
     """
     Return the first signature found anywhere in the content.
 
     Substring match; use when detecting a format embedded inside
     otherwise-valid content (polyglots, appended payloads).
+    Scanning uses ``bytes.find`` from ``start``: its C search
+    beats a compiled alternation over the same literals, and the
+    offset skips an expected header without copying the window.
 
     Args:
         content: Raw bytes to scan.
         signatures: Candidate byte signatures.
+        start: Offset to begin scanning at, so a caller can skip
+            an expected header without slicing the buffer.
 
     Returns:
         The first matching signature, or None if none present.
     """
-    for sig in signatures:
-        if sig in content:
+    for sig in _canonical_order(signatures):
+        if content.find(sig, start) != -1:
             return sig
     return None
-
-
-@functools.lru_cache(maxsize=8)
-def _compile_text_patterns(patterns: tuple[str, ...]) -> re.Pattern[bytes]:
-    """
-    Build a cached case-insensitive alternation over patterns.
-
-    Args:
-        patterns: Lower-case ASCII substrings to search for.
-
-    Returns:
-        Compiled byte-level pattern matching any of the inputs.
-    """
-    return re.compile(
-        b"|".join(re.escape(p.encode("utf-8")) for p in patterns),
-        re.IGNORECASE,
-    )
 
 
 def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
     """
     Return the first text pattern present in the content.
 
-    Matching runs directly over the raw bytes in a single pass so
-    a large scan window is never copied or decoded.
+    The window is lower-cased once and searched as bytes. A
+    case-insensitive regex alternation over the same literals
+    measures an order of magnitude slower on a large window, and
+    decoding to text would cost a second full-size copy.
 
     Args:
         content: Raw bytes to scan.
         patterns: Lower-case ASCII substrings to search for.
 
     Returns:
-        The matching pattern in its canonical lower-case form, or
-        None if none are present.
+        The matching pattern, or None if none are present.
     """
-    candidates = tuple(patterns)
+    candidates = _canonical_order(patterns)
     if not candidates:
         return None
 
-    match = _compile_text_patterns(candidates).search(content)
-    if match is None:
-        return None
-    return match.group().lower().decode("utf-8", errors="replace")
+    lowered = content.lower()
+    for pattern in candidates:
+        if lowered.find(pattern.encode("utf-8")) != -1:
+            return pattern
+    return None
 
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"

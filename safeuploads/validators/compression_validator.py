@@ -203,8 +203,10 @@ class CompressionSecurityValidator(BaseValidator):
                             )
                             cid = get_correlation_id()
                             if cid:
+                                # Raw name: the audit logger escapes
+                                # on emission.
                                 self._audit.threat(
-                                    entry_label,
+                                    entry.filename,
                                     cid,
                                     "Zip bomb — excessive compression ratio",
                                 )

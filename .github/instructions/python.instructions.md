@@ -1,9 +1,9 @@
 ---
-description: 'Python 3.13 + FastAPI + SQLAlchemy + Alembic coding standards, docstring format, testing patterns, and module organization for the Endurain backend'
+description: 'Python 3.11 + FastAPI + SQLAlchemy + Alembic coding standards, docstring format, testing patterns, and module organization for the Endurain backend'
 applyTo: '**/*.py'
 ---
 # Project Context
-- **Python Version:** 3.13+ (required)
+- **Python Version:** 3.11+ (required)
 - **Framework:** FastAPI with SQLAlchemy ORM and Alembic migrations
 - **Dependency Management:** uv (see `pyproject.toml`)
 - **Project Structure:** All backend code in `backend/app/`
@@ -12,7 +12,7 @@ applyTo: '**/*.py'
 # Development Setup
 - **Install uv:** `pip install uv`
 - **Install dependencies:** `uv sync --group dev`
-- **Use Docker:** If system Python < 3.13, use Docker for 
+- **Use Docker:** If system Python < 3.11, use Docker for 
   development
 
 # SQLAlchemy 2.0 Standards
@@ -48,11 +48,11 @@ applyTo: '**/*.py'
 - **No hardcoded secrets:** Use environment variables
 - **Async file I/O:** Use `await file.read()`, not sync
 
-# Modern Python Syntax (Python 3.13+)
+# Modern Python Syntax (Python 3.11+)
 - Use modern type hint syntax: `int | None`, `list[str]`, 
   `dict[str, Any]`
 - Do NOT use `typing.Optional`, `typing.List`, `typing.Dict`, etc.
-- Target Python 3.13+ features and syntax
+- Target Python 3.11+ features and syntax
 - Always prioritize readability and clarity
 
 # PEP 8 Line Limits

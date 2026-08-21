@@ -210,6 +210,27 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "unknown_zip_entry_category" in error_types
 
+    def test_gzip_timeout_below_size_limit_warns(self):
+        """Test a timeout too short for the size limit warns."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                gzip_analysis_timeout=1.0,
+                max_uncompressed_size=1024 * 1024 * 1024,
+            )
+        )
+        errors = config.validate_instance()
+        warnings = [e.error_type for e in errors if e.severity == "warning"]
+        assert "gzip_timeout_below_size_limit" in warnings
+
+    def test_default_gzip_timeout_covers_size_limit(self):
+        """Test the shipped defaults do not warn against each other."""
+        errors = FileSecurityConfig().validate_instance()
+        assert not [
+            e
+            for e in errors
+            if e.error_type == "gzip_timeout_below_size_limit"
+        ]
+
     def test_known_zip_entry_categories_accepted(self):
         """Test that valid category names pass validation."""
         config = FileSecurityConfig(

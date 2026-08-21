@@ -51,10 +51,16 @@ which uploads are accepted. Read the upgrade notes before bumping.
   incrementally and completed elements are discarded as they close, so
   a flat document with millions of elements can no longer amplify a
   bounded upload into an unbounded object graph.
-- `gzip_analysis_timeout` limit (default 5 s) bounding gzip inflation
+- `gzip_analysis_timeout` limit (default 25 s) bounding gzip inflation
   independently of any caller-supplied `ResourceMonitor`. A breach
-  raises `ZipBombError` with `ZIP_ANALYSIS_TIMEOUT`, matching the ZIP
-  inspector's timeout.
+  raises `ZipBombError` with `ZIP_ANALYSIS_TIMEOUT`, the same error
+  code the ZIP inspector uses for its own timeout. The default is
+  sized to inflate `max_uncompressed_size` at a conservative
+  50 MB/s; configuration validation reports
+  `gzip_timeout_below_size_limit` when the two are set against each
+  other, because a timeout too short for the permitted size turns
+  every slow-but-legitimate upload into a reported decompression
+  bomb.
 - `safe_label()` utility, applied to every untrusted filename and ZIP
   entry name before it reaches a log record, audit event, or exception
   message.
@@ -80,8 +86,9 @@ which uploads are accepted. Read the upgrade notes before bumping.
   non-FastAPI framework adapter implements, so it belonged in the
   public API alongside `SeekableFile`.
 - `set_source_ip()`, which attaches the client address to every audit
-  event in the current context. `AuditEvent.source_ip` existed but was
-  never populated.
+  event in the current context, together with `get_source_ip()` and
+  `reset_source_ip()`. `AuditEvent.source_ip` existed but was never
+  populated.
 - Release-verification instructions for consumers, covering PEP 740
   attestation checks with `pypi-attestations`.
 
@@ -115,13 +122,18 @@ which uploads are accepted. Read the upgrade notes before bumping.
 - `FileProcessingError` accepts an optional `error_code`, and XML
   failures now carry `XML_MALFORMED`, `XML_FORBIDDEN_CONSTRUCT`,
   `XML_INVALID_ROOT`, or `XML_TOO_MANY_ELEMENTS`.
-- `find_text_pattern()` scans raw bytes with a cached compiled pattern
-  instead of decoding and lower-casing the whole buffer, removing two
-  full-size copies of the content-analysis window (up to 50 MB each).
-  It now returns the match that appears earliest in the content rather
-  than the first pattern in the supplied order. Whether a threat is
-  detected is unchanged; only which pattern name is reported when a
-  buffer matches several can differ.
+- `find_text_pattern()` lower-cases the scan window once and searches
+  it as bytes, instead of decoding it to text and lower-casing that,
+  removing one full-size copy of the content-analysis window (up to
+  50 MB). `find_embedded_signature()` takes a start offset, so
+  skipping an expected header no longer copies the window either.
+  Both now scan candidates in a canonical longest-first order, so
+  which pattern is reported when a buffer matches several no longer
+  depends on set iteration order. Whether a threat is detected is
+  unchanged, with one exception: matching over bytes does not see
+  through interleaved invalid bytes the way decoding with
+  `errors="ignore"` did, so a pattern split by junk bytes is no
+  longer joined back together.
 - Documentation and the FastAPI example no longer return `str(err)` to
   clients. Exception messages embed values derived from the upload,
   such as the detected MIME type and ZIP entry names, and
@@ -136,7 +148,8 @@ which uploads are accepted. Read the upgrade notes before bumping.
   consumer can no longer mutate it process-wide.
 - Audit fields are escaped once, at the emission point, instead of also
   being escaped by the caller. Escaping twice could truncate an
-  adversarial filename mid-escape-sequence.
+  adversarial filename mid-escape-sequence, because the escaped form
+  is longer than the input and is re-truncated on the second pass.
 
 ### Removed
 

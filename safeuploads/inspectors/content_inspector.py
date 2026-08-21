@@ -117,8 +117,10 @@ class ContentSecurityInspector(BaseInspector):
             )
             cid = get_correlation_id()
             if cid:
+                # Raw name: the audit logger escapes on emission,
+                # and escaping twice can truncate mid-sequence.
                 self._audit.threat(
-                    label,
+                    filename,
                     cid,
                     "; ".join(threats),
                 )
@@ -203,8 +205,7 @@ class ContentSecurityInspector(BaseInspector):
         # Skip first 8 bytes (longest common header is
         # PNG at 8 bytes) and search rest for secondary
         # signatures to detect polyglot files
-        tail = content[8:]
-        sig = find_embedded_signature(tail, self._polyglot_sigs)
+        sig = find_embedded_signature(content, self._polyglot_sigs, 8)
         if sig is not None:
             return [
                 f"Polyglot file detected"

@@ -1623,8 +1623,7 @@ class TestImageDimensionValidation:
     @pytest.mark.asyncio
     async def test_custom_pixel_limit_enforced(self, mock_upload_file):
         """A tightened max_image_pixels is honoured."""
-        config = FileSecurityConfig()
-        config.limits = SecurityLimits(max_image_pixels=1000)
+        config = FileSecurityConfig(SecurityLimits(max_image_pixels=1000))
         validator = FileValidator(config=config)
         content = _png_with_dimensions(100, 100)
         file = mock_upload_file(filename="photo.png", content=content)

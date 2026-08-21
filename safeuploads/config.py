@@ -19,6 +19,12 @@ from .utils import bytes_to_mb
 
 logger = logging.getLogger(__name__)
 
+# Conservative floor for gzip inflation throughput, used only to
+# size the analysis timeout against the uncompressed byte limit.
+# Well below what a modern host sustains, so the derived timeout
+# stays generous rather than borderline.
+_MIN_INFLATE_THROUGHPUT_MB_S = 50
+
 
 def _config_error(
     error_type: str,
@@ -162,7 +168,7 @@ class SecurityLimits:
         5.0  # Maximum seconds to spend analyzing ZIP structure
     )
     gzip_analysis_timeout: float = (
-        5.0  # Maximum seconds to spend inflating a gzip stream
+        25.0  # Maximum seconds to spend inflating a gzip stream
     )
 
     # XML activity file limits. Entity expansion is blocked by
@@ -1133,6 +1139,37 @@ class FileSecurityConfig:
                     "gzip_analysis_timeout must be greater than 0",
                     "compression",
                     "Set a reasonable timeout for gzip inflation",
+                )
+            )
+
+        # A timeout too short to inflate a permitted stream turns
+        # every slow-but-legitimate upload into a ZipBombError and
+        # a THREAT_DETECTED audit event, so the two limits have to
+        # be sized against each other.
+        required = (
+            bytes_to_mb(limits.max_uncompressed_size)
+            / _MIN_INFLATE_THROUGHPUT_MB_S
+        )
+        if 0 < limits.gzip_analysis_timeout < required:
+            errors.append(
+                _config_error(
+                    "gzip_timeout_below_size_limit",
+                    (
+                        "gzip_analysis_timeout"
+                        f" ({limits.gzip_analysis_timeout}s) is too"
+                        " short to inflate max_uncompressed_size"
+                        f" ({bytes_to_mb(limits.max_uncompressed_size)}MB),"
+                        f" which needs about {required:.0f}s at"
+                        f" {_MIN_INFLATE_THROUGHPUT_MB_S}MB/s; legitimate"
+                        " uploads will be rejected as decompression bombs"
+                    ),
+                    "compression",
+                    (
+                        f"Raise gzip_analysis_timeout to at least"
+                        f" {required:.0f}s or lower"
+                        " max_uncompressed_size"
+                    ),
+                    severity="warning",
                 )
             )
 

@@ -103,9 +103,9 @@ strict_limits = SecurityLimits(
     max_compression_ratio=50,  # Stricter ratio
 )
 
-# Apply to config
-config = FileSecurityConfig()
-config.limits = strict_limits
+# Apply to config. The limits are copied, so the object above is
+# never aliased; assigning to `config.limits` instead would share it.
+config = FileSecurityConfig(strict_limits)
 
 # Use with validator
 validator = FileValidator(config=config)

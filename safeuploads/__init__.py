@@ -10,7 +10,9 @@ from .audit import (
     AuditEventType,
     SecurityAuditLogger,
     get_correlation_id,
+    get_source_ip,
     reset_correlation_id,
+    reset_source_ip,
     set_correlation_id,
     set_source_ip,
 )
@@ -133,5 +135,7 @@ __all__ = [
     "get_correlation_id",
     "set_correlation_id",
     "reset_correlation_id",
+    "get_source_ip",
     "set_source_ip",
+    "reset_source_ip",
 ]

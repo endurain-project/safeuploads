@@ -10,6 +10,7 @@ from safeuploads.exceptions import (
 )
 from safeuploads.utils import (
     ResourceMonitor,
+    find_embedded_signature,
     find_text_pattern,
     parse_image_dimensions,
     safe_label,
@@ -118,6 +119,42 @@ class TestFindTextPattern:
     def test_undecodable_bytes_do_not_raise(self):
         """Test invalid UTF-8 is scanned without decoding."""
         assert find_text_pattern(b"\xff\xfe\xfd", ("<?php",)) is None
+
+    def test_longest_candidate_wins_a_tie(self):
+        """Test the most specific pattern is reported."""
+        assert find_text_pattern(b"<script>", ("<s", "<script")) == "<script"
+
+
+class TestFindEmbeddedSignature:
+    """Signature scanning is offset-aware and deterministic."""
+
+    def test_signature_anywhere_is_found(self):
+        """Test a signature past the header is detected."""
+        content = b"....RAR!...."
+        assert find_embedded_signature(content, (b"PK\x03\x04", b"RAR!")) == (
+            b"RAR!"
+        )
+
+    def test_result_does_not_depend_on_input_order(self):
+        """Test set iteration order cannot change the result."""
+        content = b"....RAR!....PK\x03\x04"
+        forward = find_embedded_signature(content, (b"PK\x03\x04", b"RAR!"))
+        reverse = find_embedded_signature(content, (b"RAR!", b"PK\x03\x04"))
+        assert forward == reverse
+
+    def test_no_match_returns_none(self):
+        """Test absent signatures yield None."""
+        assert find_embedded_signature(b"clean", (b"PK\x03\x04",)) is None
+
+    def test_empty_signature_set_returns_none(self):
+        """Test an empty signature set never matches."""
+        assert find_embedded_signature(b"anything", ()) is None
+
+    def test_start_offset_skips_the_header(self):
+        """Test a header match is ignored when start is past it."""
+        content = b"PK\x03\x04payload"
+        assert find_embedded_signature(content, (b"PK\x03\x04",)) is not None
+        assert find_embedded_signature(content, (b"PK\x03\x04",), 8) is None
 
 
 def _png(width: int, height: int) -> bytes:

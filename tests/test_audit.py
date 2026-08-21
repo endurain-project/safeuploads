@@ -9,7 +9,9 @@ from safeuploads.audit import (
     AuditEventType,
     SecurityAuditLogger,
     get_correlation_id,
+    get_source_ip,
     reset_correlation_id,
+    reset_source_ip,
     set_correlation_id,
     set_source_ip,
 )
@@ -256,6 +258,15 @@ class TestAuditSourceIp:
             set_source_ip(None)
 
         assert "\n" not in caplog.records[0].audit_source_ip
+
+    def test_reset_clears_the_context_value(self):
+        """Test reset_source_ip clears a recorded address."""
+        set_source_ip("203.0.113.7")
+        assert get_source_ip() == "203.0.113.7"
+
+        reset_source_ip()
+
+        assert get_source_ip() is None
 
 
 class TestAuditEscapingIsSinglePass:

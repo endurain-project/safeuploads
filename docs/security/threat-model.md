@@ -383,9 +383,12 @@ size, similar to ZIP bombs.
 - Exceeding either limit raises a validation error immediately,
   without reading the rest of the stream.
 - Inflation is additionally bounded by `gzip_analysis_timeout`
-  (default 5 s), so a stream that stays inside the ratio and
+  (default 25 s), so a stream that stays inside the ratio and
   size limits still cannot burn unbounded CPU. The bound does
-  not depend on the caller supplying a `ResourceMonitor`.
+  not depend on the caller supplying a `ResourceMonitor`. The
+  default is sized to inflate `max_uncompressed_size` at a
+  conservative 50 MB/s, so it fires on pathological CPU cost
+  rather than on a large but legitimate stream.
 
 ---
 

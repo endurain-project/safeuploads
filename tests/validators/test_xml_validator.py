@@ -226,8 +226,7 @@ class TestXmlElementCap:
 
     def test_element_cap_enforced(self):
         """Test exceeding max_xml_elements is rejected."""
-        config = FileSecurityConfig()
-        config.limits = SecurityLimits(max_xml_elements=10)
+        config = FileSecurityConfig(SecurityLimits(max_xml_elements=10))
         validator = XmlSecurityValidator(config)
         payload = b"<gpx>" + b"<trkpt/>" * 50 + b"</gpx>"
 
@@ -238,8 +237,7 @@ class TestXmlElementCap:
 
     def test_document_within_cap_passes(self):
         """Test a document under the cap is accepted."""
-        config = FileSecurityConfig()
-        config.limits = SecurityLimits(max_xml_elements=100)
+        config = FileSecurityConfig(SecurityLimits(max_xml_elements=100))
         validator = XmlSecurityValidator(config)
         payload = b"<gpx>" + b"<trkpt/>" * 50 + b"</gpx>"
 

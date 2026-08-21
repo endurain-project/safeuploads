@@ -493,8 +493,11 @@ class ZipContentInspector(BaseInspector):
                 # Executable signatures are matched against the
                 # entry header (anchored): the entry either is or
                 # is not an executable.
-                if matches_signature_prefix(
-                    content_sample, self._exec_signatures
+                if (
+                    matches_signature_prefix(
+                        content_sample, self._exec_signatures
+                    )
+                    is not None
                 ):
                     threats.append(f"Executable content detected in '{label}'")
 

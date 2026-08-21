@@ -37,7 +37,12 @@ that addresses it.
       for most workloads; lower for stricter environments.
     - `max_xml_elements` — default 1,000,000; lower if you only
       accept small GPX/TCX files.
-    - `gzip_analysis_timeout` — default 5 s for gzip inflation.
+    - `gzip_analysis_timeout` — default 25 s for gzip inflation,
+      sized to cover `max_uncompressed_size` at a conservative
+      50 MB/s. Lower it only alongside `max_uncompressed_size`:
+      a timeout too short for the permitted size rejects slow
+      but legitimate uploads as decompression bombs, and
+      configuration validation warns when the two disagree.
     - `max_validation_time_seconds` — default 30 s; lower in
       latency-sensitive services.
     - `max_validation_memory_mb` — default 512 MB. This is
@@ -130,6 +135,8 @@ archive afterwards:
   recommended for log aggregation).
 - [ ] `set_source_ip()` called with the client address before
   validating, so audit events can be attributed to a caller.
+- [ ] `reset_source_ip()` called when the address must not
+  outlive the request, if your framework reuses the context.
 - [ ] Log storage retention policy defined (minimum 90 days
   recommended for security incident investigation).
 - [ ] Alerting configured for `THREAT_DETECTED` and

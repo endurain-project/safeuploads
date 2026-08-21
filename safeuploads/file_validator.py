@@ -343,9 +343,10 @@ class FileValidator:
                 error_code=ErrorCode.FILE_SIGNATURE_MISSING,
             )
 
-        if matches_signature_prefix(
+        matched = matches_signature_prefix(
             file_content, _FILE_SIGNATURES.get(expected_type, ())
-        ):
+        )
+        if matched is not None:
             logger.debug("File signature matched for type '%s'", expected_type)
             return
 

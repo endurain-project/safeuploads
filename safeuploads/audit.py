@@ -69,18 +69,32 @@ source_ip_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
+def get_source_ip() -> str | None:
+    """
+    Return the client address recorded for this context.
+
+    Returns:
+        Client address string, or None if not set.
+    """
+    return source_ip_var.get()
+
+
 def set_source_ip(ip: str | None) -> None:
     """
     Record the client address for audit events in this context.
 
     safeuploads never sees the request, so the application sets
-    this from its own framework before validating. Pass None to
-    clear it.
+    this from its own framework before validating.
 
     Args:
         ip: Client address, or None to clear.
     """
     source_ip_var.set(ip)
+
+
+def reset_source_ip() -> None:
+    """Clear the client address recorded for this context."""
+    source_ip_var.set(None)
 
 
 def log_extra(

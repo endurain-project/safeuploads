@@ -36,14 +36,17 @@ class TestGzipInspectionResourceLimits:
 
     def test_inflation_timeout_without_monitor(self):
         """Test the inspector bounds inflation on its own."""
-        config = FileSecurityConfig()
-        config.limits = SecurityLimits(
-            gzip_analysis_timeout=0.0,
-            chunk_size=1,
-            enable_audit_logging=True,
+        # A configuration-valid timeout, kept tiny; the 1-byte
+        # chunk size guarantees enough loop iterations to pass it.
+        config = FileSecurityConfig(
+            SecurityLimits(
+                gzip_analysis_timeout=0.001,
+                chunk_size=1,
+                enable_audit_logging=True,
+            )
         )
         inspector = GzipContentInspector(config)
-        payload = gzip.compress(b"x" * 4096)
+        payload = gzip.compress(b"x" * 65536)
 
         set_correlation_id("test-correlation-id")
         try:
@@ -52,6 +55,7 @@ class TestGzipInspectionResourceLimits:
                     io.BytesIO(payload), len(payload)
                 )
             assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
+            assert exc_info.value.compression_ratio is None
         finally:
             reset_correlation_id()
 

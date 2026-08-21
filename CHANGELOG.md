@@ -49,8 +49,45 @@ project adheres to
   the top-level package. `UploadFileProtocol` is the interface a
   non-FastAPI framework adapter implements, so it belonged in the
   public API alongside `SeekableFile`.
+- `set_source_ip()`, which attaches the client address to every audit
+  event in the current context. `AuditEvent.source_ip` existed but was
+  never populated.
+
+### Removed
+
+- **Breaking:** the `validate()` alias on every validator, and the
+  `BaseValidator` abstract method behind it. The abstraction was
+  false: each validator takes different arguments, so the "uniform"
+  interface could never be used polymorphically, and its
+  `*args: Any, **kwargs: Any` signature was the only untyped surface
+  in the package. Call the purpose-named method instead
+  (`validate_unicode_security`, `validate_extensions`,
+  `validate_windows_reserved_names`, `validate_zip_compression_ratio`,
+  `validate_xml_safety`). `BaseValidator` remains as a plain base
+  class, matching `BaseInspector`.
+- **Breaking:** eight `ErrorCode` members that no code path could ever
+  produce: `FILE_SIZE_UNKNOWN`, `MIME_DETECTION_FAILED`,
+  `FILE_SIGNATURE_INVALID`, `ZIP_INVALID_STRUCTURE`,
+  `ZIP_DIRECTORY_TRAVERSAL`, `ZIP_SYMLINK_DETECTED`,
+  `ZIP_ABSOLUTE_PATH`, and `MEMORY_ERROR`.
+- **Breaking:** three unused `ZipThreatCategory` members that held
+  marker strings rather than extensions: `RECURSIVE_STRUCTURE`,
+  `QUINE_ARCHIVE`, and `COMPLEXITY_ATTACK`. The corresponding
+  `ErrorCode` values are unaffected and still raised.
+- A redundant entry-count check in `CompressionSecurityValidator` that
+  applied `max_total_entries_recursive` to a single flat archive. That
+  limit counts entries across nesting levels and is enforced in
+  `ZipContentInspector`; a flat archive is capped by
+  `max_zip_entries`.
 
 ### Changed
+
+- A breached resource budget is now audited as `RESOURCE_LIMIT`
+  instead of a generic `VALIDATION_FAILURE`. The integration checklist
+  already told integrators to alert on this event type, but nothing
+  emitted it.
+- The file-signature table in `FileValidator` is a module constant
+  instead of a dict rebuilt on every validation.
 
 - **Lowered the minimum supported Python from 3.13 to 3.11.** No source
   changes were required; `enum.StrEnum` was the only 3.11+ dependency.

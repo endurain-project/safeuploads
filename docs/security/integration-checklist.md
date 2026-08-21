@@ -95,6 +95,8 @@ archive afterwards:
   (or parent `safeuploads` logger).
 - [ ] Structured log output configured (JSON formatter
   recommended for log aggregation).
+- [ ] `set_source_ip()` called with the client address before
+  validating, so audit events can be attributed to a caller.
 - [ ] Log storage retention policy defined (minimum 90 days
   recommended for security incident investigation).
 - [ ] Alerting configured for `THREAT_DETECTED` and

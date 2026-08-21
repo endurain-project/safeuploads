@@ -29,6 +29,7 @@ else:
         from .protocols import UploadFileProtocol as UploadFile
 
 from .audit import (
+    AuditEventType,
     SecurityAuditLogger,
     reset_correlation_id,
     set_correlation_id,
@@ -52,6 +53,7 @@ from .inspectors.gzip_inspector import GzipContentInspector
 from .utils import (
     ResourceMonitor,
     bytes_to_mb,
+    matches_signature_prefix,
     parse_image_dimensions,
     safe_label,
 )
@@ -71,6 +73,28 @@ _T = TypeVar("_T")
 # well past the 8 KB MIME sample. Anything beyond this window
 # is treated as malformed rather than scanned indefinitely.
 _IMAGE_DIMENSION_SCAN_BYTES = 1024 * 1024
+
+# Header bytes that identify each accepted format. Kept separate
+# from the threat signatures in ``enums`` on purpose: these
+# answer "is this the format we asked for", not "is this a
+# threat".
+_FILE_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    "image": (
+        b"\xff\xd8\xff",  # JPEG
+        b"\xff\xd8\xff\xe1",  # JPEG EXIF (additional JPEG variant)
+        b"\x89PNG\r\n\x1a\n",  # PNG
+    ),
+    "zip": (
+        b"PK\x03\x04",  # ZIP file
+        b"PK\x05\x06",  # Empty ZIP
+        b"PK\x07\x08",  # ZIP with spanning
+    ),
+    "gzip": (b"\x1f\x8b",),  # gzip magic number
+    "activity": (
+        b"<?xml",  # XML header (GPX/TCX)
+        b"\xef\xbb\xbf<?xml",  # XML with BOM
+    ),
+}
 
 
 class FileValidator:
@@ -318,35 +342,11 @@ class FileValidator:
                 error_code=ErrorCode.FILE_SIGNATURE_MISSING,
             )
 
-        # Common file signatures
-        signatures = {
-            "image": [
-                b"\xff\xd8\xff",  # JPEG
-                b"\xff\xd8\xff\xe1",  # JPEG EXIF (additional JPEG variant)
-                b"\x89PNG\r\n\x1a\n",  # PNG
-            ],
-            "zip": [
-                b"PK\x03\x04",  # ZIP file
-                b"PK\x05\x06",  # Empty ZIP
-                b"PK\x07\x08",  # ZIP with spanning
-            ],
-            "gzip": [
-                b"\x1f\x8b",  # gzip magic number
-            ],
-            "activity": [
-                b"<?xml",  # XML header (GPX/TCX)
-                b"\xef\xbb\xbf<?xml",  # XML with BOM
-            ],
-        }
-
-        expected_signatures = signatures.get(expected_type, [])
-
-        for signature in expected_signatures:
-            if file_content.startswith(signature):
-                logger.debug(
-                    "File signature matched for type '%s'", expected_type
-                )
-                return  # Signature matched
+        if matches_signature_prefix(
+            file_content, _FILE_SIGNATURES.get(expected_type, ())
+        ):
+            logger.debug("File signature matched for type '%s'", expected_type)
+            return
 
         # FIT files: ".FIT" at bytes 8-11
         if (
@@ -880,6 +880,11 @@ class FileValidator:
                 cid,
                 ms,
                 safe_label(str(exc), max_length=512),
+                event_type=(
+                    AuditEventType.RESOURCE_LIMIT
+                    if isinstance(exc, ResourceLimitError)
+                    else AuditEventType.VALIDATION_FAILURE
+                ),
             )
             raise
         except Exception as err:

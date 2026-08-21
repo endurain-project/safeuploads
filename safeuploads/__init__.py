@@ -12,6 +12,7 @@ from .audit import (
     get_correlation_id,
     reset_correlation_id,
     set_correlation_id,
+    set_source_ip,
 )
 
 # Core classes and configurations
@@ -132,4 +133,5 @@ __all__ = [
     "get_correlation_id",
     "set_correlation_id",
     "reset_correlation_id",
+    "set_source_ip",
 ]

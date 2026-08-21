@@ -126,7 +126,8 @@ ZIPs that cause infinite recursion during inspection.
   raises `ZIP_QUINE_DETECTED`.
 - `max_zip_depth` (default 10) limits nesting level.
 - `max_total_entries_recursive` (default 50,000) limits the
-  cumulative entry count across all nesting levels.
+  cumulative entry count across all nesting levels. A single
+  flat archive is capped by `max_zip_entries` instead.
 - `ZIP_RECURSIVE_STRUCTURE` and `ZIP_COMPLEXITY_ATTACK` error
   codes provide precise feedback.
 
@@ -418,9 +419,14 @@ threat detections) go unlogged, preventing incident response.
 
 - `SecurityAuditLogger` emits structured log records under the
   `safeuploads.audit` logger for every validation start,
-  success, failure, and threat detection.
+  success, failure, and threat detection. A breached resource
+  budget is recorded as `RESOURCE_LIMIT` rather than a generic
+  failure, so it can be alerted on separately.
 - Correlation IDs (via `contextvars`) link all log messages
   from a single validation call.
+- `set_source_ip()` attaches the client address to every audit
+  event in the current context. safeuploads never sees the
+  request, so the application supplies it.
 - Audit logging is off by default (`enable_audit_logging=
   False`) to avoid noise in development, enabled in production.
 

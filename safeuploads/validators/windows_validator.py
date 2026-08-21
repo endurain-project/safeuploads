@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
 
 from ..exceptions import WindowsReservedNameError
 from ..utils import safe_label
 from .base import BaseValidator
-
-if TYPE_CHECKING:
-    from ..config import FileSecurityConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +19,6 @@ class WindowsSecurityValidator(BaseValidator):
     Attributes:
         config: File security configuration settings.
     """
-
-    def __init__(self, config: FileSecurityConfig):
-        """
-        Initialize the validator.
-
-        Args:
-            config: File security configuration settings.
-        """
-        super().__init__(config)
 
     def validate_windows_reserved_names(self, filename: str) -> None:
         """
@@ -95,16 +81,3 @@ class WindowsSecurityValidator(BaseValidator):
             current_name = name_without_ext
 
         logger.debug("No Windows reserved name detected")
-
-    def validate(self, filename: str) -> None:
-        """
-        Validate filename against Windows reserved naming rules.
-
-        Args:
-            filename: The filename to validate.
-
-        Raises:
-            WindowsReservedNameError: If filename matches a Windows
-                reserved device name.
-        """
-        return self.validate_windows_reserved_names(filename)

@@ -423,9 +423,6 @@ class ZipThreatCategory(Enum):
         EXECUTABLE_FILES: Executable content threats.
         SCRIPT_FILES: Script and code threats.
         SYSTEM_FILES: System and configuration threats.
-        RECURSIVE_STRUCTURE: Self-referencing ZIP structures.
-        QUINE_ARCHIVE: ZIP that contains a copy of itself.
-        COMPLEXITY_ATTACK: Algorithmic complexity exploits.
     """
 
     # Archive format threats
@@ -497,15 +494,6 @@ class ZipThreatCategory(Enum):
         ".conf",
         ".ini",
     }
-
-    # Self-referencing ZIP structures
-    RECURSIVE_STRUCTURE = {"recursive_zip"}
-
-    # ZIP that contains a copy of itself
-    QUINE_ARCHIVE = {"quine_zip"}
-
-    # Algorithmic complexity exploits
-    COMPLEXITY_ATTACK = {"complexity_attack"}
 
 
 class MalwareSignatureCategory(Enum):

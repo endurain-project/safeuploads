@@ -1324,7 +1324,7 @@ class FileSecurityConfig:
                 )
 
         # Raise exception if there are errors and strict mode is enabled
-        if error_list and strict:
+        if strict and error_list:
             raise FileSecurityConfigurationError(error_list)
-        if (error_list or warning_list) and strict:
-            raise FileSecurityConfigurationError(error_list + warning_list)
+        if strict and warning_list:
+            raise FileSecurityConfigurationError(warning_list)

@@ -64,6 +64,25 @@ def reset_correlation_id() -> None:
     correlation_id_var.set(None)
 
 
+source_ip_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "safeuploads_source_ip", default=None
+)
+
+
+def set_source_ip(ip: str | None) -> None:
+    """
+    Record the client address for audit events in this context.
+
+    safeuploads never sees the request, so the application sets
+    this from its own framework before validating. Pass None to
+    clear it.
+
+    Args:
+        ip: Client address, or None to clear.
+    """
+    source_ip_var.set(ip)
+
+
 def log_extra(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -129,7 +148,7 @@ class AuditEvent:
     result: str = ""
     details: str = ""
     duration_ms: float = 0.0
-    source_ip: str | None = None
+    source_ip: str | None = field(default_factory=source_ip_var.get)
     timestamp: float = field(default_factory=time.monotonic)
 
 
@@ -259,6 +278,7 @@ class SecurityAuditLogger:
         duration_ms: float,
         error: str,
         details: str = "",
+        event_type: AuditEventType = AuditEventType.VALIDATION_FAILURE,
     ) -> None:
         """
         Log a validation failure event.
@@ -269,10 +289,11 @@ class SecurityAuditLogger:
             duration_ms: Validation duration in milliseconds.
             error: Short error description.
             details: Additional failure context.
+            event_type: Category to record the failure under.
         """
         self.log_event(
             AuditEvent(
-                event_type=(AuditEventType.VALIDATION_FAILURE),
+                event_type=event_type,
                 correlation_id=correlation_id,
                 filename=filename,
                 result=error,

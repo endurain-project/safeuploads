@@ -148,15 +148,3 @@ class UnicodeSecurityValidator(BaseValidator):
 
         logger.debug("Unicode validation passed")
         return normalized_filename
-
-    def validate(self, filename: str) -> str:
-        """
-        Validate a filename for Unicode security issues.
-
-        Args:
-            filename: The name of the file to assess.
-
-        Returns:
-            The validated and normalized filename.
-        """
-        return self.validate_unicode_security(filename)

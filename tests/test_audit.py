@@ -11,6 +11,7 @@ from safeuploads.audit import (
     get_correlation_id,
     reset_correlation_id,
     set_correlation_id,
+    set_source_ip,
 )
 from safeuploads.exceptions import (
     CompressionSecurityError,
@@ -188,6 +189,63 @@ class TestSecurityAuditLogger:
         assert record.audit_source_ip == ""
 
 
+class TestAuditSourceIp:
+    """The client address is carried on the context."""
+
+    def test_defaults_to_none(self):
+        """Test no source IP is recorded by default."""
+        event = AuditEvent(
+            event_type=AuditEventType.VALIDATION_START,
+            correlation_id="cid",
+        )
+        assert event.source_ip is None
+
+    def test_context_value_populates_event(self):
+        """Test a set source IP reaches new events."""
+        set_source_ip("203.0.113.7")
+        try:
+            event = AuditEvent(
+                event_type=AuditEventType.VALIDATION_START,
+                correlation_id="cid",
+            )
+        finally:
+            set_source_ip(None)
+
+        assert event.source_ip == "203.0.113.7"
+
+    def test_source_ip_reaches_log_record(self, caplog):
+        """Test the emitted record carries the source IP.
+
+        Args:
+            caplog: pytest log capture fixture.
+        """
+        audit = SecurityAuditLogger(enabled=True)
+        set_source_ip("203.0.113.7")
+        try:
+            with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+                audit.start("photo.jpg", "cid-ip")
+        finally:
+            set_source_ip(None)
+
+        assert caplog.records[0].audit_source_ip == "203.0.113.7"
+
+    def test_source_ip_is_escaped(self, caplog):
+        """Test an untrusted forwarded address cannot inject.
+
+        Args:
+            caplog: pytest log capture fixture.
+        """
+        audit = SecurityAuditLogger(enabled=True)
+        set_source_ip("1.2.3.4\nWARNING forged")
+        try:
+            with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+                audit.start("photo.jpg", "cid-ip")
+        finally:
+            set_source_ip(None)
+
+        assert "\n" not in caplog.records[0].audit_source_ip
+
+
 class TestAuditIntegration:
     """Test audit logging integration with FileValidator."""
 
@@ -308,6 +366,45 @@ class TestAuditIntegration:
 
         await validator.validate_image_file(file)
         assert get_correlation_id() is None
+
+    @pytest.mark.asyncio
+    async def test_resource_limit_emits_dedicated_event(
+        self, mock_upload_file, valid_jpeg_bytes, caplog
+    ):
+        """Test a breached budget records a RESOURCE_LIMIT event.
+
+        Args:
+            mock_upload_file: File factory fixture.
+            valid_jpeg_bytes: Valid JPEG bytes fixture.
+            caplog: pytest log capture fixture.
+        """
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.exceptions import ResourceLimitError
+        from safeuploads.file_validator import FileValidator
+
+        validator = FileValidator(
+            config=FileSecurityConfig(
+                SecurityLimits(
+                    enable_audit_logging=True,
+                    max_validation_time_seconds=0.0,
+                )
+            )
+        )
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError),
+        ):
+            await validator.validate_image_file(file)
+
+        types = [
+            r.audit_event_type
+            for r in caplog.records
+            if r.name == "safeuploads.audit"
+        ]
+        assert "resource_limit" in types
+        assert "validation_failure" not in types
 
 
 class TestThreatAuditEvents:

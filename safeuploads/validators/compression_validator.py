@@ -368,29 +368,6 @@ class CompressionSecurityValidator(BaseValidator):
                         error_code=ErrorCode.ZIP_NESTED_ARCHIVE,
                     )
 
-                # Cumulative entry count check for
-                # complexity attack prevention
-                max_recursive = self.config.limits.max_total_entries_recursive
-                if file_count > max_recursive:
-                    logger.error(
-                        "ZIP entry count exceeds recursive limit",
-                        extra=log_extra(
-                            {
-                                "file_count": file_count,
-                                "max_recursive": max_recursive,
-                            }
-                        ),
-                    )
-                    raise CompressionSecurityError(
-                        message=(
-                            "ZIP entry count"
-                            f" ({file_count})"
-                            " exceeds recursive limit"
-                            f" ({max_recursive})"
-                        ),
-                        error_code=(ErrorCode.ZIP_COMPLEXITY_ATTACK),
-                    )
-
                 # Optional: read every entry through zipfile to
                 # confirm the declared metadata is not forged.
                 if self.config.limits.verify_zip_decompression:
@@ -482,30 +459,3 @@ class CompressionSecurityValidator(BaseValidator):
                 while stream.read(chunk_size):
                     if monitor is not None:
                         monitor.check()
-
-    def validate(
-        self,
-        file_obj: SeekableFile,
-        compressed_size: int,
-        monitor: ResourceMonitor | None = None,
-    ) -> None:
-        """
-        Validate the compression ratio of a ZIP file.
-
-        Args:
-            file_obj: Seekable file-like object of the ZIP.
-            compressed_size: Size of the file after compression
-                in bytes.
-            monitor: Optional resource monitor checked once per
-                entry so a runaway archive is aborted mid-scan.
-
-        Raises:
-            ZipBombError: If compression ratio exceeds maximum.
-            CompressionSecurityError: If ZIP structure is invalid.
-            ResourceLimitError: If the monitor's time or memory
-                limit is exceeded during validation.
-            FileProcessingError: If unexpected error occurs.
-        """
-        return self.validate_zip_compression_ratio(
-            file_obj, compressed_size, monitor
-        )

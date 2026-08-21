@@ -91,22 +91,6 @@ class TestCompressionSecurityValidator:
             io.BytesIO(zip_bytes), len(zip_bytes)
         )
 
-    def test_validate_method_delegates_correctly(
-        self, default_config, create_zip_file
-    ):
-        """
-        Test that validate() method delegates to
-        validate_zip_compression_ratio().
-        """
-        validator = CompressionSecurityValidator(default_config)
-        zip_bytes = create_zip_file()
-
-        # Both methods should work identically
-        validator.validate(io.BytesIO(zip_bytes), len(zip_bytes))
-        validator.validate_zip_compression_ratio(
-            io.BytesIO(zip_bytes), len(zip_bytes)
-        )
-
     def test_reject_corrupted_zip(self, default_config):
         """Test rejection of corrupted ZIP files."""
         validator = CompressionSecurityValidator(default_config)
@@ -769,12 +753,13 @@ class TestCompressionSecurityValidator:
         error_msg = str(exc_info.value).lower()
         assert "overall compression ratio" in error_msg
 
-    def test_complexity_attack_entry_count(self):
-        """Test rejection when entries exceed recursive limit."""
-        config = FileSecurityConfig()
-        config.limits = SecurityLimits(
-            max_zip_entries=100000,
-            max_total_entries_recursive=5,
+    def test_flat_entry_count_uses_max_zip_entries(self):
+        """Test the flat entry cap is the only one that applies."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                max_zip_entries=5,
+                max_total_entries_recursive=100000,
+            )
         )
         validator = CompressionSecurityValidator(config)
 
@@ -788,7 +773,7 @@ class TestCompressionSecurityValidator:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(zip_bytes), len(zip_bytes)
             )
-        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+        assert exc_info.value.error_code == ErrorCode.ZIP_TOO_MANY_ENTRIES
 
 
 class TestCompressionValidatorNestedAllowed:

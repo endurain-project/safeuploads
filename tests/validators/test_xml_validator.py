@@ -101,20 +101,6 @@ class TestXmlSecurityValidator:
         with pytest.raises(FileProcessingError):
             validator.validate_xml_safety(file_obj)
 
-    def test_validate_delegates_to_validate_xml_safety(self, default_config):
-        """Test validate() delegates correctly."""
-        validator = XmlSecurityValidator(default_config)
-        valid_xml = b"<gpx/>"
-        file_obj = io.BytesIO(valid_xml)
-        validator.validate(file_obj)
-
-    def test_validate_forwards_expected_root(self, default_config):
-        """Test validate() passes the expected root through."""
-        validator = XmlSecurityValidator(default_config)
-        file_obj = io.BytesIO(b"<gpx/>")
-        with pytest.raises(FileProcessingError, match="root element"):
-            validator.validate(file_obj, "trainingcenterdatabase")
-
     def test_file_position_reset_after_validation(self, default_config):
         """Test file position is reset after validation."""
         validator = XmlSecurityValidator(default_config)

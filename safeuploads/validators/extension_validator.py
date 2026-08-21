@@ -102,16 +102,3 @@ class ExtensionSecurityValidator(BaseValidator):
                     )
 
         logger.debug("Extension validation passed")
-
-    def validate(self, filename: str) -> None:
-        """
-        Validate the given filename.
-
-        Args:
-            filename: Name of the file to validate.
-
-        Raises:
-            ExtensionSecurityError: If filename extension is not
-                permitted.
-        """
-        return self.validate_extensions(filename)

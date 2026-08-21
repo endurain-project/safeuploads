@@ -188,21 +188,3 @@ class XmlSecurityValidator(BaseValidator):
                 ),
                 error_code=ErrorCode.XML_INVALID_ROOT,
             )
-
-    def validate(
-        self,
-        file_obj: SeekableFile,
-        expected_root: str | None = None,
-    ) -> None:
-        """
-        Validate XML file for security threats.
-
-        Args:
-            file_obj: Seekable file containing XML data.
-            expected_root: Required root element name, lower-cased
-                and namespace-free.
-
-        Raises:
-            FileProcessingError: If the XML fails safety checks.
-        """
-        return self.validate_xml_safety(file_obj, expected_root)

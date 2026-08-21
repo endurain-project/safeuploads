@@ -20,7 +20,7 @@ pip install safeuploads[fastapi]
 
 `python-magic` needs the `libmagic` system library present on the deployment target.
 
-## Quick Start
+## Quick start
 
 ```python
 from fastapi import FastAPI, UploadFile, HTTPException
@@ -47,7 +47,7 @@ async def upload_image(file: UploadFile):
 
 The sibling methods are `validate_zip_file`, `validate_activity_file` (GPX, TCX, FIT) and `validate_gzip_file`. Each pipeline is described in [Architecture](security/architecture.md#validation-pipelines).
 
-## What safeuploads Does Not Do
+## What safeuploads does not do
 
 Knowing where the boundary sits matters more than the feature list, because everything past it is still your application's job:
 
@@ -61,7 +61,7 @@ Knowing where the boundary sits matters more than the feature list, because ever
 
 **It does not judge accepted content.** A validated GPX file is well-formed XML with the expected root element, in which safeuploads found no attack. Whether its contents mean anything to your domain is a separate question.
 
-## Known Limitations
+## Known limitations
 
 - No built-in rate limiting (application-level concern — see [Rate Limiting](rate-limiting.md) guide)
 - MIME detection covers first 8 KB; advanced polyglot attacks may require `enable_content_analysis`
@@ -70,7 +70,7 @@ Knowing where the boundary sits matters more than the feature list, because ever
 - `verify_zip_decompression` is off by default; enable it if anything other than Python's `zipfile` extracts your archives (see [Integration Checklist](security/integration-checklist.md#zip-metadata-verification))
 - Uploads larger than `max_memory_buffer_size` spill to disk; set `temp_dir` to control where, otherwise the system default temporary directory is used
 
-## Where to Go Next
+## Where to go next
 
 - [API Reference](api.md) — every public class, method, and exception, generated from the source.
 - [Rate Limiting](rate-limiting.md) — the layer safeuploads deliberately leaves to you, with SlowApi, nginx, Caddy, and Traefik recipes.

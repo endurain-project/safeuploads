@@ -1,18 +1,18 @@
-# Contributing to Endurain
+# Contributing to safeuploads
  
 Thank you for considering contributing to Endurain! Before diving in, please read these guidelines carefully. They exist to make the process sustainable for everyone.
 
-## A Note on Maintainership
+## A note on maintainership
  
 Endurain is maintained by a single person in their spare time. This means review bandwidth is genuinely limited. Following these guidelines isn't bureaucracy, it's what allows contributions to actually get merged rather than sitting in a queue indefinitely.
 
-## Before You Write Any Code
+## Before you write any code
  
 **Open an issue first.** For anything beyond a small bug fix, typo, or documentation improvement, please open an issue and wait for a response before writing code. This takes minutes and can save you hours of work on something that won't be merged because it conflicts with planned direction, existing work, or project scope.
  
 If an issue already exists, comment on it to signal your intent so work isn't duplicated.
 
-## Pull Request Size — The Most Important Rule
+## Pull request size — the most important rule
  
 **Keep PRs small and focused on a single concern.**
  
@@ -26,9 +26,9 @@ PRs that are too large to review efficiently will be asked to be split before th
  
 **Excluded from the line count:** `uv.lock`, migration files, and other generated or vendored files.
 
-## How to Contribute
+## How to contribute
  
-### Bug Fixes
+### Bug fixes
 
 - Check if an issue already exists before opening a new one
 - Include clear steps to reproduce in the issue
@@ -40,19 +40,19 @@ PRs that are too large to review efficiently will be asked to be split before th
 - Improvements to the docs site, inline code comments, and the README all count
 - Keep the same tone and structure as existing docs
 
-### New Features
+### New features
 
 - **Always discuss in an issue first** — this is required, not optional
 - Features that haven't been discussed and approved in an issue may be closed without review, regardless of quality
 
-### Refactors and Code Quality
+### Refactors and code quality
 
 - Must be discussed in an issue first
 - Pure refactor PRs (no behaviour change) are easiest to review. Keep them separate from feature or fix PRs
 - Include a clear explanation of what improved and why
 
 
-## Getting Started
+## Getting started
  
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
@@ -73,10 +73,10 @@ PRs that are too large to review efficiently will be asked to be split before th
    ```
 5. **Push and open a PR** against the `master` branch, filling in the PR template completely
 
-## Response Time Expectations
+## Response time expectations
  
 Reviews may take days to weeks depending on availability. A PR sitting without a response is not a rejection. Please feel free to leave a polite ping after two weeks if there's been no activity.
 
-## Thank You
+## Thank you
  
 Even small contributions make a real difference. Thank you for taking the time to improve Endurain for everyone who self-hosts it.

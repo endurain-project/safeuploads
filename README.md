@@ -54,7 +54,7 @@ A successful run prints `OK: <filename>`. `Provenance for file ... was not found
 
 Each release run also produces a CycloneDX SBOM and `SHA256SUMS`, generated from a clean install of the built wheel. These are retained as workflow artifacts on the release run rather than published to PyPI.
 
-## Quick Start
+## Quick start
 
 ```python
 from fastapi import FastAPI, UploadFile, HTTPException
@@ -112,7 +112,7 @@ pooled_validator = FileValidator(
 )
 ```
 
-## Exception Handling
+## Exception handling
 
 Exception messages are written for your logs, not for your users. They
 embed the client-supplied filename and other untrusted values, so never
@@ -146,7 +146,7 @@ except FileValidationError as err:
     return {"error": "Upload rejected", "code": err.error_code}
 ```
 
-## Current Status
+## Current status
 
 ### Implemented
 
@@ -166,7 +166,7 @@ except FileValidationError as err:
 - **Rich Exception System**: Machine-readable error codes with detailed context
 - **Fuzzing Tests**: Hypothesis-based property testing for filenames, ZIP, images, and config
 
-### Known Limitations
+### Known limitations
 
 - No built-in rate limiting (application-level concern — see documentation)
 - MIME detection covers first 8 KB; advanced polyglot attacks may require `enable_content_analysis`

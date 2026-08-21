@@ -1,4 +1,4 @@
-# API Reference
+# API reference
 
 ::: safeuploads
     handler: python

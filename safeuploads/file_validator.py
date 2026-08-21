@@ -861,16 +861,21 @@ class FileValidator:
                 unexpected internal error.
         """
         cid = set_correlation_id()
-        # The raw client filename reaches the log before any
-        # sanitization has run, so escape it here.
-        filename = safe_label(file.filename or "unknown")
-        self._audit.start(filename, cid)
-        logger.debug("Starting %s file validation: %s", file_type, filename)
+        # Audit fields are escaped at the emission point, so pass
+        # the raw name through; escaping twice would truncate an
+        # adversarial name mid-escape-sequence.
+        raw_name = file.filename or "unknown"
+        self._audit.start(raw_name, cid)
+        logger.debug(
+            "Starting %s file validation: %s",
+            file_type,
+            safe_label(raw_name),
+        )
         t0 = time.monotonic()
         try:
             await body(file)
             ms = (time.monotonic() - t0) * 1000
-            self._audit.success(safe_label(file.filename or filename), cid, ms)
+            self._audit.success(file.filename or raw_name, cid, ms)
         except (
             FileValidationError,
             ResourceLimitError,
@@ -878,10 +883,10 @@ class FileValidator:
         ) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                safe_label(file.filename or filename),
+                file.filename or raw_name,
                 cid,
                 ms,
-                safe_label(str(exc), max_length=512),
+                str(exc),
                 event_type=(
                     AuditEventType.RESOURCE_LIMIT
                     if isinstance(exc, ResourceLimitError)
@@ -892,7 +897,7 @@ class FileValidator:
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(
-                safe_label(file.filename or filename),
+                file.filename or raw_name,
                 cid,
                 ms,
                 "internal_error",
@@ -1110,7 +1115,9 @@ class FileValidator:
         # Perform ZIP content inspection if enabled
         if self.config.limits.scan_zip_content:
             temp_file.seek(0)
-            self.zip_inspector.inspect_zip_content(temp_file, monitor)
+            self.zip_inspector.inspect_zip_content(
+                temp_file, monitor, filename
+            )
 
         # Optional content analysis
         if self.config.limits.enable_content_analysis:
@@ -1358,7 +1365,9 @@ class FileValidator:
         )
 
         # Decompression bomb check
-        self.gzip_inspector.inspect_gzip_content(temp_file, file_size, monitor)
+        self.gzip_inspector.inspect_gzip_content(
+            temp_file, file_size, monitor, filename
+        )
 
         logger.debug(
             "Gzip file validation passed: %s (%s, %s bytes)",

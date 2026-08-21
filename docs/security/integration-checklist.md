@@ -148,8 +148,10 @@ archive afterwards:
   traces in production responses.
 
 !!! warning
-    Exception messages embed the client-supplied filename and
-    other untrusted values. Returning `str(err)` to a client
+    Exception messages embed values derived from the upload — the
+    detected MIME type, ZIP entry names, declared image
+    dimensions — and `err.filename` carries the client-supplied
+    name. Returning `str(err)` or `err.filename` to a client
     reflects attacker-controlled bytes back to the browser.
     Branch on the exception type and surface `err.error_code`,
     which is a stable machine-readable string.

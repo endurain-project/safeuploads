@@ -94,9 +94,9 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
     Converts safeuploads exceptions to HTTP responses with appropriate
     status codes and detailed error information.
 
-    Exception messages embed the client-supplied filename, so they are
-    logged rather than returned. Clients receive a static message plus
-    the machine-readable ``error_code``.
+    Exception messages embed upload-derived values such as the detected
+    MIME type, so they are logged rather than returned. Clients receive
+    a static message plus the machine-readable ``error_code``.
     """
     logger.warning("Upload rejected: %r", exc)
 

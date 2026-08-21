@@ -94,6 +94,7 @@ class ZipContentInspector(BaseInspector):
         self,
         file_obj: SeekableFile,
         monitor: ResourceMonitor | None = None,
+        filename: str = "",
     ) -> None:
         """
         Inspect ZIP archive for potential security threats.
@@ -102,6 +103,7 @@ class ZipContentInspector(BaseInspector):
             file_obj: Seekable file-like object containing ZIP data.
             monitor: Optional resource monitor checked once per
                 entry so a runaway archive is aborted mid-scan.
+            filename: Sanitized filename recorded on audit events.
 
         Raises:
             ZipContentError: If security threats are detected in ZIP
@@ -177,7 +179,7 @@ class ZipContentInspector(BaseInspector):
                     cid = get_correlation_id()
                     if cid:
                         self._audit.threat(
-                            "",
+                            filename,
                             cid,
                             "; ".join(threats_found),
                         )

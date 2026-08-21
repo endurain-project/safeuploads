@@ -123,9 +123,20 @@ which uploads are accepted. Read the upgrade notes before bumping.
   detected is unchanged; only which pattern name is reported when a
   buffer matches several can differ.
 - Documentation and the FastAPI example no longer return `str(err)` to
-  clients. Exception messages embed the client-supplied filename, so
-  reflecting them hands attacker-controlled bytes back to the browser;
-  the examples now log the detail and return `err.error_code`.
+  clients. Exception messages embed values derived from the upload,
+  such as the detected MIME type and ZIP entry names, and
+  `err.filename` carries the client-supplied name; the examples now log
+  the detail and return `err.error_code`.
+- `ZipContentInspector.inspect_zip_content()` and
+  `GzipContentInspector.inspect_gzip_content()` take an optional
+  `filename`, so a `THREAT_DETECTED` audit event names the file instead
+  of leaving the field empty for a correlation-ID join.
+- `FileSecurityConfig.ACTIVITY_XML_ROOTS` is a read-only mapping rather
+  than a plain `dict`, matching the frozen allow-lists beside it. A
+  consumer can no longer mutate it process-wide.
+- Audit fields are escaped once, at the emission point, instead of also
+  being escaped by the caller. Escaping twice could truncate an
+  adversarial filename mid-escape-sequence.
 
 ### Removed
 

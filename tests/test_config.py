@@ -98,6 +98,14 @@ class TestFileSecurityConfig:
         assert ".jpeg" in config.ALLOWED_IMAGE_EXTENSIONS
         assert ".png" in config.ALLOWED_IMAGE_EXTENSIONS
 
+    def test_activity_xml_roots_are_immutable(self):
+        """Test the XML root mapping cannot be mutated."""
+        config = FileSecurityConfig()
+
+        assert config.ACTIVITY_XML_ROOTS[".gpx"] == "gpx"
+        with pytest.raises(TypeError):
+            config.ACTIVITY_XML_ROOTS[".svg"] = "svg"  # type: ignore[index]
+
     def test_allowed_zip_extensions(self):
         """Test allowed ZIP extensions."""
         config = FileSecurityConfig()

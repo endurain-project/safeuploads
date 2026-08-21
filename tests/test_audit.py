@@ -258,6 +258,45 @@ class TestAuditSourceIp:
         assert "\n" not in caplog.records[0].audit_source_ip
 
 
+class TestAuditEscapingIsSinglePass:
+    """Untrusted fields are escaped once, at the emission point."""
+
+    @pytest.mark.asyncio
+    async def test_hostile_filename_is_not_double_escaped(
+        self, mock_upload_file, caplog
+    ):
+        """Test escaping does not run twice and mangle the name.
+
+        Args:
+            mock_upload_file: Upload file factory fixture.
+            caplog: pytest log capture fixture.
+        """
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.file_validator import FileValidator
+        from safeuploads.utils import safe_label
+        from tests.conftest import JPEG_SOF0
+
+        config = FileSecurityConfig(SecurityLimits(enable_audit_logging=True))
+        validator = FileValidator(config=config)
+
+        # Sanitization reduces this to "photo.jpg"; the audit start
+        # event still records the raw name the client sent.
+        hostile = "photo" + "\n" * 256 + ".jpg"
+        file = mock_upload_file(
+            filename=hostile,
+            content=b"\xff\xd8" + JPEG_SOF0 + b"\xff\xd9",
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            await validator.validate_image_file(file)
+
+        recorded = caplog.records[0].audit_filename
+        assert recorded == safe_label(hostile)
+        assert "\n" not in recorded
+        # A second pass would truncate mid-escape-sequence.
+        assert not recorded.rstrip(".").endswith(("\\u", "\\u0", "\\u00"))
+
+
 class TestAuditIntegration:
     """Test audit logging integration with FileValidator."""
 
@@ -462,6 +501,49 @@ class TestThreatAuditEvents:
             if r.name == "safeuploads.audit" and "threat_detected" in r.message
         ]
         assert len(threat_records) >= 1
+        assert threat_records[0].audit_filename == "evil.zip"
+
+    @pytest.mark.asyncio
+    async def test_gzip_threat_audit_event_names_the_file(
+        self, mock_upload_file, caplog
+    ):
+        """Test a gzip bomb audit event carries the filename."""
+        import gzip
+        import io
+
+        from safeuploads.config import (
+            FileSecurityConfig,
+            SecurityLimits,
+        )
+        from safeuploads.file_validator import FileValidator
+
+        config = FileSecurityConfig(
+            SecurityLimits(
+                enable_audit_logging=True,
+                max_compression_ratio=2,
+            )
+        )
+        validator = FileValidator(config=config)
+
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(b"a" * 1_000_000)
+
+        file = mock_upload_file(filename="bomb.gz", content=buf.getvalue())
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ZipBombError),
+        ):
+            await validator.validate_gzip_file(file)
+
+        threat_records = [
+            r
+            for r in caplog.records
+            if r.name == "safeuploads.audit" and "threat_detected" in r.message
+        ]
+        assert len(threat_records) >= 1
+        assert threat_records[0].audit_filename == "bomb.gz"
 
     @pytest.mark.asyncio
     async def test_zip_bomb_emits_audit_threat(self, mock_upload_file, caplog):

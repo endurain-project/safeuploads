@@ -43,6 +43,7 @@ class GzipContentInspector(BaseInspector):
         file_obj: SeekableFile,
         compressed_size: int,
         monitor: ResourceMonitor | None = None,
+        filename: str = "",
     ) -> None:
         """
         Inspect gzip archive for decompression bombs.
@@ -52,6 +53,7 @@ class GzipContentInspector(BaseInspector):
             compressed_size: Size of the compressed file in bytes.
             monitor: Optional resource monitor checked once per
                 chunk so a slow stream is aborted mid-inflation.
+            filename: Sanitized filename recorded on audit events.
 
         Raises:
             ZipBombError: If compression ratio or uncompressed
@@ -90,7 +92,7 @@ class GzipContentInspector(BaseInspector):
                         cid = get_correlation_id()
                         if cid:
                             self._audit.threat(
-                                "",
+                                filename,
                                 cid,
                                 "Gzip inflation timeout",
                             )
@@ -120,7 +122,7 @@ class GzipContentInspector(BaseInspector):
                         cid = get_correlation_id()
                         if cid:
                             self._audit.threat(
-                                "",
+                                filename,
                                 cid,
                                 "Gzip decompression bomb — size exceeded",
                             )
@@ -152,7 +154,7 @@ class GzipContentInspector(BaseInspector):
                             cid = get_correlation_id()
                             if cid:
                                 self._audit.threat(
-                                    "",
+                                    filename,
                                     cid,
                                     "Gzip decompression bomb — ratio exceeded",
                                 )

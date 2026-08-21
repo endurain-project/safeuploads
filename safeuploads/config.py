@@ -3,7 +3,9 @@
 import itertools
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 from .enums import (
@@ -302,10 +304,12 @@ class FileSecurityConfig:
     # Required root element per XML activity format, lower-cased
     # and namespace-stripped. Guards against an arbitrary XML
     # document (or an HTML/SVG payload) wearing a .gpx name.
-    ACTIVITY_XML_ROOTS: ClassVar[dict[str, str]] = {
-        ".gpx": "gpx",
-        ".tcx": "trainingcenterdatabase",
-    }
+    ACTIVITY_XML_ROOTS: ClassVar[Mapping[str, str]] = MappingProxyType(
+        {
+            ".gpx": "gpx",
+            ".tcx": "trainingcenterdatabase",
+        }
+    )
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod

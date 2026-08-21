@@ -36,7 +36,8 @@ async def upload_image(file: UploadFile):
         await validator.validate_image_file(file)
     except FileValidationError as err:
         # Return the machine-readable code, never `str(err)`: exception
-        # messages embed the client-supplied filename, so reflecting them
+        # messages embed upload-derived values such as the detected MIME
+        # type, and `err.filename` carries the client-supplied name.
         # hands attacker-controlled bytes back to the browser.
         raise HTTPException(status_code=400, detail=err.error_code)
 

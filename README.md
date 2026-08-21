@@ -70,8 +70,8 @@ async def upload_image(file: UploadFile):
         await validator.validate_image_file(file)
     except FileValidationError as err:
         # Return the machine-readable code, never `str(err)`: exception
-        # messages embed the client-supplied filename, so reflecting them
-        # hands attacker-controlled bytes back to the browser.
+        # messages embed upload-derived values such as the detected MIME
+        # type, and `err.filename` carries the client-supplied name.
         raise HTTPException(status_code=400, detail=err.error_code)
 
     return {"status": "success", "filename": file.filename}
@@ -115,9 +115,11 @@ pooled_validator = FileValidator(
 ## Exception handling
 
 Exception messages are written for your logs, not for your users. They
-embed the client-supplied filename and other untrusted values, so never
-return `str(err)` to a client. Branch on the exception type and surface
-`err.error_code`, which is a stable machine-readable string.
+embed values derived from the upload — the detected MIME type, ZIP entry
+names, declared image dimensions — and `err.filename` carries the
+client-supplied name. Never return `str(err)` or `err.filename` to a
+client. Branch on the exception type and surface `err.error_code`, which
+is a stable machine-readable string.
 
 ```python
 import logging

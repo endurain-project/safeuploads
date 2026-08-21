@@ -40,6 +40,20 @@ For FastAPI integration:
 pip install safeuploads[fastapi]
 ```
 
+### Verifying a release
+
+Releases are built and published by [this repository's release workflow](.github/workflows/publish-safeuploads.yml) through PyPI Trusted Publishing, with [PEP 740](https://peps.python.org/pep-0740/) attestations. You can confirm a downloaded artifact came from that workflow and was not substituted:
+
+```bash
+uvx pypi-attestations verify pypi \
+  --repository https://github.com/endurain-project/safeuploads \
+  pypi:safeuploads-<version>-py3-none-any.whl
+```
+
+A successful run prints `OK: <filename>`. `Provenance for file ... was not found` means the artifact predates attested publishing rather than that verification failed.
+
+Each release run also produces a CycloneDX SBOM and `SHA256SUMS`, generated from a clean install of the built wheel. These are retained as workflow artifacts on the release run rather than published to PyPI.
+
 ## Quick Start
 
 ```python

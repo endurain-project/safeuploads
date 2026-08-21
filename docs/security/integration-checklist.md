@@ -154,6 +154,10 @@ archive afterwards:
 
 - [ ] `safeuploads` pinned to a specific version in
   `requirements.txt` or `pyproject.toml`.
+- [ ] Release provenance verified before promoting a new version:
+  `uvx pypi-attestations verify pypi --repository
+  https://github.com/endurain-project/safeuploads
+  pypi:safeuploads-<version>-py3-none-any.whl`.
 - [ ] `pip-audit` or `safety` run in CI to detect known
   vulnerabilities in dependencies.
 - [ ] `defusedxml` and `python-magic` dependencies kept

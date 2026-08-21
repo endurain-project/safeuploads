@@ -56,6 +56,15 @@ class TestSafeLabel:
         result = safe_label("a" * 400, max_length=16)
         assert result == "a" * 16 + "..."
 
+    def test_exact_length_is_not_marked_truncated(self):
+        """Test the boundary case keeps the value intact."""
+        assert safe_label("a" * 16, max_length=16) == "a" * 16
+
+    def test_default_length_bound(self):
+        """Test the documented default bound is applied."""
+        assert safe_label("a" * 300) == "a" * 256 + "..."
+        assert safe_label("a" * 256) == "a" * 256
+
 
 class TestFindTextPattern:
     """Pattern scanning runs over raw bytes."""

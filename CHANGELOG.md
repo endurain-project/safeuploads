@@ -52,6 +52,21 @@ project adheres to
 - `set_source_ip()`, which attaches the client address to every audit
   event in the current context. `AuditEvent.source_ip` existed but was
   never populated.
+- CodeQL workflow (`security-extended` queries) and OpenSSF Scorecard
+  workflow. `pip-audit` covers vulnerable dependencies and ruff's
+  flake8-bandit rules cover single-line patterns; neither does
+  interprocedural taint tracking or scores supply-chain posture.
+- Attack corpus under `tests/corpus/`: every threat the threat model
+  claims to stop is now a named, deterministically constructed sample
+  asserted to raise the documented error code. Samples are built at
+  test time rather than checked in, so the repository carries no
+  payload an antivirus scanner would quarantine.
+- Scheduled, non-blocking mutation-testing workflow (`mutmut`) with a
+  `mutation` dependency group. It immediately found two unasserted
+  behaviours in `safe_label()` — the default length bound and the
+  truncation boundary — which are now covered.
+- Release-verification instructions for consumers, covering PEP 740
+  attestation checks with `pypi-attestations`.
 
 ### Removed
 

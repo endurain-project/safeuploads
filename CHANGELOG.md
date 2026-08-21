@@ -71,19 +71,6 @@ which uploads are accepted. Read the upgrade notes before bumping.
 - `set_source_ip()`, which attaches the client address to every audit
   event in the current context. `AuditEvent.source_ip` existed but was
   never populated.
-- CodeQL workflow (`security-extended` queries) and OpenSSF Scorecard
-  workflow. `pip-audit` covers vulnerable dependencies and ruff's
-  flake8-bandit rules cover single-line patterns; neither does
-  interprocedural taint tracking or scores supply-chain posture.
-- Attack corpus under `tests/corpus/`: every threat the threat model
-  claims to stop is now a named, deterministically constructed sample
-  asserted to raise the documented error code. Samples are built at
-  test time rather than checked in, so the repository carries no
-  payload an antivirus scanner would quarantine.
-- Scheduled, non-blocking mutation-testing workflow (`mutmut`) with a
-  `mutation` dependency group. It immediately found two unasserted
-  behaviours in `safe_label()` — the default length bound and the
-  truncation boundary — which are now covered.
 - Release-verification instructions for consumers, covering PEP 740
   attestation checks with `pypi-attestations`.
 
@@ -105,10 +92,8 @@ which uploads are accepted. Read the upgrade notes before bumping.
   the gzip inflation loop, so a runaway upload is aborted while it
   runs. Uploads that previously completed after exceeding the budget
   now raise `ResourceLimitError` earlier.
-- **Lowered the minimum supported Python from 3.13 to 3.11.** No source
-  changes were required; `enum.StrEnum` was the only 3.11+ dependency.
-  The full test suite passes on 3.11, 3.12, 3.13 and 3.14, and the CI
-  matrix now covers all four.
+- **Lowered the minimum supported Python from 3.13 to 3.11.**
+  Supported and tested on 3.11, 3.12, 3.13 and 3.14.
 - `ResourceLimitError` now propagates out of the ZIP and gzip
   inspectors instead of being wrapped as an internal
   `FileProcessingError`.
@@ -122,27 +107,18 @@ which uploads are accepted. Read the upgrade notes before bumping.
 - `find_text_pattern()` scans raw bytes with a cached compiled pattern
   instead of decoding and lower-casing the whole buffer, removing two
   full-size copies of the content-analysis window (up to 50 MB each).
-- The file-signature table in `FileValidator` is a module constant
-  instead of a dict rebuilt on every validation.
 - Documentation and the FastAPI example no longer return `str(err)` to
   clients. Exception messages embed the client-supplied filename, so
   reflecting them hands attacker-controlled bytes back to the browser;
   the examples now log the detail and return `err.error_code`.
-- `verify_zip_decompression` was reviewed and its default retained.
-  Enabling it by default would inflate every archive on every upload;
-  the integration checklist now spells out exactly when to turn it on
-  (any consumer that does not extract with Python's `zipfile`).
-- `ZipContentInspector._contains_script_patterns()` no longer takes a
-  `filename` argument, which it never used.
 
 ### Removed
 
 - **Breaking:** the `validate()` alias on every validator, and the
   `BaseValidator` abstract method behind it. The abstraction was
   false: each validator takes different arguments, so the "uniform"
-  interface could never be used polymorphically, and its
-  `*args: Any, **kwargs: Any` signature was the only untyped surface
-  in the package. Call the purpose-named method instead
+  interface could never be used polymorphically. Call the
+  purpose-named method instead
   (`validate_unicode_security`, `validate_extensions`,
   `validate_windows_reserved_names`, `validate_zip_compression_ratio`,
   `validate_xml_safety`). `BaseValidator` remains as a plain base

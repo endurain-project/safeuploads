@@ -10,7 +10,7 @@ This directory contains a working example demonstrating how to integrate `safeup
 
 ## Prerequisites
 
-The example requires Python 3.13+ and the `safeuploads` library with FastAPI:
+The example requires Python 3.11+ and the `safeuploads` library with FastAPI:
 
 ```bash
 pip install safeuploads[fastapi]

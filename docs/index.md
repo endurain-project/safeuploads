@@ -12,7 +12,7 @@
     </a>
 </div>
 
-Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
+Secure file upload validation for Python 3.11+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 
 ## Features
 
@@ -70,20 +70,26 @@ async def upload_image(file: UploadFile):
 ## Configuration
 
 ```python
-from safeuploads import FileValidator, FileSecurityConfig
+from safeuploads import FileValidator, FileSecurityConfig, SecurityLimits
 
 # Use default secure configuration
 validator = FileValidator()
 
-# Or customize limits
-config = FileSecurityConfig()
-config.limits.max_image_size = 10 * 1024 * 1024  # 10 MiB
-config.limits.max_image_pixels = 50_000_000  # Reject bigger decoded images
-config.limits.max_compression_ratio = 50
-
-# Opt in to strict ZIP checking: decompress every entry to
-# reject archives with forged central-directory metadata
-config.limits.verify_zip_decompression = True
+# Or pass explicit limits. Anything you leave out keeps its
+# secure default, and the limits object is copied, so nothing
+# is shared between configs.
+config = FileSecurityConfig(
+    SecurityLimits(
+        max_image_size=10 * 1024 * 1024,  # 10 MiB
+        max_image_pixels=50_000_000,  # Reject bigger decoded images
+        max_compression_ratio=50,
+        # Decompress every ZIP entry to reject archives with
+        # forged central-directory metadata
+        verify_zip_decompression=True,
+        # Keep spilled uploads off the system temp directory
+        temp_dir="/var/lib/myapp/uploads-tmp",
+    )
+)
 
 validator = FileValidator(config=config)
 
@@ -157,7 +163,7 @@ except FileValidationError as err:
 - Image dimensions are read from the declared PNG/IHDR or JPEG/SOF header within the first 1 MiB; images whose dimensions cannot be read are rejected
 - `max_validation_memory_mb` is best-effort telemetry, not a limit: it samples the process-wide peak RSS, so it cannot be attributed to a single validation. Exceeding it is logged; set `enforce_memory_limit=True` to enforce, and only in a process that validates one upload at a time
 - `verify_zip_decompression` is off by default; enable it if anything other than Python's `zipfile` extracts your archives (see [Integration Checklist](security/integration-checklist.md))
-- `SpooledTemporaryFile` uses the system default temp directory
+- Uploads larger than `max_memory_buffer_size` spill to disk; set `temp_dir` to control where, otherwise the system default temporary directory is used
 
 ## Documentation
 

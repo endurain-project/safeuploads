@@ -724,7 +724,8 @@ class FileValidator:
                 limit is exceeded while reading.
         """
         temp = tempfile.SpooledTemporaryFile(  # noqa: SIM115
-            max_size=self.config.limits.max_memory_buffer_size
+            max_size=self.config.limits.max_memory_buffer_size,
+            dir=self.config.limits.temp_dir,
         )
         total_bytes = 0
         chunk_size = self.config.limits.chunk_size

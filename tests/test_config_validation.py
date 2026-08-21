@@ -183,6 +183,27 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_timeout" in error_types
 
+    def test_missing_temp_dir_generates_error(self):
+        """Test that a temp_dir which is not a directory errors."""
+        config = FileSecurityConfig(
+            SecurityLimits(temp_dir="/nonexistent/safeuploads-temp")
+        )
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_temp_dir" in error_types
+
+    def test_existing_temp_dir_accepted(self, tmp_path):
+        """
+        Test that an existing temp_dir passes validation.
+
+        Args:
+            tmp_path: pytest temporary directory fixture.
+        """
+        config = FileSecurityConfig(SecurityLimits(temp_dir=str(tmp_path)))
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_temp_dir" not in error_types
+
 
 class TestMimeConfigurationValidation:
     """Tests for _validate_mime_configurations validation branches."""

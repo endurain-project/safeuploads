@@ -2,6 +2,7 @@
 
 import itertools
 import logging
+import os
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
@@ -64,6 +65,8 @@ class SecurityLimits:
         max_gzip_size: Maximum size in bytes for gzip files.
         max_memory_buffer_size: Bytes kept in memory before a
             streamed upload spills to a temporary file on disk.
+        temp_dir: Directory used for spilled uploads. Uses the
+            system default temporary directory when unset.
         chunk_size: Chunk size in bytes for streaming reads.
         max_validation_memory_mb: Peak-RSS growth budget in MB
             for a single validation. Best-effort telemetry only
@@ -123,6 +126,10 @@ class SecurityLimits:
     max_memory_buffer_size: int = (
         10 * 1024 * 1024  # 10MB before spilling to disk
     )
+    # Where spilled uploads land. Point this at a dedicated,
+    # quota-enforced partition to keep large uploads off the
+    # system temp directory.
+    temp_dir: str | None = None
     chunk_size: int = 65536  # 64KB chunks for streaming reads
 
     # Resource monitoring limits
@@ -196,8 +203,16 @@ class FileSecurityConfig:
     """
     Centralizes file upload security settings and validation.
 
+    The class-level ``limits`` is the template copied into each
+    new instance, not the live configuration. Pass a
+    ``SecurityLimits`` to the constructor to configure an
+    instance; assigning to ``FileSecurityConfig.limits`` or
+    mutating it in place changes the default for every config
+    created afterwards.
+
     Attributes:
-        limits: Security limits configuration instance.
+        limits: Security limits for this instance. At class
+            level, the template new instances are built from.
         ALLOWED_IMAGE_MIMES: Permitted MIME types for images.
         ALLOWED_ZIP_MIMES: Permitted MIME types for ZIP files.
         ALLOWED_ACTIVITY_MIMES: Permitted MIME types for activity
@@ -375,16 +390,20 @@ class FileSecurityConfig:
         }
     )
 
-    def __init__(self) -> None:
+    def __init__(self, limits: SecurityLimits | None = None) -> None:
         """
         Create a config instance with isolated mutable state.
 
-        Copies the class-level ``limits`` so mutating one
-        instance's limits never affects other instances or
-        the shared class default.
+        The supplied or class-level ``limits`` is copied, so
+        mutating one instance's limits never affects other
+        instances, the caller's object, or the class default.
+
+        Args:
+            limits: Security limits to use. Falls back to the
+                class-level default when omitted.
         """
         # Per-instance copy prevents cross-instance mutation
-        self.limits = replace(type(self).limits)
+        self.limits = replace(type(self).limits if limits is None else limits)
 
     # Configuration validation trigger
     @classmethod
@@ -681,6 +700,21 @@ class FileSecurityConfig:
                     (
                         "Set max_xml_elements to a positive"
                         " value (e.g., 1000000)"
+                    ),
+                )
+            )
+
+        # A missing temp directory only surfaces when an upload
+        # spills to disk, so check it up front.
+        if limits.temp_dir is not None and not os.path.isdir(limits.temp_dir):
+            errors.append(
+                _config_error(
+                    "invalid_temp_dir",
+                    f"temp_dir '{limits.temp_dir}' is not a directory",
+                    "file_sizes",
+                    (
+                        "Create the directory or leave temp_dir"
+                        " unset to use the system default"
                     ),
                 )
             )

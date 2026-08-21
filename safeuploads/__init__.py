@@ -10,6 +10,7 @@ from .audit import (
     AuditEventType,
     SecurityAuditLogger,
     get_correlation_id,
+    reset_correlation_id,
     set_correlation_id,
 )
 
@@ -55,7 +56,7 @@ from .inspectors import (
     GzipContentInspector,
     ZipContentInspector,
 )
-from .protocols import SeekableFile
+from .protocols import SeekableFile, UploadFileProtocol
 from .utils import ResourceMonitor
 
 # Specialized validators
@@ -80,6 +81,7 @@ __all__ = [
     "FileSecurityConfig",
     # Protocols
     "SeekableFile",
+    "UploadFileProtocol",
     # Exceptions
     "ConfigValidationError",
     "FileSecurityConfigurationError",
@@ -129,4 +131,5 @@ __all__ = [
     "AuditEventType",
     "get_correlation_id",
     "set_correlation_id",
+    "reset_correlation_id",
 ]

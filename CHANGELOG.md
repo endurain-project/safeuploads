@@ -37,8 +37,25 @@ project adheres to
 - `safe_label()` utility, applied to every untrusted filename and ZIP
   entry name before it reaches a log record, audit event, or exception
   message.
+- `temp_dir` limit controlling where uploads larger than
+  `max_memory_buffer_size` spill to disk. Configuration validation
+  reports `invalid_temp_dir` when the directory does not exist, rather
+  than failing later at rollover time.
+- `FileSecurityConfig` now accepts `limits` directly
+  (`FileSecurityConfig(SecurityLimits(...))`). The object is copied, so
+  it is never aliased or shared, and configuring an instance no longer
+  requires mutating class state.
+- `UploadFileProtocol` and `reset_correlation_id` are now exported from
+  the top-level package. `UploadFileProtocol` is the interface a
+  non-FastAPI framework adapter implements, so it belonged in the
+  public API alongside `SeekableFile`.
 
 ### Changed
+
+- **Lowered the minimum supported Python from 3.13 to 3.11.** No source
+  changes were required; `enum.StrEnum` was the only 3.11+ dependency.
+  The full test suite passes on 3.11, 3.12, 3.13 and 3.14, and the CI
+  matrix now covers all four.
 
 - **Breaking:** `max_validation_memory_mb` is no longer enforced by
   default. It samples the process-wide peak RSS, which never decreases

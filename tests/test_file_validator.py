@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import tempfile
 
 import pytest
 
@@ -961,6 +962,70 @@ class TestStreamToTempFile:
                 file,
                 max_file_size=1 * 1024,  # 1 KB limit
             )
+
+    @pytest.mark.asyncio
+    async def test_temp_dir_used_for_spilled_uploads(
+        self, mock_upload_file, monkeypatch, tmp_path
+    ):
+        """
+        Test the configured temp_dir reaches the spooled file.
+
+        Args:
+            mock_upload_file: File factory fixture.
+            monkeypatch: pytest monkeypatch fixture.
+            tmp_path: pytest temporary directory fixture.
+        """
+        captured = {}
+        real_spooled = tempfile.SpooledTemporaryFile
+
+        def _spy(*args, **kwargs):
+            captured.update(kwargs)
+            return real_spooled(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "SpooledTemporaryFile", _spy)
+
+        config = FileSecurityConfig(
+            SecurityLimits(temp_dir=str(tmp_path), max_memory_buffer_size=8)
+        )
+        validator = FileValidator(config=config)
+        file = mock_upload_file(filename="a.zip", content=b"x" * 4096)
+
+        temp, _ = await validator._stream_to_temp_file(
+            file, max_file_size=1024 * 1024
+        )
+        temp.close()
+
+        assert captured["dir"] == str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_temp_dir_defaults_to_system_location(
+        self, mock_upload_file, monkeypatch
+    ):
+        """
+        Test an unset temp_dir leaves the system default in place.
+
+        Args:
+            mock_upload_file: File factory fixture.
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        captured = {}
+        real_spooled = tempfile.SpooledTemporaryFile
+
+        def _spy(*args, **kwargs):
+            captured.update(kwargs)
+            return real_spooled(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "SpooledTemporaryFile", _spy)
+
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"x" * 32)
+
+        temp, _ = await validator._stream_to_temp_file(
+            file, max_file_size=1024 * 1024
+        )
+        temp.close()
+
+        assert captured["dir"] is None
 
 
 class TestResourceMonitorIntegration:

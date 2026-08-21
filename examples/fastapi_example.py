@@ -67,8 +67,7 @@ strict_limits = SecurityLimits(
 )
 
 # Create custom configuration with strict limits
-strict_config = FileSecurityConfig()
-strict_config.limits = strict_limits
+strict_config = FileSecurityConfig(strict_limits)
 
 # Initialize validators
 default_validator = FileValidator()  # Uses default config
@@ -78,8 +77,9 @@ strict_validator = FileValidator(config=strict_config)
 # forged central-directory metadata, and offload blocking
 # inspection to a bounded thread pool so large uploads never
 # starve the event loop.
-hardened_config = FileSecurityConfig()
-hardened_config.limits = SecurityLimits(verify_zip_decompression=True)
+hardened_config = FileSecurityConfig(
+    SecurityLimits(verify_zip_decompression=True)
+)
 hardened_validator = FileValidator(
     config=hardened_config,
     executor=ThreadPoolExecutor(max_workers=4),

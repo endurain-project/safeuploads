@@ -142,9 +142,11 @@ archive afterwards:
   application level — should be above
   `max_validation_time_seconds`.
 - [ ] Disk space monitored for temporary file spill
-  (`SpooledTemporaryFile` uses the system temp directory).
-- [ ] Consider setting `TMPDIR` environment variable to a
-  dedicated partition with quota enforcement.
+  (uploads above `max_memory_buffer_size` are written to disk).
+- [ ] `temp_dir` set to a dedicated, quota-enforced partition,
+  or `TMPDIR` set if you prefer to configure it out of band.
+  The directory must exist; configuration validation reports
+  `invalid_temp_dir` when it does not.
 
 ## Dependency Management
 

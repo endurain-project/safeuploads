@@ -7,7 +7,7 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "python-magic>=0.4.27,<0.5.0",
     "defusedxml>=0.7.1,<1.0.0",
@@ -45,7 +45,7 @@ exclude-newer = "30 days"
 
 [tool.ruff]
 line-length = 79
-target-version = "py313"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = [
@@ -150,7 +150,7 @@ exclude_lines = [
 ]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 incremental = false
 # strict = true enables the full strict bundle, including
 # disallow_any_generics, warn_return_any, disallow_untyped_calls,

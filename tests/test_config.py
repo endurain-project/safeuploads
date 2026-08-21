@@ -331,6 +331,23 @@ class TestConfigInstanceIsolation:
 
         assert a.limits is not b.limits
 
+    def test_constructor_accepts_limits(self):
+        """Limits can be supplied without touching class state."""
+        limits = SecurityLimits(max_image_size=4096)
+        config = FileSecurityConfig(limits)
+
+        assert config.limits.max_image_size == 4096
+        assert FileSecurityConfig.limits.max_image_size != 4096
+
+    def test_constructor_copies_supplied_limits(self):
+        """The caller's limits object must not be aliased."""
+        limits = SecurityLimits(max_image_size=4096)
+        config = FileSecurityConfig(limits)
+
+        config.limits.max_image_size = 1
+
+        assert limits.max_image_size == 4096
+
     def test_limit_mutation_does_not_leak_across_instances(self):
         """Mutating one instance's limits must not affect another."""
         a = FileSecurityConfig()

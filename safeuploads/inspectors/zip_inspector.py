@@ -37,15 +37,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Entry extensions that must never appear inside an accepted
-# archive, keyed by the threat category they belong to so the
-# rejection message names the category.
-_DANGEROUS_ENTRY_CATEGORIES: tuple[ZipThreatCategory, ...] = (
-    ZipThreatCategory.EXECUTABLE_FILES,
-    ZipThreatCategory.SCRIPT_FILES,
-    ZipThreatCategory.SYSTEM_FILES,
-)
-
 
 class ZipContentInspector(BaseInspector):
     """
@@ -89,9 +80,13 @@ class ZipContentInspector(BaseInspector):
         self._recursable_exts: frozenset[str] = frozenset(
             ZipThreatCategory.RECURSABLE_ARCHIVES.value
         )
+        # Extension to category name, so a rejection names the
+        # category that blocked it. Unknown names are reported by
+        # configuration validation and ignored here.
         self._dangerous_entry_exts: dict[str, str] = {
             ext.lower(): category.name
-            for category in _DANGEROUS_ENTRY_CATEGORIES
+            for category in ZipThreatCategory
+            if category.name in config.limits.blocked_zip_entry_categories
             for ext in category.value
         }
 

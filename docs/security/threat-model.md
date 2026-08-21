@@ -168,12 +168,14 @@ hidden inside ZIP archives.
 **Mitigations:**
 
 - `ZipContentInspector._check_dangerous_extension()` rejects any
-  entry whose name carries an extension from
-  `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, or
-  `SYSTEM_FILES`. Every dot-separated suffix is checked, so a
-  disguised name such as `invoice.php.txt` is still rejected.
-  This check is metadata-level and runs even when
-  `scan_zip_content=False`.
+  entry whose name carries an extension from a `ZipThreatCategory`
+  listed in `blocked_zip_entry_categories`, which defaults to
+  `EXECUTABLE_FILES` and `SCRIPT_FILES`. Add `SYSTEM_FILES` to also
+  reject `.dll`, `.so`, `.ini` and `.conf` entries; that category is
+  mostly configuration rather than executable content, so it is
+  opt-in. Every dot-separated suffix is checked, so a disguised name
+  such as `invoice.php.txt` is still rejected. This check is
+  metadata-level and runs even when `scan_zip_content=False`.
 - Binary content is scanned for executable magic bytes from
   `SuspiciousFilePattern.EXECUTABLE_SIGNATURES`.
 - Text content is scanned for script injection patterns

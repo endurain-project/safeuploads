@@ -197,6 +197,30 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_timeout" in error_types
 
+    def test_unknown_zip_entry_category_generates_error(self):
+        """Test that a misspelled threat category errors."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                blocked_zip_entry_categories=frozenset(
+                    {"EXECUTABLE_FILES", "SCRIPT_FILE"}
+                )
+            )
+        )
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "unknown_zip_entry_category" in error_types
+
+    def test_known_zip_entry_categories_accepted(self):
+        """Test that valid category names pass validation."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                blocked_zip_entry_categories=frozenset({"SYSTEM_FILES"})
+            )
+        )
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "unknown_zip_entry_category" not in error_types
+
     def test_missing_temp_dir_generates_error(self):
         """Test that a temp_dir which is not a directory errors."""
         config = FileSecurityConfig(

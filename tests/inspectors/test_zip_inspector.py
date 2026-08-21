@@ -25,12 +25,10 @@ class TestDangerousEntryExtensions:
             "payload.exe",
             "shell.php",
             "hook.ps1",
-            "inject.dll",
-            "settings.ini",
         ],
     )
     def test_dangerous_entry_rejected(self, default_config, entry_name):
-        """Test executable, script and system entries are rejected."""
+        """Test executable and script entries are rejected."""
         inspector = ZipContentInspector(default_config)
 
         zip_buffer = io.BytesIO()
@@ -41,6 +39,58 @@ class TestDangerousEntryExtensions:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
         assert "Dangerous entry extension" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "entry_name",
+        [
+            "inject.dll",
+            "settings.ini",
+        ],
+    )
+    def test_system_file_entry_allowed_by_default(
+        self, default_config, entry_name
+    ):
+        """Test SYSTEM_FILES is off by default."""
+        inspector = ZipContentInspector(default_config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(entry_name, b"harmless looking bytes")
+
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+    def test_system_file_entry_rejected_when_opted_in(self):
+        """Test adding SYSTEM_FILES restores the stricter check."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                blocked_zip_entry_categories=frozenset(
+                    {"EXECUTABLE_FILES", "SCRIPT_FILES", "SYSTEM_FILES"}
+                )
+            )
+        )
+        inspector = ZipContentInspector(config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("settings.ini", b"harmless looking bytes")
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+        assert "SYSTEM_FILES" in str(exc_info.value)
+
+    def test_check_disabled_when_no_categories_blocked(self):
+        """Test an empty category set skips the check entirely."""
+        config = FileSecurityConfig(
+            SecurityLimits(blocked_zip_entry_categories=frozenset())
+        )
+        inspector = ZipContentInspector(config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("payload.exe", b"harmless looking bytes")
+
+        inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
 
     def test_disguised_double_extension_rejected(self, default_config):
         """Test a dangerous extension hidden mid-name is caught."""

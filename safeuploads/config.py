@@ -10,6 +10,7 @@ from .enums import (
     CompoundExtensionCategory,
     DangerousExtensionCategory,
     UnicodeAttackCategory,
+    ZipThreatCategory,
 )
 from .exceptions import ConfigValidationError, FileSecurityConfigurationError
 from .utils import bytes_to_mb
@@ -98,6 +99,9 @@ class SecurityLimits:
         allow_nested_archives: Whether nested archives are permitted.
         allow_symlinks: Whether symbolic links are permitted.
         allow_absolute_paths: Whether absolute paths are permitted.
+        blocked_zip_entry_categories: ``ZipThreatCategory`` names
+            whose extensions are rejected when they appear on a
+            ZIP entry.
         scan_zip_content: Whether deep content inspection is enabled.
         verify_zip_decompression: Whether to decompress every ZIP
             entry to reject forged central-directory metadata.
@@ -179,6 +183,13 @@ class SecurityLimits:
     allow_symlinks: bool = False
     # Whether to allow absolute paths in ZIP
     allow_absolute_paths: bool = False
+    # Entry extensions rejected inside an accepted archive.
+    # EXECUTABLE_FILES and SCRIPT_FILES are code; SYSTEM_FILES is
+    # mostly configuration and is a different threat class, so it
+    # is available but not on by default.
+    blocked_zip_entry_categories: frozenset[str] = frozenset(
+        {"EXECUTABLE_FILES", "SCRIPT_FILES"}
+    )
     scan_zip_content: bool = True  # Whether to perform deep content inspection
     # Decompress every ZIP entry to reject forged central-
     # directory metadata (extra CPU/IO; off by default)
@@ -1118,6 +1129,25 @@ class FileSecurityConfig:
                     "gzip_analysis_timeout must be greater than 0",
                     "compression",
                     "Set a reasonable timeout for gzip inflation",
+                )
+            )
+
+        # A misspelled category would silently disable the check.
+        known = {category.name for category in ZipThreatCategory}
+        unknown = sorted(set(limits.blocked_zip_entry_categories) - known)
+        if unknown:
+            errors.append(
+                _config_error(
+                    "unknown_zip_entry_category",
+                    (
+                        "blocked_zip_entry_categories contains"
+                        f" unknown names: {', '.join(unknown)}"
+                    ),
+                    "compression",
+                    (
+                        "Use ZipThreatCategory member names"
+                        f" ({', '.join(sorted(known))})"
+                    ),
                 )
             )
 

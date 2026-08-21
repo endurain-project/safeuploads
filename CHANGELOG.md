@@ -24,8 +24,8 @@ which uploads are accepted. Read the upgrade notes before bumping.
    enforcement off is the correct choice under concurrency.
 2. **More uploads are rejected than before.** Images whose dimensions
    cannot be read, arbitrary XML behind a `.gpx`/`.tcx` name, and ZIPs
-   containing executable, script, or system-file entries all now fail.
-   Re-run your own fixtures before deploying.
+   containing executable or script entries all now fail. Re-run your
+   own fixtures before deploying.
 3. **The time budget aborts mid-flight.** Uploads that previously ran
    past `max_validation_time_seconds` and still completed now raise
    `ResourceLimitError`.
@@ -62,6 +62,15 @@ which uploads are accepted. Read the upgrade notes before bumping.
   `max_memory_buffer_size` spill to disk. Configuration validation
   reports `invalid_temp_dir` when the directory does not exist, rather
   than failing later at rollover time.
+- `blocked_zip_entry_categories` limit naming the `ZipThreatCategory`
+  members whose extensions are rejected on a ZIP entry. Defaults to
+  `EXECUTABLE_FILES` and `SCRIPT_FILES`; add `SYSTEM_FILES` to also
+  reject `.dll`, `.so`, `.ini` and `.conf` entries, or pass an empty
+  set to disable the check without also disabling the unrelated
+  content scanning that `scan_zip_content` gates. Configuration
+  validation reports `unknown_zip_entry_category` for a name that is
+  not a `ZipThreatCategory` member, so a typo cannot silently disable
+  the check.
 - `FileSecurityConfig` now accepts `limits` directly
   (`FileSecurityConfig(SecurityLimits(...))`). The object is copied, so
   it is never aliased or shared, and configuring an instance no longer
@@ -157,10 +166,11 @@ which uploads are accepted. Read the upgrade notes before bumping.
   offending code point and its Unicode name instead of echoing the
   character.
 - ZIP entries are now rejected when their name carries an extension
-  from `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, or
-  `SYSTEM_FILES`. Every dot-separated suffix is checked, so a
-  disguised name such as `invoice.php.txt` is caught. The threat model
-  documented this mitigation but it was never implemented.
+  from a blocked `ZipThreatCategory`. Every dot-separated suffix is
+  checked, so a disguised name such as `invoice.php.txt` is caught.
+  The threat model documented this mitigation but it was never
+  implemented. Which categories are blocked is controlled by the new
+  `blocked_zip_entry_categories` limit.
 
 ## [1.1.1] - 2026-08-19
 

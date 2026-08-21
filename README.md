@@ -16,7 +16,7 @@ Secure file upload validation for Python 3.11+ applications. Catches dangerous f
 - Filename sanitization and Unicode security checks
 - Extension validation with configurable allow/block lists
 - ZIP bomb detection, nested archive inspection, and recursive structure protection
-- Dangerous ZIP entry rejection (executables, scripts, system files)
+- Dangerous ZIP entry rejection (executables and scripts by default, configurable)
 - Image decompression bomb detection via declared pixel dimensions
 - MIME type verification with file signature validation
 - Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing and root-element enforcement
@@ -153,7 +153,7 @@ except FileValidationError as err:
 - **Filename Security**: Unicode normalization, directory traversal prevention, Windows reserved names blocking
 - **Extension Validation**: Allow/block lists with configurable rules, dangerous extension detection
 - **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits, optional strict decompression verification
-- **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits, plus rejection of entries whose extension is an executable, script, or system file
+- **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits, plus rejection of entries whose extension falls in a blocked `ZipThreatCategory` (`EXECUTABLE_FILES` and `SCRIPT_FILES` by default, via `blocked_zip_entry_categories`)
 - **Image Bomb Protection**: PNG and JPEG headers are parsed and the declared pixel count is bounded by `max_image_pixels`
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files

@@ -10,6 +10,7 @@ Rate limiting requires ``slowapi``::
     pip install slowapi
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 import uvicorn
@@ -32,6 +33,7 @@ from safeuploads.exceptions import (
     FileProcessingError,
     FileSizeError,
     FileValidationError,
+    ImageSecurityError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -39,6 +41,8 @@ from safeuploads.exceptions import (
     ZipBombError,
     ZipContentError,
 )
+
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -63,8 +67,7 @@ strict_limits = SecurityLimits(
 )
 
 # Create custom configuration with strict limits
-strict_config = FileSecurityConfig()
-strict_config.limits = strict_limits
+strict_config = FileSecurityConfig(strict_limits)
 
 # Initialize validators
 default_validator = FileValidator()  # Uses default config
@@ -74,8 +77,9 @@ strict_validator = FileValidator(config=strict_config)
 # forged central-directory metadata, and offload blocking
 # inspection to a bounded thread pool so large uploads never
 # starve the event loop.
-hardened_config = FileSecurityConfig()
-hardened_config.limits = SecurityLimits(verify_zip_decompression=True)
+hardened_config = FileSecurityConfig(
+    SecurityLimits(verify_zip_decompression=True)
+)
 hardened_validator = FileValidator(
     config=hardened_config,
     executor=ThreadPoolExecutor(max_workers=4),
@@ -89,7 +93,13 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
 
     Converts safeuploads exceptions to HTTP responses with appropriate
     status codes and detailed error information.
+
+    Exception messages embed upload-derived values such as the detected
+    MIME type, so they are logged rather than returned. Clients receive
+    a static message plus the machine-readable ``error_code``.
     """
+    logger.warning("Upload rejected: %r", exc)
+
     # Map exception types to HTTP status codes
     status_code = status.HTTP_400_BAD_REQUEST
 
@@ -97,15 +107,24 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
     if isinstance(exc, FileSizeError):
         detail = {
             "error": "file_too_large",
-            "message": str(exc),
+            "message": "File exceeds the configured size limit.",
             "size": exc.size,
             "max_size": exc.max_size,
+            "error_code": exc.error_code,
+        }
+    elif isinstance(exc, ImageSecurityError):
+        detail = {
+            "error": "image_too_large",
+            "message": "Image is too large once decoded.",
+            "width": exc.width,
+            "height": exc.height,
+            "max_pixels": exc.max_pixels,
             "error_code": exc.error_code,
         }
     elif isinstance(exc, MimeTypeError):
         detail = {
             "error": "invalid_mime_type",
-            "message": str(exc),
+            "message": "File content type is not allowed.",
             "detected_mime": exc.detected_mime,
             "allowed_mimes": list(exc.allowed_mimes),
             "error_code": exc.error_code,
@@ -113,15 +132,14 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
     elif isinstance(exc, ZipBombError):
         detail = {
             "error": "zip_bomb_detected",
-            "message": str(exc),
+            "message": "Archive expands beyond the allowed limits.",
             "compression_ratio": exc.compression_ratio,
             "error_code": exc.error_code,
         }
     elif isinstance(exc, ZipContentError):
         detail = {
             "error": "dangerous_zip_content",
-            "message": str(exc),
-            "threats": exc.threats,
+            "message": "Archive contains disallowed entries.",
             "error_code": exc.error_code,
         }
     elif isinstance(
@@ -134,15 +152,14 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
     ):
         detail = {
             "error": "filename_security_violation",
-            "message": str(exc),
-            "filename": exc.filename,
+            "message": "Filename failed security validation.",
             "error_code": exc.error_code,
         }
     else:
         # Generic file validation error
         detail = {
             "error": "validation_failed",
-            "message": str(exc),
+            "message": "Upload failed validation.",
             "error_code": getattr(exc, "error_code", None),
         }
 
@@ -158,12 +175,14 @@ async def file_processing_exception_handler(request, exc: FileProcessingError):
     from FileProcessingError rather than FileValidationError,
     so they need their own handler.
     """
+    logger.warning("Upload processing failed: %r", exc)
+
     if isinstance(exc, ResourceLimitError):
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
                 "error": "resource_limit_exceeded",
-                "message": str(exc),
+                "message": "Validation exceeded its resource budget.",
                 "error_code": exc.error_code,
             },
         )
@@ -172,7 +191,7 @@ async def file_processing_exception_handler(request, exc: FileProcessingError):
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error": "processing_error",
-            "message": str(exc),
+            "message": "File could not be processed.",
             "error_code": exc.error_code,
         },
     )
@@ -215,7 +234,7 @@ async def upload_image_strict(file: UploadFile):
             )
             max_size_mb = e.max_size / 1024 / 1024
         else:
-            message = str(e)
+            message = "Image exceeds the configured size limit."
             max_size_mb = None
 
         raise HTTPException(
@@ -344,11 +363,11 @@ async def upload_multiple(files: list[UploadFile]):
             )
         except FileValidationError as e:
             # Continue processing other files even if one fails
+            logger.warning("Upload rejected in batch: %r", e)
             results.append(
                 {
                     "filename": file.filename,
                     "status": "failed",
-                    "error": str(e),
                     "error_code": getattr(e, "error_code", None),
                 }
             )

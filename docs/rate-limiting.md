@@ -1,4 +1,4 @@
-# Rate Limiting
+# Rate limiting
 
 File upload endpoints are high-value targets for abuse. Without
 rate limiting, attackers can exhaust server resources through
@@ -6,7 +6,7 @@ rapid-fire uploads, even when each individual file passes
 validation. **safeuploads validates file content — rate limiting
 protects the endpoint itself.**
 
-## Why Rate Limiting Matters for Uploads
+## Why rate limiting matters for uploads
 
 | Threat | Impact | Mitigation |
 |---|---|---|
@@ -15,7 +15,7 @@ protects the endpoint itself.**
 | Storage exhaustion | Disk full, service outage | Global upload quotas |
 | Zip bomb floods | CPU exhaustion during analysis | Combined with `ResourceMonitor` |
 
-## Recommended Limits
+## Recommended limits
 
 | Endpoint type | Suggested rate | Burst |
 |---|---|---|
@@ -28,7 +28,7 @@ Adjust based on your application's expected traffic patterns.
 
 ---
 
-## FastAPI with SlowApi
+## FastAPI with SlowAPI
 
 [SlowApi](https://github.com/laurents/slowapi) wraps
 [limits](https://limits.readthedocs.io/) for use with Starlette
@@ -40,7 +40,7 @@ and FastAPI.
 pip install slowapi
 ```
 
-### Basic Setup
+### Basic setup
 
 ```python
 from fastapi import FastAPI, Request, UploadFile
@@ -74,7 +74,7 @@ async def upload_zip(request: Request, file: UploadFile):
     return {"filename": file.filename}
 ```
 
-### Per-User Limits (Authenticated)
+### Per-user limits (authenticated)
 
 ```python
 from fastapi import Depends
@@ -101,7 +101,7 @@ async def upload_image_authed(
     return {"filename": file.filename}
 ```
 
-### Custom Error Response
+### Custom error response
 
 ```python
 from fastapi.responses import JSONResponse
@@ -129,7 +129,7 @@ app.add_exception_handler(
 
 ---
 
-## Custom Middleware (No Dependencies)
+## Custom middleware (no dependencies)
 
 If you prefer not to add `slowapi`, a simple token-bucket
 middleware works for basic per-IP limiting:
@@ -181,7 +181,7 @@ async def rate_limit_middleware(request: Request, call_next):
 
 ---
 
-## Reverse Proxy Rate Limiting
+## Reverse proxy rate limiting
 
 For production, rate limiting at the reverse proxy layer is
 more efficient and protects the application before requests

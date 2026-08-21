@@ -9,8 +9,11 @@ from safeuploads.audit import (
     AuditEventType,
     SecurityAuditLogger,
     get_correlation_id,
+    get_source_ip,
     reset_correlation_id,
+    reset_source_ip,
     set_correlation_id,
+    set_source_ip,
 )
 from safeuploads.exceptions import (
     CompressionSecurityError,
@@ -187,6 +190,123 @@ class TestSecurityAuditLogger:
         assert record.audit_result == "started"
         assert record.audit_source_ip == ""
 
+    def test_correlation_id_is_escaped(self, caplog):
+        """Test a custom correlation ID cannot inject a log line."""
+        audit = SecurityAuditLogger(enabled=True)
+        correlation_id = "cid\nWARNING forged"
+
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            audit.start("photo.jpg", correlation_id)
+
+        record = caplog.records[0]
+        assert record.audit_correlation_id == "cid\\u000aWARNING forged"
+        assert "\n" not in record.getMessage()
+
+
+class TestAuditSourceIp:
+    """The client address is carried on the context."""
+
+    def test_defaults_to_none(self):
+        """Test no source IP is recorded by default."""
+        event = AuditEvent(
+            event_type=AuditEventType.VALIDATION_START,
+            correlation_id="cid",
+        )
+        assert event.source_ip is None
+
+    def test_context_value_populates_event(self):
+        """Test a set source IP reaches new events."""
+        set_source_ip("203.0.113.7")
+        try:
+            event = AuditEvent(
+                event_type=AuditEventType.VALIDATION_START,
+                correlation_id="cid",
+            )
+        finally:
+            set_source_ip(None)
+
+        assert event.source_ip == "203.0.113.7"
+
+    def test_source_ip_reaches_log_record(self, caplog):
+        """Test the emitted record carries the source IP.
+
+        Args:
+            caplog: pytest log capture fixture.
+        """
+        audit = SecurityAuditLogger(enabled=True)
+        set_source_ip("203.0.113.7")
+        try:
+            with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+                audit.start("photo.jpg", "cid-ip")
+        finally:
+            set_source_ip(None)
+
+        assert caplog.records[0].audit_source_ip == "203.0.113.7"
+
+    def test_source_ip_is_escaped(self, caplog):
+        """Test an untrusted forwarded address cannot inject.
+
+        Args:
+            caplog: pytest log capture fixture.
+        """
+        audit = SecurityAuditLogger(enabled=True)
+        set_source_ip("1.2.3.4\nWARNING forged")
+        try:
+            with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+                audit.start("photo.jpg", "cid-ip")
+        finally:
+            set_source_ip(None)
+
+        assert "\n" not in caplog.records[0].audit_source_ip
+
+    def test_reset_clears_the_context_value(self):
+        """Test reset_source_ip clears a recorded address."""
+        set_source_ip("203.0.113.7")
+        assert get_source_ip() == "203.0.113.7"
+
+        reset_source_ip()
+
+        assert get_source_ip() is None
+
+
+class TestAuditEscapingIsSinglePass:
+    """Untrusted fields are escaped once, at the emission point."""
+
+    @pytest.mark.asyncio
+    async def test_hostile_filename_is_not_double_escaped(
+        self, mock_upload_file, caplog
+    ):
+        """Test escaping does not run twice and mangle the name.
+
+        Args:
+            mock_upload_file: Upload file factory fixture.
+            caplog: pytest log capture fixture.
+        """
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.file_validator import FileValidator
+        from safeuploads.utils import safe_label
+        from tests.conftest import JPEG_SOF0
+
+        config = FileSecurityConfig(SecurityLimits(enable_audit_logging=True))
+        validator = FileValidator(config=config)
+
+        # Sanitization reduces this to "photo.jpg"; the audit start
+        # event still records the raw name the client sent.
+        hostile = "photo" + "\n" * 256 + ".jpg"
+        file = mock_upload_file(
+            filename=hostile,
+            content=b"\xff\xd8" + JPEG_SOF0 + b"\xff\xd9",
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            await validator.validate_image_file(file)
+
+        recorded = caplog.records[0].audit_filename
+        assert recorded == safe_label(hostile)
+        assert "\n" not in recorded
+        # A second pass would truncate mid-escape-sequence.
+        assert not recorded.rstrip(".").endswith(("\\u", "\\u0", "\\u00"))
+
 
 class TestAuditIntegration:
     """Test audit logging integration with FileValidator."""
@@ -309,6 +429,45 @@ class TestAuditIntegration:
         await validator.validate_image_file(file)
         assert get_correlation_id() is None
 
+    @pytest.mark.asyncio
+    async def test_resource_limit_emits_dedicated_event(
+        self, mock_upload_file, valid_jpeg_bytes, caplog
+    ):
+        """Test a breached budget records a RESOURCE_LIMIT event.
+
+        Args:
+            mock_upload_file: File factory fixture.
+            valid_jpeg_bytes: Valid JPEG bytes fixture.
+            caplog: pytest log capture fixture.
+        """
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.exceptions import ResourceLimitError
+        from safeuploads.file_validator import FileValidator
+
+        validator = FileValidator(
+            config=FileSecurityConfig(
+                SecurityLimits(
+                    enable_audit_logging=True,
+                    max_validation_time_seconds=0.0,
+                )
+            )
+        )
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError),
+        ):
+            await validator.validate_image_file(file)
+
+        types = [
+            r.audit_event_type
+            for r in caplog.records
+            if r.name == "safeuploads.audit"
+        ]
+        assert "resource_limit" in types
+        assert "validation_failure" not in types
+
 
 class TestThreatAuditEvents:
     """Test threat audit events from inspectors/validators."""
@@ -353,6 +512,49 @@ class TestThreatAuditEvents:
             if r.name == "safeuploads.audit" and "threat_detected" in r.message
         ]
         assert len(threat_records) >= 1
+        assert threat_records[0].audit_filename == "evil.zip"
+
+    @pytest.mark.asyncio
+    async def test_gzip_threat_audit_event_names_the_file(
+        self, mock_upload_file, caplog
+    ):
+        """Test a gzip bomb audit event carries the filename."""
+        import gzip
+        import io
+
+        from safeuploads.config import (
+            FileSecurityConfig,
+            SecurityLimits,
+        )
+        from safeuploads.file_validator import FileValidator
+
+        config = FileSecurityConfig(
+            SecurityLimits(
+                enable_audit_logging=True,
+                max_compression_ratio=2,
+            )
+        )
+        validator = FileValidator(config=config)
+
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(b"a" * 1_000_000)
+
+        file = mock_upload_file(filename="bomb.gz", content=buf.getvalue())
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ZipBombError),
+        ):
+            await validator.validate_gzip_file(file)
+
+        threat_records = [
+            r
+            for r in caplog.records
+            if r.name == "safeuploads.audit" and "threat_detected" in r.message
+        ]
+        assert len(threat_records) >= 1
+        assert threat_records[0].audit_filename == "bomb.gz"
 
     @pytest.mark.asyncio
     async def test_zip_bomb_emits_audit_threat(self, mock_upload_file, caplog):
@@ -470,3 +672,15 @@ class TestLogExtraCorrelationId:
         extra = log_extra()
         assert extra["correlation_id"] == "cid-abc"
         reset_correlation_id()
+
+    def test_log_extra_escapes_correlation_id(self):
+        """Test log extras cannot carry raw line separators."""
+        from safeuploads.audit import log_extra
+
+        set_correlation_id("cid\nWARNING forged")
+        try:
+            extra = log_extra()
+        finally:
+            reset_correlation_id()
+
+        assert extra["correlation_id"] == "cid\\u000aWARNING forged"

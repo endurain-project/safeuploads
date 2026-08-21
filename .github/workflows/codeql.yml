@@ -1,0 +1,58 @@
+name: CodeQL
+
+# `pip-audit` covers known vulnerabilities in our dependencies; ruff's
+# flake8-bandit rules cover single-line patterns in our own code. Neither does
+# interprocedural taint tracking, which is what actually catches an untrusted
+# filename reaching a filesystem or subprocess sink. That is CodeQL's job.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Weekly, so a newly-published query pack is run against unchanged code.
+    - cron: '15 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Python
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload the SARIF result to the Security tab.
+      security-events: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # `build-mode: none` is the correct setting for an interpreted language:
+      # CodeQL reads the sources directly instead of watching a compiler.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: python
+          build-mode: none
+          # `security-extended` adds lower-severity and precision queries on top
+          # of the default pack. Appropriate for a security library, where a
+          # false positive costs far less than a missed sink.
+          queries: security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: /language:python

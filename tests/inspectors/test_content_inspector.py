@@ -8,6 +8,7 @@ from safeuploads.exceptions import FileProcessingError
 from safeuploads.inspectors.content_inspector import (
     ContentSecurityInspector,
 )
+from tests.conftest import JPEG_SOF0
 
 
 def _sig(category: MalwareSignatureCategory) -> bytes:
@@ -149,7 +150,12 @@ class TestContentAnalysisIntegration:
             b"JFIF\x00"
             b"\x01\x01\x00"
             b"\x00\x01\x00\x01"
-            b"\x00\x00" + b"\x00" * 50 + sig + b"\x00" * 50 + b"\xff\xd9"
+            b"\x00\x00"
+            + JPEG_SOF0
+            + b"\x00" * 50
+            + sig
+            + b"\x00" * 50
+            + b"\xff\xd9"
         )
         file = mock_upload_file(filename="bad.jpg", content=content)
         with pytest.raises(FileProcessingError) as exc:
@@ -188,7 +194,12 @@ class TestContentAnalysisIntegration:
             b"JFIF\x00"
             b"\x01\x01\x00"
             b"\x00\x01\x00\x01"
-            b"\x00\x00" + b"\x00" * 50 + sig + b"\x00" * 50 + b"\xff\xd9"
+            b"\x00\x00"
+            + JPEG_SOF0
+            + b"\x00" * 50
+            + sig
+            + b"\x00" * 50
+            + b"\xff\xd9"
         )
         file = mock_upload_file(filename="img.jpg", content=content)
         # Should pass — analysis disabled

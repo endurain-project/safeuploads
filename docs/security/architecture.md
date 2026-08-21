@@ -5,7 +5,7 @@ component responsibilities, and data flow for each file type.
 
 ---
 
-## Component Overview
+## Component overview
 
 ```
 safeuploads/
@@ -50,9 +50,9 @@ safeuploads/
 
 ---
 
-## Validation Pipelines
+## Validation pipelines
 
-### Image Validation (`validate_image_file`)
+### Image validation (`validate_image_file`)
 
 ```
 UploadFile
@@ -114,7 +114,7 @@ UploadFile
 └─────────────────────────────┘
 ```
 
-### ZIP Validation (`validate_zip_file`)
+### ZIP validation (`validate_zip_file`)
 
 ```
 UploadFile
@@ -194,7 +194,7 @@ UploadFile
 └──────────────────────────────┘
 ```
 
-### Activity File Validation (`validate_activity_file`)
+### Activity file validation (`validate_activity_file`)
 
 ```
 UploadFile (.gpx, .tcx, .fit)
@@ -249,7 +249,7 @@ UploadFile (.gpx, .tcx, .fit)
 └──────────────────────────────┘
 ```
 
-### Gzip Validation (`validate_gzip_file`)
+### Gzip validation (`validate_gzip_file`)
 
 ```
 UploadFile (.gz)
@@ -302,7 +302,7 @@ UploadFile (.gz)
 
 ---
 
-## Data Flow: Where File Content Is Read
+## Data flow: where file content is read
 
 | Stage | What is read | Buffer size |
 |---|---|---|
@@ -318,7 +318,7 @@ UploadFile (.gz)
 
 ---
 
-## Exception Hierarchy
+## Exception hierarchy
 
 ```
 Exception
@@ -344,7 +344,7 @@ machine-readable classification.
 
 ---
 
-## Audit Event Flow
+## Audit event flow
 
 ```
 FileValidator.validate_*()

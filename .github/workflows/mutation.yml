@@ -1,0 +1,85 @@
+name: Mutation testing
+
+# 98%+ line coverage says every line runs; it does not say anything asserted on
+# the result. Mutation testing perturbs the source and reports which changes the
+# suite fails to notice. Scheduled and non-blocking: a surviving mutant is a
+# lead to investigate, not a build break.
+
+on:
+  schedule:
+    # Every Sunday at 05:00 UTC, after the fuzz run.
+    - cron: '0 5 * * 0'
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: Mutant name glob, e.g. safeuploads.utils.*
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutate:
+    name: Mutate and score
+    runs-on: ubuntu-latest
+    # The full run is a few thousand mutants; cap it so a pathological
+    # mutant that hangs cannot hold a runner all day.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version-file: pyproject.toml
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev --extra fastapi --group mutation
+
+      # A failing suite makes every mutant "killed" and the score meaningless,
+      # so establish that the baseline is green before mutating anything.
+      - name: Verify the baseline suite passes
+        run: uv run pytest -q --no-cov -m "not performance and not fuzz"
+
+      # The filter goes through the environment, never through `${{ }}`
+      # interpolation into the script body, which would let anyone able to
+      # dispatch the workflow inject shell.
+      - name: Run mutation testing
+        continue-on-error: true
+        env:
+          MUTMUT_FILTER: ${{ inputs.filter }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MUTMUT_FILTER}" ]; then
+            uv run mutmut run --max-children 4 "${MUTMUT_FILTER}"
+          else
+            uv run mutmut run --max-children 4
+          fi
+
+      - name: Summarise surviving mutants
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo '## Surviving mutants'
+            echo
+            echo 'Each line is a source change the test suite did not notice.'
+            echo
+            echo '```'
+            uv run mutmut results || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

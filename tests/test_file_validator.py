@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import tempfile
 
 import pytest
 
@@ -14,6 +15,7 @@ from safeuploads.exceptions import (
     FileProcessingError,
     FileSignatureError,
     FileSizeError,
+    ImageSecurityError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -22,6 +24,8 @@ from safeuploads.exceptions import (
     ZipContentError,
 )
 from safeuploads.file_validator import FileValidator
+from safeuploads.utils import safe_label
+from tests.conftest import JPEG_SOF0
 
 
 class TestFileValidatorInitialization:
@@ -960,6 +964,70 @@ class TestStreamToTempFile:
                 max_file_size=1 * 1024,  # 1 KB limit
             )
 
+    @pytest.mark.asyncio
+    async def test_temp_dir_used_for_spilled_uploads(
+        self, mock_upload_file, monkeypatch, tmp_path
+    ):
+        """
+        Test the configured temp_dir reaches the spooled file.
+
+        Args:
+            mock_upload_file: File factory fixture.
+            monkeypatch: pytest monkeypatch fixture.
+            tmp_path: pytest temporary directory fixture.
+        """
+        captured = {}
+        real_spooled = tempfile.SpooledTemporaryFile
+
+        def _spy(*args, **kwargs):
+            captured.update(kwargs)
+            return real_spooled(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "SpooledTemporaryFile", _spy)
+
+        config = FileSecurityConfig(
+            SecurityLimits(temp_dir=str(tmp_path), max_memory_buffer_size=8)
+        )
+        validator = FileValidator(config=config)
+        file = mock_upload_file(filename="a.zip", content=b"x" * 4096)
+
+        temp, _ = await validator._stream_to_temp_file(
+            file, max_file_size=1024 * 1024
+        )
+        temp.close()
+
+        assert captured["dir"] == str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_temp_dir_defaults_to_system_location(
+        self, mock_upload_file, monkeypatch
+    ):
+        """
+        Test an unset temp_dir leaves the system default in place.
+
+        Args:
+            mock_upload_file: File factory fixture.
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        captured = {}
+        real_spooled = tempfile.SpooledTemporaryFile
+
+        def _spy(*args, **kwargs):
+            captured.update(kwargs)
+            return real_spooled(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "SpooledTemporaryFile", _spy)
+
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"x" * 32)
+
+        temp, _ = await validator._stream_to_temp_file(
+            file, max_file_size=1024 * 1024
+        )
+        temp.close()
+
+        assert captured["dir"] is None
+
 
 class TestResourceMonitorIntegration:
     """Test resource monitoring in validate methods."""
@@ -1247,6 +1315,30 @@ class TestSanitizeFilenameEdgeCases:
         assert result.startswith("file_")
         assert result.endswith(".jpg")
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "a\x85b.jpg",  # C1 next-line
+            "a\x9bb.jpg",  # C1 control sequence introducer
+            "a\u2028b.jpg",  # Line separator
+            "a\u2029b.jpg",  # Paragraph separator
+        ],
+    )
+    def test_sanitize_strips_non_c0_line_breakers(self, raw):
+        """
+        Test that code points beyond C0 cannot break a log line.
+
+        Args:
+            raw: Filename carrying a log-breaking code point.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+        result = validator._sanitize_filename(raw)
+        assert result == "ab.jpg"
+        assert safe_label(result) == result
+
 
 class TestValidateActivityFile:
     """Test activity file validation (GPX, TCX, FIT)."""
@@ -1445,7 +1537,11 @@ class TestImageContentAnalysisIntegration:
         # Valid JPEG header, 9 KB filler, then a ZIP (GIFAR)
         # polyglot signature well past the 8 KB read window.
         jpeg = (
-            b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04" + b"\xff\xd9"
+            b"\xff\xd8"
+            + JPEG_SOF0
+            + b"\x00" * 9000
+            + b"PK\x03\x04"
+            + b"\xff\xd9"
         )
         file = mock_upload_file(filename="poly.jpg", content=jpeg)
         with pytest.raises(FileProcessingError, match="Content analysis"):
@@ -1455,8 +1551,128 @@ class TestImageContentAnalysisIntegration:
     async def test_clean_large_image_passes(self, mock_upload_file):
         """A clean image larger than 8 KB passes analysis."""
         validator = self._content_analysis_validator()
-        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"\xff\xd9"
+        jpeg = b"\xff\xd8" + JPEG_SOF0 + b"\x00" * 9000 + b"\xff\xd9"
         file = mock_upload_file(filename="clean.jpg", content=jpeg)
+        await validator.validate_image_file(file)
+
+
+def _png_with_dimensions(width: int, height: int) -> bytes:
+    """Build a PNG whose IHDR declares the given dimensions."""
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\x0d"
+        + b"IHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x02\x00\x00\x00"
+        + b"\x00\x00\x00\x00"
+    )
+
+
+def _jpeg_with_dimensions(width: int, height: int) -> bytes:
+    """Build a JPEG whose SOF0 declares the given dimensions."""
+    return (
+        b"\xff\xd8"
+        b"\xff\xc0\x00\x11\x08"
+        + height.to_bytes(2, "big")
+        + width.to_bytes(2, "big")
+        + b"\x03\x01\x11\x00\x02\x11\x01\x03\x11\x01"
+        + b"\xff\xd9"
+    )
+
+
+class TestImageDimensionValidation:
+    """Decoded pixel count is bounded independently of byte size."""
+
+    @pytest.mark.asyncio
+    async def test_png_pixel_bomb_rejected(self, mock_upload_file):
+        """A tiny PNG declaring huge dimensions is rejected."""
+        validator = FileValidator()
+        # ~40 bytes on the wire, ~3.6 GB once decoded.
+        content = _png_with_dimensions(30000, 30000)
+        file = mock_upload_file(filename="bomb.png", content=content)
+
+        with pytest.raises(ImageSecurityError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.IMAGE_DIMENSIONS_EXCEEDED
+        assert exc_info.value.width == 30000
+        assert exc_info.value.height == 30000
+
+    @pytest.mark.asyncio
+    async def test_jpeg_pixel_bomb_rejected(self, mock_upload_file):
+        """A tiny JPEG declaring huge dimensions is rejected."""
+        validator = FileValidator()
+        content = _jpeg_with_dimensions(20000, 20000)
+        file = mock_upload_file(filename="bomb.jpg", content=content)
+
+        with pytest.raises(ImageSecurityError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.IMAGE_DIMENSIONS_EXCEEDED
+
+    @pytest.mark.asyncio
+    async def test_within_pixel_limit_passes(self, mock_upload_file):
+        """A normally sized image is accepted."""
+        validator = FileValidator()
+        content = _png_with_dimensions(1920, 1080)
+        file = mock_upload_file(filename="photo.png", content=content)
+
+        await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
+    async def test_custom_pixel_limit_enforced(self, mock_upload_file):
+        """A tightened max_image_pixels is honoured."""
+        config = FileSecurityConfig(SecurityLimits(max_image_pixels=1000))
+        validator = FileValidator(config=config)
+        content = _png_with_dimensions(100, 100)
+        file = mock_upload_file(filename="photo.png", content=content)
+
+        with pytest.raises(ImageSecurityError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.max_pixels == 1000
+
+    @pytest.mark.asyncio
+    async def test_zero_dimensions_rejected(self, mock_upload_file):
+        """An image declaring a zero dimension is rejected."""
+        validator = FileValidator()
+        content = _png_with_dimensions(0, 100)
+        file = mock_upload_file(filename="empty.png", content=content)
+
+        with pytest.raises(ImageSecurityError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert (
+            exc_info.value.error_code == ErrorCode.IMAGE_DIMENSIONS_UNREADABLE
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_frame_header_rejected(self, mock_upload_file):
+        """A JPEG with no frame header fails closed."""
+        validator = FileValidator()
+        content = (
+            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00"
+            b"\x00\x01\x00\x01\x00\x00\xff\xd9"
+        )
+        file = mock_upload_file(filename="headerless.jpg", content=content)
+
+        with pytest.raises(ImageSecurityError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert (
+            exc_info.value.error_code == ErrorCode.IMAGE_DIMENSIONS_UNREADABLE
+        )
+
+    @pytest.mark.asyncio
+    async def test_frame_header_past_sample_window(self, mock_upload_file):
+        """A frame header behind a large EXIF block is still found."""
+        validator = FileValidator()
+        # APP0 segment large enough to push SOF0 past the 8 KB sample.
+        app0 = b"\xff\xe0" + (9000).to_bytes(2, "big") + b"\x00" * 8998
+        content = b"\xff\xd8" + app0 + JPEG_SOF0 + b"\xff\xd9"
+        file = mock_upload_file(filename="bigexif.jpg", content=content)
+
         await validator.validate_image_file(file)
 
 

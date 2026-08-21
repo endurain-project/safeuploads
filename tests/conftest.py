@@ -7,6 +7,19 @@ import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 
+# Baseline SOF0 frame header declaring a 16x16 image. Real JPEGs
+# always carry a start-of-frame segment; without one the decoded
+# dimensions are unknown and validation rejects the file.
+JPEG_SOF0 = (
+    b"\xff\xc0"  # SOF0 marker
+    b"\x00\x11"  # Segment length (17)
+    b"\x08"  # Sample precision
+    b"\x00\x10"  # Height
+    b"\x00\x10"  # Width
+    b"\x03"  # Component count
+    b"\x01\x11\x00\x02\x11\x01\x03\x11\x01"  # Component specs
+)
+
 
 @pytest.fixture
 def default_config() -> FileSecurityConfig:
@@ -56,7 +69,7 @@ def mock_upload_file():
         ):
             self.filename = filename
             self.content = content
-            self.size = size or len(content)
+            self.size = size if size is not None else len(content)
             self._position = 0
 
         async def read(self, size: int = -1) -> bytes:
@@ -101,7 +114,8 @@ def valid_jpeg_bytes() -> bytes:
     Returns:
         Minimal valid JPEG file content.
     """
-    # Minimal valid JPEG: SOI marker + APP0 segment + EOI marker
+    # Minimal valid JPEG: SOI marker + APP0 segment + SOF0 frame
+    # header + EOI marker
     return (
         b"\xff\xd8\xff\xe0"  # JPEG SOI + APP0
         b"\x00\x10"  # APP0 length
@@ -110,7 +124,8 @@ def valid_jpeg_bytes() -> bytes:
         b"\x00"  # Density units
         b"\x00\x01\x00\x01"  # X and Y density
         b"\x00\x00"  # Thumbnail dimensions
-        b"\xff\xd9"  # JPEG EOI
+        + JPEG_SOF0
+        + b"\xff\xd9"  # JPEG EOI
     )
 
 

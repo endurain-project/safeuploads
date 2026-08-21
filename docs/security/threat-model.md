@@ -1,4 +1,4 @@
-# Threat Model
+# Threat model
 
 This document describes the threat categories that safeuploads
 protects against, the attack vectors for each, and the
@@ -6,9 +6,9 @@ mitigations implemented in the library.
 
 ---
 
-## Filename Attacks
+## Filename attacks
 
-### Directory Traversal (CWE-22)
+### Directory traversal (CWE-22)
 
 **Attack:** Filenames containing `../`, `..\\`, or URL-encoded
 variants (`%2e%2e%2f`) attempt to write files outside the
@@ -23,7 +23,7 @@ intended upload directory.
 - Null bytes in filenames are rejected to prevent C-string
   truncation attacks.
 
-### Unicode Obfuscation (CWE-116)
+### Unicode obfuscation (CWE-116)
 
 **Attack:** Right-to-left override characters (U+202E) and
 zero-width joiners can disguise file extensions so that
@@ -39,7 +39,7 @@ is `.exe`.
 - Fullwidth period (U+FF0E) and dot leader (U+2024) are
   flagged to prevent extension spoofing.
 
-### Windows Reserved Names (CWE-20)
+### Windows reserved names (CWE-20)
 
 **Attack:** Filenames like `CON`, `PRN`, `NUL`, or `COM1`
 cause undefined behavior on Windows file systems, potentially
@@ -53,9 +53,9 @@ leading to denial of service.
 
 ---
 
-## Extension Attacks
+## Extension attacks
 
-### Dangerous Extensions (CWE-434)
+### Dangerous extensions (CWE-434)
 
 **Attack:** Uploading executable files (`.exe`, `.bat`, `.ps1`,
 `.php`, `.jsp`) that could be executed if served or stored
@@ -76,9 +76,9 @@ improperly.
 
 ---
 
-## Compression Attacks
+## Compression attacks
 
-### ZIP Bombs (CWE-400)
+### ZIP bombs (CWE-400)
 
 **Attack:** A small ZIP archive that decompresses to an
 enormous size (e.g., 42.zip — 42 KB compressed, 4.5 PB
@@ -114,7 +114,7 @@ uncompressed), exhausting disk and memory.
   declared metadata are then rejected as `ZIP_CORRUPT`. This is
   off by default because it decompresses the full archive.
 
-### Recursive / Quine ZIP Archives
+### Recursive / quine ZIP archives
 
 **Attack:** A ZIP containing itself (quine) or deeply nested
 ZIPs that cause infinite recursion during inspection.
@@ -126,11 +126,12 @@ ZIPs that cause infinite recursion during inspection.
   raises `ZIP_QUINE_DETECTED`.
 - `max_zip_depth` (default 10) limits nesting level.
 - `max_total_entries_recursive` (default 50,000) limits the
-  cumulative entry count across all nesting levels.
+  cumulative entry count across all nesting levels. A single
+  flat archive is capped by `max_zip_entries` instead.
 - `ZIP_RECURSIVE_STRUCTURE` and `ZIP_COMPLEXITY_ATTACK` error
   codes provide precise feedback.
 
-### Nested Archive Detection
+### Nested archive detection
 
 **Attack:** Archives hidden inside other archives to bypass
 single-level content inspection.
@@ -145,9 +146,9 @@ single-level content inspection.
 
 ---
 
-## Content Threats (ZIP Entries)
+## Content threats (ZIP entries)
 
-### Path Traversal in ZIP Entry Names (CWE-22)
+### Path traversal in ZIP entry names (CWE-22)
 
 **Attack:** ZIP entry filenames like `../../etc/passwd` write
 outside the extraction directory (Zip Slip).
@@ -159,22 +160,28 @@ outside the extraction directory (Zip Slip).
 - Null bytes in entry filenames are rejected first to prevent
   C-string truncation bypasses (CWE-158).
 
-### Executable Content in ZIP
+### Executable content in ZIP
 
 **Attack:** Executables, scripts, system files, or shortcuts
 hidden inside ZIP archives.
 
 **Mitigations:**
 
-- Entry extensions are checked against
-  `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, and
-  `SYSTEM_FILES`.
+- `ZipContentInspector._check_dangerous_extension()` rejects any
+  entry whose name carries an extension from a `ZipThreatCategory`
+  listed in `blocked_zip_entry_categories`, which defaults to
+  `EXECUTABLE_FILES` and `SCRIPT_FILES`. Add `SYSTEM_FILES` to also
+  reject `.dll`, `.so`, `.ini` and `.conf` entries; that category is
+  mostly configuration rather than executable content, so it is
+  opt-in. Every dot-separated suffix is checked, so a disguised name
+  such as `invoice.php.txt` is still rejected. This check is
+  metadata-level and runs even when `scan_zip_content=False`.
 - Binary content is scanned for executable magic bytes from
   `SuspiciousFilePattern.EXECUTABLE_SIGNATURES`.
 - Text content is scanned for script injection patterns
   (shebangs, `eval()`, `<?php`, `<script`).
 
-### Symbolic Links in ZIP (CWE-59)
+### Symbolic links in ZIP (CWE-59)
 
 **Attack:** Symlinks inside ZIP archives can point to
 arbitrary system files when extracted.
@@ -186,9 +193,32 @@ arbitrary system files when extracted.
 
 ---
 
-## File Content Attacks
+## File content attacks
 
-### MIME Type Mismatch (CWE-434)
+### Image decompression bombs (CWE-409)
+
+**Attack:** A small PNG or JPEG that declares enormous pixel
+dimensions. A ~10 KB file claiming 30000x30000 passes every
+byte-size check but expands to several gigabytes in any
+downstream decoder (Pillow, ImageMagick, a browser).
+
+**Mitigations:**
+
+- `FileValidator` parses the declared dimensions directly from
+  the header: the PNG `IHDR` chunk, or the first JPEG
+  start-of-frame segment.
+- `width * height` is bounded by `max_image_pixels` (default
+  89,478,485, matching Pillow's `MAX_IMAGE_PIXELS`). Breaches
+  raise `ImageSecurityError` with
+  `IMAGE_DIMENSIONS_EXCEEDED`.
+- The header is searched across the first 1 MiB, so padding the
+  EXIF block to push the frame header past the MIME sample does
+  not bypass the check.
+- The check fails closed: an image whose dimensions cannot be
+  read, or which declares a zero dimension, is rejected with
+  `IMAGE_DIMENSIONS_UNREADABLE`.
+
+### MIME type mismatch (CWE-434)
 
 **Attack:** A file with a `.jpg` extension but containing
 executable content, relying on the server trusting the
@@ -203,7 +233,7 @@ extension.
 - File signatures (magic bytes) are verified independently of
   the MIME type.
 
-### Polyglot Files
+### Polyglot files
 
 **Attack:** Files valid in multiple formats simultaneously
 (e.g., GIFAR — a file that is both a valid GIF and a valid
@@ -220,7 +250,7 @@ format.
 - Polyglot checks are context-aware — ZIP signatures inside a
   file being validated as a ZIP are not flagged.
 
-### Embedded Malware Signatures
+### Embedded malware signatures
 
 **Attack:** Executable headers (PE, ELF, Mach-O, Java class,
 Windows shortcuts) embedded within uploaded files.
@@ -234,7 +264,7 @@ Windows shortcuts) embedded within uploaded files.
 - Web shell markers (`<?php`, `<%`, `<script`) are detected
   in text content.
 
-### XML External Entity Injection (CWE-611)
+### XML external entity injection (CWE-611)
 
 **Attack:** GPX and TCX files are XML-based; malicious DTD
 declarations can trigger external entity resolution, leading
@@ -249,11 +279,46 @@ to server-side file reads or SSRF.
   `ExternalReferenceForbidden` are caught and reported as
   validation failures.
 
+### Arbitrary XML behind an activity extension
+
+**Attack:** Well-formed XML is not a GPX file. An attacker
+uploads `<html><script>...</script></html>` named `track.gpx`;
+it passes the `<?xml` signature check and parses cleanly. If
+the application later serves the stored file with a sniffable
+content type, the payload executes (stored XSS).
+
+**Mitigations:**
+
+- The document root must match the uploaded extension:
+  `.gpx` requires a `gpx` root and `.tcx` requires a
+  `TrainingCenterDatabase` root, per
+  `FileSecurityConfig.ACTIVITY_XML_ROOTS`.
+- Namespaces are stripped before matching, so a namespaced
+  `{http://www.topografix.com/GPX/1/1}gpx` root is accepted.
+- Mismatches raise `FileProcessingError` with
+  `XML_INVALID_ROOT`. A TCX document uploaded as `.gpx` is
+  rejected.
+
+### XML element amplification
+
+**Attack:** `defusedxml` blocks entity expansion, but a flat
+document needs no entities: 50 MB of `<a/>` is roughly twelve
+million elements, and a full DOM of those costs an order of
+magnitude more memory than the file itself.
+
+**Mitigations:**
+
+- Parsing is incremental (`iterparse`); completed elements and
+  the accumulated root children are discarded as they close, so
+  peak memory stays flat regardless of document length.
+- The element count is capped by `max_xml_elements`
+  (default 1,000,000), raising `XML_TOO_MANY_ELEMENTS`.
+
 ---
 
-## Resource Exhaustion
+## Resource exhaustion
 
-### Memory Exhaustion (CWE-400)
+### Memory exhaustion (CWE-400)
 
 **Attack:** Uploading very large files or files that expand
 significantly during validation consumes all available memory.
@@ -263,13 +328,17 @@ significantly during validation consumes all available memory.
 - Streaming validation via `SpooledTemporaryFile` keeps memory
   usage under `max_memory_buffer_size` (default 10 MB) by
   spilling to disk for larger files.
-- `ResourceMonitor` tracks memory delta via
-  `resource.getrusage()` and enforces
-  `max_validation_memory_mb` (default 512 MB).
+- Every buffer the library allocates is bounded by an explicit
+  byte limit: `chunk_size`, `content_scan_max_size`,
+  `max_uncompressed_size`, and `max_xml_elements`.
 - File size is enforced progressively during chunked reads,
   not after loading the entire file.
+- `ResourceMonitor` additionally reports peak-RSS growth against
+  `max_validation_memory_mb`. See the caveat under CPU
+  Exhaustion: this is telemetry, not a limit, unless
+  `enforce_memory_limit` is set.
 
-### CPU Exhaustion (CWE-400)
+### CPU exhaustion (CWE-400)
 
 **Attack:** Crafted files that trigger expensive validation
 paths (e.g., ZIP with many entries, deeply nested structures).
@@ -277,14 +346,31 @@ paths (e.g., ZIP with many entries, deeply nested structures).
 **Mitigations:**
 
 - `ResourceMonitor` enforces `max_validation_time_seconds`
-  (default 30 s) using `time.monotonic()`.
+  (default 30 s) using `time.monotonic()`. The budget is
+  checked on every chunk of the streaming reads, every ZIP
+  entry, every recursive nesting step, and every gzip chunk, so
+  a runaway file is aborted while it runs rather than reported
+  after the fact.
 - ZIP analysis has its own `zip_analysis_timeout` (default 5 s),
   compared against `time.monotonic()` on each entry during
   iteration.
 - `max_zip_entries` (default 10,000) caps per-archive entry
   count.
 
-### Gzip Decompression Bombs
+**Memory accounting caveat:** the memory budget samples the
+process-wide peak RSS (`ru_maxrss`), a monotonic high-water
+mark. It cannot be attributed to a single validation: after the
+first peak the measured delta is near zero, and under
+concurrency it picks up other requests' allocations. It is
+therefore **best-effort telemetry, not a limit** — exceeding
+`max_validation_memory_mb` is logged, not enforced. Set
+`enforce_memory_limit=True` to make it fail the validation, and
+only do so in a process that validates one upload at a time.
+The real memory bounds are structural: `max_memory_buffer_size`,
+`chunk_size`, `content_scan_max_size`, `max_uncompressed_size`
+and `max_xml_elements` cap every buffer the library allocates.
+
+### Gzip decompression bombs
 
 **Attack:** A small gzip file that decompresses to massive
 size, similar to ZIP bombs.
@@ -296,12 +382,42 @@ size, similar to ZIP bombs.
   `SecurityLimits` progressively.
 - Exceeding either limit raises a validation error immediately,
   without reading the rest of the stream.
+- Inflation is additionally bounded by `gzip_analysis_timeout`
+  (default 25 s), so a stream that stays inside the ratio and
+  size limits still cannot burn unbounded CPU. The bound does
+  not depend on the caller supplying a `ResourceMonitor`. The
+  default is sized to inflate `max_uncompressed_size` at a
+  conservative 50 MB/s, so it fires on pathological CPU cost
+  rather than on a large but legitimate stream.
 
 ---
 
-## Audit & Observability
+## Audit & observability
 
-### Undetected Security Events (CWE-778)
+### Log injection (CWE-117)
+
+**Attack:** A filename or ZIP entry name containing a newline
+(`upload.jpg\nWARNING forged entry`) forges an extra log line,
+or uses directional and zero-width characters to hide the real
+name from an analyst reading the log.
+
+**Mitigations:**
+
+- `safe_label()` escapes control, format, surrogate and
+  line-separator characters to `\uXXXX` and bounds the length
+  before any untrusted text reaches a log record, an audit
+  event, or an exception message.
+- The raw client filename is escaped in `FileValidator` before
+  the first audit event is emitted, which happens before any
+  sanitization has run.
+- `SecurityAuditLogger.log_event()` escapes the filename,
+  result and details fields again at the emission point, so
+  every caller is covered regardless of how the event was
+  built.
+- Unicode validation errors report the offending code point and
+  its Unicode name rather than echoing the character itself.
+
+### Undetected security events (CWE-778)
 
 **Attack:** Security-relevant events (validation failures,
 threat detections) go unlogged, preventing incident response.
@@ -310,15 +426,20 @@ threat detections) go unlogged, preventing incident response.
 
 - `SecurityAuditLogger` emits structured log records under the
   `safeuploads.audit` logger for every validation start,
-  success, failure, and threat detection.
+  success, failure, and threat detection. A breached resource
+  budget is recorded as `RESOURCE_LIMIT` rather than a generic
+  failure, so it can be alerted on separately.
 - Correlation IDs (via `contextvars`) link all log messages
   from a single validation call.
+- `set_source_ip()` attaches the client address to every audit
+  event in the current context. safeuploads never sees the
+  request, so the application supplies it.
 - Audit logging is off by default (`enable_audit_logging=
   False`) to avoid noise in development, enabled in production.
 
 ---
 
-## Error Information Leakage (CWE-209)
+## Error information leakage (CWE-209)
 
 **Attack:** Detailed internal error messages in API responses
 help attackers understand the validation pipeline and craft

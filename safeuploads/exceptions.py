@@ -89,30 +89,33 @@ class ErrorCode(StrEnum):
     # File size errors
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
     FILE_EMPTY = "FILE_EMPTY"
-    FILE_SIZE_UNKNOWN = "FILE_SIZE_UNKNOWN"
 
     # MIME type errors
     MIME_TYPE_INVALID = "MIME_TYPE_INVALID"
     MIME_TYPE_MISMATCH = "MIME_TYPE_MISMATCH"
-    MIME_DETECTION_FAILED = "MIME_DETECTION_FAILED"
 
     # File signature errors
-    FILE_SIGNATURE_INVALID = "FILE_SIGNATURE_INVALID"
     FILE_SIGNATURE_MISSING = "FILE_SIGNATURE_MISSING"
     FILE_SIGNATURE_MISMATCH = "FILE_SIGNATURE_MISMATCH"
+
+    # Image content errors
+    IMAGE_DIMENSIONS_EXCEEDED = "IMAGE_DIMENSIONS_EXCEEDED"
+    IMAGE_DIMENSIONS_UNREADABLE = "IMAGE_DIMENSIONS_UNREADABLE"
+
+    # XML content errors
+    XML_MALFORMED = "XML_MALFORMED"
+    XML_FORBIDDEN_CONSTRUCT = "XML_FORBIDDEN_CONSTRUCT"
+    XML_INVALID_ROOT = "XML_INVALID_ROOT"
+    XML_TOO_MANY_ELEMENTS = "XML_TOO_MANY_ELEMENTS"
 
     # Compression and ZIP errors
     ZIP_BOMB_DETECTED = "ZIP_BOMB_DETECTED"
     ZIP_CONTENT_THREAT = "ZIP_CONTENT_THREAT"
     COMPRESSION_RATIO_EXCEEDED = "COMPRESSION_RATIO_EXCEEDED"
     ZIP_TOO_MANY_ENTRIES = "ZIP_TOO_MANY_ENTRIES"
-    ZIP_INVALID_STRUCTURE = "ZIP_INVALID_STRUCTURE"
     ZIP_CORRUPT = "ZIP_CORRUPT"
     ZIP_TOO_LARGE = "ZIP_TOO_LARGE"
     ZIP_NESTED_ARCHIVE = "ZIP_NESTED_ARCHIVE"
-    ZIP_DIRECTORY_TRAVERSAL = "ZIP_DIRECTORY_TRAVERSAL"
-    ZIP_SYMLINK_DETECTED = "ZIP_SYMLINK_DETECTED"
-    ZIP_ABSOLUTE_PATH = "ZIP_ABSOLUTE_PATH"
     ZIP_ANALYSIS_TIMEOUT = "ZIP_ANALYSIS_TIMEOUT"
     ZIP_RECURSIVE_STRUCTURE = "ZIP_RECURSIVE_STRUCTURE"
     ZIP_QUINE_DETECTED = "ZIP_QUINE_DETECTED"
@@ -126,7 +129,6 @@ class ErrorCode(StrEnum):
     # Processing errors
     PROCESSING_ERROR = "PROCESSING_ERROR"
     IO_ERROR = "IO_ERROR"
-    MEMORY_ERROR = "MEMORY_ERROR"
 
 
 # ============================================================================
@@ -388,6 +390,45 @@ class FileSignatureError(FileValidationError):
         )
 
 
+class ImageSecurityError(FileValidationError):
+    """
+    Image header declares unsafe or unreadable dimensions.
+
+    Args:
+        message: Human-readable error description.
+        filename: Optional filename that failed the check.
+        width: Optional declared width in pixels.
+        height: Optional declared height in pixels.
+        max_pixels: Optional maximum allowed pixel count.
+        error_code: Optional error code (defaults to
+            IMAGE_DIMENSIONS_EXCEEDED).
+
+    Attributes:
+        width: Declared width in pixels.
+        height: Declared height in pixels.
+        max_pixels: Maximum allowed pixel count.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        max_pixels: int | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with image dimension details."""
+        self.width = width
+        self.height = height
+        self.max_pixels = max_pixels
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.IMAGE_DIMENSIONS_EXCEEDED,
+        )
+
+
 # ============================================================================
 # Compression and ZIP Exceptions
 # ============================================================================
@@ -488,15 +529,24 @@ class FileProcessingError(FileSecurityError):
     Args:
         message: Human-readable error description.
         original_error: Optional original exception that was caught.
+        error_code: Optional error code (defaults to
+            PROCESSING_ERROR).
 
     Attributes:
         original_error: The original exception that was caught.
     """
 
-    def __init__(self, message: str, original_error: Exception | None = None):
+    def __init__(
+        self,
+        message: str,
+        original_error: Exception | None = None,
+        error_code: str | None = None,
+    ):
         """Initialize with original error."""
         self.original_error = original_error
-        super().__init__(message, error_code=ErrorCode.PROCESSING_ERROR)
+        super().__init__(
+            message, error_code=error_code or ErrorCode.PROCESSING_ERROR
+        )
 
 
 # ============================================================================

@@ -16,13 +16,23 @@ from ..enums import (
     SuspiciousFilePattern,
     ZipThreatCategory,
 )
-from ..exceptions import ErrorCode, FileProcessingError, ZipContentError
-from ..utils import find_text_pattern, matches_signature_prefix
+from ..exceptions import (
+    ErrorCode,
+    FileProcessingError,
+    ResourceLimitError,
+    ZipContentError,
+)
+from ..utils import (
+    find_text_pattern,
+    matches_signature_prefix,
+    safe_label,
+)
 from .base import BaseInspector
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
     from ..protocols import SeekableFile
+    from ..utils import ResourceMonitor
 
 
 logger = logging.getLogger(__name__)
@@ -70,18 +80,37 @@ class ZipContentInspector(BaseInspector):
         self._recursable_exts: frozenset[str] = frozenset(
             ZipThreatCategory.RECURSABLE_ARCHIVES.value
         )
+        # Extension to category name, so a rejection names the
+        # category that blocked it. Unknown names are reported by
+        # configuration validation and ignored here.
+        self._dangerous_entry_exts: dict[str, str] = {
+            ext.lower(): category.name
+            for category in ZipThreatCategory
+            if category.name in config.limits.blocked_zip_entry_categories
+            for ext in category.value
+        }
 
-    def inspect_zip_content(self, file_obj: SeekableFile) -> None:
+    def inspect_zip_content(
+        self,
+        file_obj: SeekableFile,
+        monitor: ResourceMonitor | None = None,
+        filename: str = "",
+    ) -> None:
         """
         Inspect ZIP archive for potential security threats.
 
         Args:
             file_obj: Seekable file-like object containing ZIP data.
+            monitor: Optional resource monitor checked once per
+                entry so a runaway archive is aborted mid-scan.
+            filename: Sanitized filename recorded on audit events.
 
         Raises:
             ZipContentError: If security threats are detected in ZIP
                 content such as directory traversal, symlinks, nested
                 archives, or suspicious patterns.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded during inspection.
             FileProcessingError: If ZIP structure is invalid or
                 unexpected error occurs during inspection.
         """
@@ -98,6 +127,9 @@ class ZipContentInspector(BaseInspector):
 
                 # Analyze each entry in the ZIP
                 for entry in zip_entries:
+                    if monitor is not None:
+                        monitor.check()
+
                     # Check for timeout
                     if (
                         time.monotonic() - start_time
@@ -147,7 +179,7 @@ class ZipContentInspector(BaseInspector):
                     cid = get_correlation_id()
                     if cid:
                         self._audit.threat(
-                            "",
+                            filename,
                             cid,
                             "; ".join(threats_found),
                         )
@@ -169,10 +201,14 @@ class ZipContentInspector(BaseInspector):
             # when nested archives are allowed
             if self.config.limits.allow_nested_archives:
                 file_obj.seek(0)
-                self.inspect_nested_archives(file_obj)
+                self.inspect_nested_archives(file_obj, monitor=monitor)
 
         except ZipContentError:
             # Re-raise our own exceptions
+            raise
+        except ResourceLimitError:
+            # A breached time/memory budget must abort the request,
+            # not be reported as an internal processing failure.
             raise
         except zipfile.BadZipFile as err:
             logger.error(
@@ -208,25 +244,28 @@ class ZipContentInspector(BaseInspector):
         """
         threats = []
         filename = entry.filename
+        # Entry names are attacker-controlled and end up in log
+        # records and error messages, so report an escaped copy.
+        label = safe_label(filename)
 
         # 1. Check for null bytes (truncation attacks)
         if "\x00" in filename:
-            threats.append(f"Null byte in filename: '{filename}'")
+            threats.append(f"Null byte in filename: '{label}'")
 
         # 2. Check for directory traversal attacks
         if self._has_directory_traversal(filename):
-            threats.append(f"Directory traversal attack in '{filename}'")
+            threats.append(f"Directory traversal attack in '{label}'")
 
         # 3. Check for absolute paths
         if (
             not self.config.limits.allow_absolute_paths
             and self._has_absolute_path(filename)
         ):
-            threats.append(f"Absolute path detected in '{filename}'")
+            threats.append(f"Absolute path detected in '{label}'")
 
         # 4. Check for symbolic links
         if not self.config.limits.allow_symlinks and self._is_symlink(entry):
-            threats.append(f"Symbolic link detected: '{filename}'")
+            threats.append(f"Symbolic link detected: '{label}'")
 
         # 5. Check filename length limits
         if (
@@ -234,16 +273,14 @@ class ZipContentInspector(BaseInspector):
             > self.config.limits.max_filename_length
         ):
             threats.append(
-                f"Filename too long: '{filename}'"
+                f"Filename too long: '{label}'"
                 f" ({len(os.path.basename(filename))}"
                 " chars)"
             )
 
         # 6. Check path length limits
         if len(filename) > self.config.limits.max_path_length:
-            threats.append(
-                f"Path too long: '{filename}' ({len(filename)} chars)"
-            )
+            threats.append(f"Path too long: '{label}' ({len(filename)} chars)")
 
         # 7. Check for suspicious filename patterns
         suspicious_patterns = self._check_suspicious_patterns(filename)
@@ -254,15 +291,42 @@ class ZipContentInspector(BaseInspector):
             not self.config.limits.allow_nested_archives
             and self._is_nested_archive(filename)
         ):
-            threats.append(f"Nested archive detected: '{filename}'")
+            threats.append(f"Nested archive detected: '{label}'")
 
-        # 9. Check file content if enabled
+        # 9. Check for dangerous entry extensions
+        threats.extend(self._check_dangerous_extension(filename))
+
+        # 10. Check file content if enabled
         # Only first 512 bytes are read, so no size gate needed
         if self.config.limits.scan_zip_content and not entry.is_dir():
             content_threats = self._inspect_entry_content(entry, zip_file)
             threats.extend(content_threats)
 
         return threats
+
+    def _check_dangerous_extension(self, filename: str) -> list[str]:
+        """
+        Check an entry name for dangerous file extensions.
+
+        Every dot-separated suffix is checked, so a disguised
+        name such as ``shell.php.txt`` is still rejected.
+
+        Args:
+            filename: ZIP entry name to check.
+
+        Returns:
+            List of threat descriptions.
+        """
+        basename = os.path.basename(filename).lower()
+        parts = basename.split(".")
+        for part in parts[1:]:
+            category = self._dangerous_entry_exts.get(f".{part}")
+            if category is not None:
+                return [
+                    f"Dangerous entry extension '.{part}'"
+                    f" ({category}) in '{safe_label(filename)}'"
+                ]
+        return []
 
     def _inspect_zip_structure(
         self, entries: list[zipfile.ZipInfo]
@@ -372,11 +436,12 @@ class ZipContentInspector(BaseInspector):
         threats = []
         filename_lower = filename.lower()
         basename = os.path.basename(filename_lower)
+        label = safe_label(filename)
 
         # Check suspicious names
         for pattern in self._suspicious_names:
             if basename == pattern:
-                threats.append(f"Suspicious filename pattern: '{filename}'")
+                threats.append(f"Suspicious filename pattern: '{label}'")
                 break
 
         # Check suspicious path components
@@ -384,7 +449,7 @@ class ZipContentInspector(BaseInspector):
             if pattern in filename_lower:
                 threats.append(
                     "Suspicious path component:"
-                    f" '{filename}' contains"
+                    f" '{label}' contains"
                     f" '{pattern}'"
                 )
                 break
@@ -418,6 +483,7 @@ class ZipContentInspector(BaseInspector):
             List of content threat descriptions.
         """
         threats = []
+        label = safe_label(entry.filename)
 
         try:
             # Read first few bytes to check for executable signatures
@@ -427,40 +493,36 @@ class ZipContentInspector(BaseInspector):
                 # Executable signatures are matched against the
                 # entry header (anchored): the entry either is or
                 # is not an executable.
-                if matches_signature_prefix(
-                    content_sample, self._exec_signatures
-                ):
-                    threats.append(
-                        f"Executable content detected in '{entry.filename}'"
+                if (
+                    matches_signature_prefix(
+                        content_sample, self._exec_signatures
                     )
+                    is not None
+                ):
+                    threats.append(f"Executable content detected in '{label}'")
 
                 ext = os.path.splitext(entry.filename)[1].lower()
                 if (
                     ext not in self._binary_exts
-                    and self._contains_script_patterns(
-                        content_sample, entry.filename
-                    )
+                    and self._contains_script_patterns(content_sample)
                 ):
-                    threats.append(
-                        f"Script content detected in '{entry.filename}'"
-                    )
+                    threats.append(f"Script content detected in '{label}'")
 
         except Exception as err:
             logger.warning(
                 "Could not inspect content of '%s': %s",
-                entry.filename,
+                label,
                 err,
             )
 
         return threats
 
-    def _contains_script_patterns(self, content: bytes, filename: str) -> bool:
+    def _contains_script_patterns(self, content: bytes) -> bool:
         """
         Check content for malicious script patterns.
 
         Args:
             content: Raw bytes to inspect.
-            filename: Filename for context.
 
         Returns:
             True if script patterns found.
@@ -499,6 +561,7 @@ class ZipContentInspector(BaseInspector):
         seen_hashes: set[str] | None = None,
         entry_counter: list[int] | None = None,
         start_time: float | None = None,
+        monitor: ResourceMonitor | None = None,
     ) -> None:
         """
         Recursively inspect nested archives.
@@ -516,10 +579,14 @@ class ZipContentInspector(BaseInspector):
                 cumulative entry count shared across all
                 recursion branches.
             start_time: Monotonic timestamp of initial call.
+            monitor: Optional resource monitor checked once per
+                entry so a runaway archive is aborted mid-scan.
 
         Raises:
             ZipContentError: If recursive structure, quine,
                 or complexity attack is detected.
+            ResourceLimitError: If the monitor's time or memory
+                limit is exceeded during inspection.
         """
         if seen_hashes is None:
             seen_hashes = set()
@@ -578,6 +645,9 @@ class ZipContentInspector(BaseInspector):
                     )
 
                 for entry in entries:
+                    if monitor is not None:
+                        monitor.check()
+
                     # Timeout
                     elapsed = time.monotonic() - start_time
                     if elapsed > timeout:
@@ -610,7 +680,7 @@ class ZipContentInspector(BaseInspector):
                     except Exception:
                         logger.warning(
                             "Could not read nested archive '%s'",
-                            entry.filename,
+                            safe_label(entry.filename),
                         )
                         continue
 
@@ -625,9 +695,14 @@ class ZipContentInspector(BaseInspector):
                         seen_hashes=seen_hashes,
                         entry_counter=entry_counter,
                         start_time=start_time,
+                        monitor=monitor,
                     )
 
         except ZipContentError:
+            raise
+        except ResourceLimitError:
+            # A breached time/memory budget must abort the request,
+            # not be downgraded to a skipped branch.
             raise
         except zipfile.BadZipFile:
             # A corrupt archive at this nesting level is not itself a

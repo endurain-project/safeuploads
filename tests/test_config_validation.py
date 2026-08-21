@@ -135,6 +135,180 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_name_length" in error_types
 
+    def test_nonpositive_image_pixels_generates_error(self, monkeypatch):
+        """
+        Test that a non-positive image pixel limit errors.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_image_pixels=0),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_pixel_limit" in error_types
+
+    def test_nonpositive_xml_element_cap_generates_error(self, monkeypatch):
+        """
+        Test that a non-positive XML element cap errors.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_xml_elements=0),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_xml_element_limit" in error_types
+
+    @pytest.mark.parametrize("scan_size", [0, -1])
+    def test_nonpositive_content_scan_size_generates_error(
+        self, monkeypatch, scan_size
+    ):
+        """Test that a non-positive content scan limit errors."""
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(content_scan_max_size=scan_size),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_content_scan_size" in error_types
+
+    def test_nonpositive_gzip_timeout_generates_error(self, monkeypatch):
+        """
+        Test that a non-positive gzip timeout errors.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(gzip_analysis_timeout=0.0),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_timeout" in error_types
+
+    def test_unknown_zip_entry_category_generates_error(self):
+        """Test that a misspelled threat category errors."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                blocked_zip_entry_categories=frozenset(
+                    {"EXECUTABLE_FILES", "SCRIPT_FILE"}
+                )
+            )
+        )
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "unknown_zip_entry_category" in error_types
+
+    def test_gzip_timeout_below_size_limit_warns(self):
+        """Test a timeout too short for the size limit warns."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                gzip_analysis_timeout=1.0,
+                max_uncompressed_size=1024 * 1024 * 1024,
+            )
+        )
+        errors = config.validate_instance()
+        warnings = [e.error_type for e in errors if e.severity == "warning"]
+        assert "gzip_timeout_below_size_limit" in warnings
+
+    def test_default_gzip_timeout_covers_size_limit(self):
+        """Test the shipped defaults do not warn against each other."""
+        errors = FileSecurityConfig().validate_instance()
+        assert not [
+            e
+            for e in errors
+            if e.error_type == "gzip_timeout_below_size_limit"
+        ]
+
+    def test_known_zip_entry_categories_accepted(self):
+        """Test that valid category names pass validation."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                blocked_zip_entry_categories=frozenset({"SYSTEM_FILES"})
+            )
+        )
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "unknown_zip_entry_category" not in error_types
+
+    def test_missing_temp_dir_generates_error(self):
+        """Test that a temp_dir which is not a directory errors."""
+        config = FileSecurityConfig(
+            SecurityLimits(temp_dir="/nonexistent/safeuploads-temp")
+        )
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_temp_dir" in error_types
+
+    def test_existing_temp_dir_accepted(self, tmp_path):
+        """
+        Test that an existing temp_dir passes validation.
+
+        Args:
+            tmp_path: pytest temporary directory fixture.
+        """
+        config = FileSecurityConfig(SecurityLimits(temp_dir=str(tmp_path)))
+        errors = config.validate_instance()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_temp_dir" not in error_types
+
+    def test_customised_memory_budget_without_enforcement_is_informational(
+        self,
+    ):
+        """Test a tuned but unenforced memory budget is surfaced."""
+        config = FileSecurityConfig(
+            SecurityLimits(max_validation_memory_mb=128)
+        )
+        notices = [
+            e.error_type
+            for e in config.validate_instance()
+            if e.severity == "info"
+        ]
+        assert "memory_limit_not_enforced" in notices
+
+    def test_customised_memory_budget_passes_strict_validation(self):
+        """Test the notice does not fail strict validation."""
+        config = FileSecurityConfig(
+            SecurityLimits(max_validation_memory_mb=128)
+        )
+        config.validate_and_report_instance(strict=True)
+
+    def test_customised_memory_budget_with_enforcement_is_quiet(self):
+        """Test opting in to enforcement clears the notice."""
+        config = FileSecurityConfig(
+            SecurityLimits(
+                max_validation_memory_mb=128,
+                enforce_memory_limit=True,
+            )
+        )
+        notices = [
+            e.error_type
+            for e in config.validate_instance()
+            if e.severity == "info"
+        ]
+        assert "memory_limit_not_enforced" not in notices
+
+    def test_default_memory_budget_does_not_warn(self):
+        """Test an untouched budget is not flagged."""
+        config = FileSecurityConfig()
+        notices = [
+            e.error_type
+            for e in config.validate_instance()
+            if e.severity == "info"
+        ]
+        assert "memory_limit_not_enforced" not in notices
+
 
 class TestMimeConfigurationValidation:
     """Tests for _validate_mime_configurations validation branches."""

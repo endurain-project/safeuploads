@@ -1,13 +1,13 @@
 [project]
 name = "safeuploads"
-version = "1.1.1"
+version = "2.0.0"
 description = "A comprehensive file security system for validating uploads and preventing attacks"
 authors = [
     {name = "João Vitória Silva",email = "joao@endurain.com"}
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "python-magic>=0.4.27,<0.5.0",
     "defusedxml>=0.7.1,<1.0.0",
@@ -33,6 +33,11 @@ docs = [
     "mkdocs-material>=9.6.0",
     "mkdocstrings[python]>=0.29.0",
 ]
+# Kept out of `dev` because a mutation run is scheduled, not something
+# you want resolved on every local sync.
+mutation = [
+    "mutmut>=3.2,<4.0",
+]
 
 
 [build-system]
@@ -45,7 +50,7 @@ exclude-newer = "30 days"
 
 [tool.ruff]
 line-length = 79
-target-version = "py313"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = [
@@ -127,6 +132,7 @@ markers = [
     "slow: Slow running tests",
     "performance: Performance and benchmarking tests",
     "fuzz: Hypothesis-based fuzzing tests",
+    "corpus: Regression corpus of known upload attacks",
 ]
 
 [tool.coverage.run]
@@ -146,11 +152,30 @@ exclude_lines = [
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
-    "@abstractmethod",
 ]
 
+[tool.mutmut]
+source_paths = ["safeuploads/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# mutmut's trampoline cannot instrument the static methods that
+# config.py calls from its own class body, so importing a mutated
+# copy fails outright. Excluded rather than reshaping the module
+# to suit the tool.
+do_not_mutate = ["safeuploads/config.py"]
+# Coverage reporting and the slow suites would be paid once per
+# mutant, so drop them: mutation scoring only needs pass/fail.
+pytest_add_cli_args = [
+    "--no-cov",
+    "-p",
+    "no:cacheprovider",
+    "-m",
+    "not performance and not fuzz",
+]
+# Line coverage says a line ran; a surviving mutant says nothing
+# asserted on it. Run on a schedule, read as a signal, not a gate.
+
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 incremental = false
 # strict = true enables the full strict bundle, including
 # disallow_any_generics, warn_return_any, disallow_untyped_calls,

@@ -2,18 +2,28 @@
 
 import itertools
 import logging
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 from .enums import (
     CompoundExtensionCategory,
     DangerousExtensionCategory,
     UnicodeAttackCategory,
+    ZipThreatCategory,
 )
 from .exceptions import ConfigValidationError, FileSecurityConfigurationError
 from .utils import bytes_to_mb
 
 logger = logging.getLogger(__name__)
+
+# Conservative floor for gzip inflation throughput, used only to
+# size the analysis timeout against the uncompressed byte limit.
+# Well below what a modern host sustains, so the derived timeout
+# stays generous rather than borderline.
+_MIN_INFLATE_THROUGHPUT_MB_S = 50
 
 
 def _config_error(
@@ -55,15 +65,26 @@ class SecurityLimits:
 
     Attributes:
         max_image_size: Maximum size in bytes for image files.
+        max_image_pixels: Maximum width x height product allowed
+            for an image, guarding against decompression bombs
+            that are small on the wire but huge once decoded.
         max_zip_size: Maximum size in bytes for ZIP archives.
         max_activity_file_size: Maximum size in bytes for
             GPX/TCX/FIT activity files.
         max_gzip_size: Maximum size in bytes for gzip files.
         max_memory_buffer_size: Bytes kept in memory before a
             streamed upload spills to a temporary file on disk.
+        temp_dir: Directory used for spilled uploads. Uses the
+            system default temporary directory when unset.
         chunk_size: Chunk size in bytes for streaming reads.
-        max_validation_memory_mb: Maximum memory in MB allowed
-            during a single validation.
+        max_validation_memory_mb: Peak-RSS growth budget in MB
+            for a single validation. Best-effort telemetry only
+            unless ``enforce_memory_limit`` is set.
+        enforce_memory_limit: Whether exceeding
+            ``max_validation_memory_mb`` fails the validation
+            instead of logging a warning. Off by default because
+            peak RSS is process-wide and misattributes
+            concurrent work.
         max_validation_time_seconds: Overall validation timeout
             in seconds.
         max_compression_ratio: Maximum expansion ratio for ZIP files.
@@ -71,6 +92,10 @@ class SecurityLimits:
         max_individual_file_size: Maximum size of single file in ZIP.
         max_zip_entries: Maximum number of file entries in ZIP.
         zip_analysis_timeout: Maximum seconds for ZIP analysis.
+        gzip_analysis_timeout: Maximum seconds spent inflating a
+            gzip stream during inspection.
+        max_xml_elements: Maximum number of elements parsed from
+            an XML activity file before it is rejected.
         max_zip_depth: Maximum directory nesting depth in ZIP.
         max_filename_length: Maximum length for filenames in ZIP.
         max_path_length: Maximum length for full paths in ZIP.
@@ -82,6 +107,9 @@ class SecurityLimits:
         allow_nested_archives: Whether nested archives are permitted.
         allow_symlinks: Whether symbolic links are permitted.
         allow_absolute_paths: Whether absolute paths are permitted.
+        blocked_zip_entry_categories: ``ZipThreatCategory`` names
+            whose extensions are rejected when they appear on a
+            ZIP entry.
         scan_zip_content: Whether deep content inspection is enabled.
         verify_zip_decompression: Whether to decompress every ZIP
             entry to reject forged central-directory metadata.
@@ -101,14 +129,28 @@ class SecurityLimits:
     max_activity_file_size: int = 50 * 1024 * 1024  # 50MB for GPX/TCX/FIT
     max_gzip_size: int = 500 * 1024 * 1024  # 500MB for gzip files
 
+    # Decoded image size limit. Matches Pillow's default
+    # MAX_IMAGE_PIXELS, the de facto decompression-bomb
+    # threshold (~0.25GB uncompressed at 3 bytes per pixel).
+    max_image_pixels: int = 89_478_485
+
     # Streaming validation settings
     max_memory_buffer_size: int = (
         10 * 1024 * 1024  # 10MB before spilling to disk
     )
+    # Where spilled uploads land. Point this at a dedicated,
+    # quota-enforced partition to keep large uploads off the
+    # system temp directory.
+    temp_dir: str | None = None
     chunk_size: int = 65536  # 64KB chunks for streaming reads
 
     # Resource monitoring limits
-    max_validation_memory_mb: int = 512  # Max MB during validation
+    max_validation_memory_mb: int = 512  # Peak-RSS growth budget
+    # Peak RSS is a process-wide high-water mark, so it cannot be
+    # attributed to one validation under concurrency. Enforcement
+    # is opt-in and only sound when the process validates one
+    # upload at a time.
+    enforce_memory_limit: bool = False
     max_validation_time_seconds: float = (
         30.0  # Overall validation timeout in seconds
     )
@@ -125,6 +167,14 @@ class SecurityLimits:
     zip_analysis_timeout: float = (
         5.0  # Maximum seconds to spend analyzing ZIP structure
     )
+    gzip_analysis_timeout: float = (
+        25.0  # Maximum seconds to spend inflating a gzip stream
+    )
+
+    # XML activity file limits. Entity expansion is blocked by
+    # defusedxml, but a flat document with millions of elements
+    # still costs CPU, so cap the element count.
+    max_xml_elements: int = 1_000_000
 
     # ZIP content inspection settings
     max_zip_depth: int = 10  # Maximum nesting depth for directories in ZIP
@@ -141,6 +191,13 @@ class SecurityLimits:
     allow_symlinks: bool = False
     # Whether to allow absolute paths in ZIP
     allow_absolute_paths: bool = False
+    # Entry extensions rejected inside an accepted archive.
+    # EXECUTABLE_FILES and SCRIPT_FILES are code; SYSTEM_FILES is
+    # mostly configuration and is a different threat class, so it
+    # is available but not on by default.
+    blocked_zip_entry_categories: frozenset[str] = frozenset(
+        {"EXECUTABLE_FILES", "SCRIPT_FILES"}
+    )
     scan_zip_content: bool = True  # Whether to perform deep content inspection
     # Decompress every ZIP entry to reject forged central-
     # directory metadata (extra CPU/IO; off by default)
@@ -165,8 +222,16 @@ class FileSecurityConfig:
     """
     Centralizes file upload security settings and validation.
 
+    The class-level ``limits`` is the template copied into each
+    new instance, not the live configuration. Pass a
+    ``SecurityLimits`` to the constructor to configure an
+    instance; assigning to ``FileSecurityConfig.limits`` or
+    mutating it in place changes the default for every config
+    created afterwards.
+
     Attributes:
-        limits: Security limits configuration instance.
+        limits: Security limits for this instance. At class
+            level, the template new instances are built from.
         ALLOWED_IMAGE_MIMES: Permitted MIME types for images.
         ALLOWED_ZIP_MIMES: Permitted MIME types for ZIP files.
         ALLOWED_ACTIVITY_MIMES: Permitted MIME types for activity
@@ -177,6 +242,8 @@ class FileSecurityConfig:
         ALLOWED_ACTIVITY_EXTENSIONS: Permitted activity file
             extensions.
         ALLOWED_GZIP_EXTENSIONS: Permitted gzip file extensions.
+        ACTIVITY_XML_ROOTS: Required XML root element per
+            activity extension.
         BLOCKED_EXTENSIONS: Dangerous file extensions to block.
         COMPOUND_BLOCKED_EXTENSIONS: Multi-part extensions to block.
         DANGEROUS_UNICODE_CHARS: Unicode characters for filename attacks.
@@ -239,6 +306,16 @@ class FileSecurityConfig:
         }
     )
     ALLOWED_GZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".gz"})
+
+    # Required root element per XML activity format, lower-cased
+    # and namespace-stripped. Guards against an arbitrary XML
+    # document (or an HTML/SVG payload) wearing a .gpx name.
+    ACTIVITY_XML_ROOTS: ClassVar[Mapping[str, str]] = MappingProxyType(
+        {
+            ".gpx": "gpx",
+            ".tcx": "trainingcenterdatabase",
+        }
+    )
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod
@@ -334,16 +411,20 @@ class FileSecurityConfig:
         }
     )
 
-    def __init__(self) -> None:
+    def __init__(self, limits: SecurityLimits | None = None) -> None:
         """
         Create a config instance with isolated mutable state.
 
-        Copies the class-level ``limits`` so mutating one
-        instance's limits never affects other instances or
-        the shared class default.
+        The supplied or class-level ``limits`` is copied, so
+        mutating one instance's limits never affects other
+        instances, the caller's object, or the class default.
+
+        Args:
+            limits: Security limits to use. Falls back to the
+                class-level default when omitted.
         """
         # Per-instance copy prevents cross-instance mutation
-        self.limits = replace(type(self).limits)
+        self.limits = replace(type(self).limits if limits is None else limits)
 
     # Configuration validation trigger
     @classmethod
@@ -613,6 +694,92 @@ class FileSecurityConfig:
                     "max_sanitized_name_length must be greater than 0",
                     "file_sizes",
                     "Set max_sanitized_name_length to a positive value",
+                )
+            )
+
+        # Validate decoded image size limit
+        if limits.max_image_pixels <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_pixel_limit",
+                    "max_image_pixels must be greater than 0",
+                    "file_sizes",
+                    (
+                        "Set max_image_pixels to a positive"
+                        " value (e.g., 89478485)"
+                    ),
+                )
+            )
+
+        # Validate XML element cap
+        if limits.max_xml_elements <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_xml_element_limit",
+                    "max_xml_elements must be greater than 0",
+                    "file_sizes",
+                    (
+                        "Set max_xml_elements to a positive"
+                        " value (e.g., 1000000)"
+                    ),
+                )
+            )
+
+        if limits.content_scan_max_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_content_scan_size",
+                    "content_scan_max_size must be greater than 0",
+                    "content_analysis",
+                    (
+                        "Set content_scan_max_size to a positive"
+                        " byte limit (e.g., 50MB)"
+                    ),
+                )
+            )
+
+        # A missing temp directory only surfaces when an upload
+        # spills to disk, so check it up front.
+        if limits.temp_dir is not None and not os.path.isdir(limits.temp_dir):
+            errors.append(
+                _config_error(
+                    "invalid_temp_dir",
+                    f"temp_dir '{limits.temp_dir}' is not a directory",
+                    "file_sizes",
+                    (
+                        "Create the directory or leave temp_dir"
+                        " unset to use the system default"
+                    ),
+                )
+            )
+
+        # Someone who tuned the memory budget but left enforcement
+        # off believes they have a control they do not have. Only
+        # informational: leaving enforcement off is the correct
+        # choice under concurrency, so this must not fail strict
+        # validation for an otherwise sound configuration.
+        if (
+            not limits.enforce_memory_limit
+            and limits.max_validation_memory_mb
+            != SecurityLimits.max_validation_memory_mb
+        ):
+            errors.append(
+                _config_error(
+                    "memory_limit_not_enforced",
+                    (
+                        "max_validation_memory_mb is set to"
+                        f" {limits.max_validation_memory_mb}MB but"
+                        " enforce_memory_limit is False, so exceeding"
+                        " it is only logged"
+                    ),
+                    "resource_limits",
+                    (
+                        "Set enforce_memory_limit=True if this must"
+                        " fail the validation, and only in a process"
+                        " that validates one upload at a time;"
+                        " otherwise rely on the byte limits"
+                    ),
+                    severity="info",
                 )
             )
 
@@ -965,6 +1132,66 @@ class FileSecurityConfig:
                 )
             )
 
+        if limits.gzip_analysis_timeout <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_timeout",
+                    "gzip_analysis_timeout must be greater than 0",
+                    "compression",
+                    "Set a reasonable timeout for gzip inflation",
+                )
+            )
+
+        # A timeout too short to inflate a permitted stream turns
+        # every slow-but-legitimate upload into a ZipBombError and
+        # a THREAT_DETECTED audit event, so the two limits have to
+        # be sized against each other.
+        required = (
+            bytes_to_mb(limits.max_uncompressed_size)
+            / _MIN_INFLATE_THROUGHPUT_MB_S
+        )
+        if 0 < limits.gzip_analysis_timeout < required:
+            errors.append(
+                _config_error(
+                    "gzip_timeout_below_size_limit",
+                    (
+                        "gzip_analysis_timeout"
+                        f" ({limits.gzip_analysis_timeout}s) is too"
+                        " short to inflate max_uncompressed_size"
+                        f" ({bytes_to_mb(limits.max_uncompressed_size)}MB),"
+                        f" which needs about {required:.0f}s at"
+                        f" {_MIN_INFLATE_THROUGHPUT_MB_S}MB/s; legitimate"
+                        " uploads will be rejected as decompression bombs"
+                    ),
+                    "compression",
+                    (
+                        f"Raise gzip_analysis_timeout to at least"
+                        f" {required:.0f}s or lower"
+                        " max_uncompressed_size"
+                    ),
+                    severity="warning",
+                )
+            )
+
+        # A misspelled category would silently disable the check.
+        known = {category.name for category in ZipThreatCategory}
+        unknown = sorted(set(limits.blocked_zip_entry_categories) - known)
+        if unknown:
+            errors.append(
+                _config_error(
+                    "unknown_zip_entry_category",
+                    (
+                        "blocked_zip_entry_categories contains"
+                        f" unknown names: {', '.join(unknown)}"
+                    ),
+                    "compression",
+                    (
+                        "Use ZipThreatCategory member names"
+                        f" ({', '.join(sorted(known))})"
+                    ),
+                )
+            )
+
         return errors
 
     @classmethod
@@ -1211,7 +1438,7 @@ class FileSecurityConfig:
                 )
 
         # Raise exception if there are errors and strict mode is enabled
-        if error_list and strict:
+        if strict and error_list:
             raise FileSecurityConfigurationError(error_list)
-        if (error_list or warning_list) and strict:
-            raise FileSecurityConfigurationError(error_list + warning_list)
+        if strict and warning_list:
+            raise FileSecurityConfigurationError(warning_list)

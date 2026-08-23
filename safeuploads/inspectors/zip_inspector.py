@@ -553,6 +553,47 @@ class ZipContentInspector(BaseInspector):
         file_obj.seek(0)
         return h.hexdigest()
 
+    def _raise_on_entry_threats(
+        self,
+        entry: zipfile.ZipInfo,
+        zip_file: zipfile.ZipFile,
+        depth: int,
+    ) -> None:
+        """
+        Apply the entry-level checks to a nested archive entry.
+
+        Args:
+            entry: ZIP entry metadata.
+            zip_file: Archive the entry belongs to.
+            depth: Nesting depth the entry was found at.
+
+        Raises:
+            ZipContentError: If the entry carries any threat.
+        """
+        threats = self._inspect_zip_entry(entry, zip_file)
+        if not threats:
+            return
+
+        threats = [f"{threat} (nesting depth {depth})" for threat in threats]
+        logger.warning(
+            "Nested ZIP content threats detected",
+            extra=log_extra(
+                {
+                    "error_type": "zip_content_threat",
+                    "threats": threats,
+                    "threat_count": len(threats),
+                    "depth": depth,
+                }
+            ),
+        )
+        cid = get_correlation_id()
+        if cid:
+            self._audit.threat(entry.filename, cid, "; ".join(threats))
+        raise ZipContentError(
+            message=f"ZIP content threats detected: {'; '.join(threats)}",
+            threats=threats,
+        )
+
     def inspect_nested_archives(
         self,
         file_obj: SeekableFile,
@@ -569,7 +610,10 @@ class ZipContentInspector(BaseInspector):
         Only called when ``allow_nested_archives`` is True.
         Tracks depth, cumulative entry count, elapsed time,
         and archive hashes to detect recursive/quine
-        structures.
+        structures. Entries below the outermost archive get the
+        same per-entry screening as the outermost one, so
+        nesting cannot be used to smuggle a traversal path,
+        symlink or executable past inspection.
 
         Args:
             file_obj: Seekable file containing ZIP data.
@@ -584,7 +628,8 @@ class ZipContentInspector(BaseInspector):
 
         Raises:
             ZipContentError: If recursive structure, quine,
-                or complexity attack is detected.
+                complexity attack, or an entry-level threat in a
+                nested archive is detected.
             ResourceLimitError: If the monitor's time or memory
                 limit is exceeded during inspection.
         """
@@ -660,6 +705,12 @@ class ZipContentInspector(BaseInspector):
                             threats=["Recursive inspection timeout"],
                             error_code=(ErrorCode.ZIP_ANALYSIS_TIMEOUT),
                         )
+
+                    # Depth 0 was already inspected by
+                    # inspect_zip_content; without this, entries
+                    # below it are only counted, never screened.
+                    if depth > 0:
+                        self._raise_on_entry_threats(entry, zf, depth)
 
                     if entry.is_dir():
                         continue

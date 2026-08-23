@@ -35,7 +35,12 @@ from safeuploads import (
     ZipBombError,
     ZipContentError,
 )
-from tests.conftest import JPEG_SOF0
+from tests.conftest import (
+    JPEG_SOF0,
+    PE_EXECUTABLE,
+    ZIP_LOCAL_HEADER,
+    entropy_bytes,
+)
 
 # ----------------------------------------------------------------
 # Builders
@@ -128,6 +133,10 @@ class AttackSample:
 
 _CONTENT_ANALYSIS = SecurityLimits(enable_content_analysis=True)
 
+# Nesting is off by default, so an archive-in-archive is rejected
+# outright; these limits reach the recursive path instead.
+_NESTED_ALLOWED = SecurityLimits(allow_nested_archives=True)
+
 REJECTED: tuple[AttackSample, ...] = (
     # --- Filename attacks ---
     AttackSample(
@@ -217,7 +226,7 @@ REJECTED: tuple[AttackSample, ...] = (
     AttackSample(
         name="gifar-polyglot",
         filename="poly.jpg",
-        content=_jpeg(b"\x00" * 64 + b"PK\x03\x04"),
+        content=_jpeg(b"\x00" * 64 + ZIP_LOCAL_HEADER),
         method="validate_image_file",
         expected=FileProcessingError,
         limits=_CONTENT_ANALYSIS,
@@ -225,7 +234,7 @@ REJECTED: tuple[AttackSample, ...] = (
     AttackSample(
         name="pe-header-embedded-in-image",
         filename="dropper.jpg",
-        content=_jpeg(b"\x00" * 64 + b"MZ\x90\x00"),
+        content=_jpeg(b"\x00" * 64 + PE_EXECUTABLE),
         method="validate_image_file",
         expected=FileProcessingError,
         limits=_CONTENT_ANALYSIS,
@@ -278,6 +287,35 @@ REJECTED: tuple[AttackSample, ...] = (
         method="validate_zip_file",
         expected=CompressionSecurityError,
         error_code=ErrorCode.ZIP_NESTED_ARCHIVE,
+    ),
+    # Nesting must not be a way to smuggle an entry past the
+    # checks the outermost archive is subjected to.
+    AttackSample(
+        name="zip-slip-smuggled-in-nested-archive",
+        filename="nested-slip.zip",
+        content=_zip({"inner.zip": _zip({"../../etc/passwd": b"root:x:0:0"})}),
+        method="validate_zip_file",
+        expected=ZipContentError,
+        error_code=ErrorCode.ZIP_CONTENT_THREAT,
+        limits=_NESTED_ALLOWED,
+    ),
+    AttackSample(
+        name="webshell-smuggled-in-nested-archive",
+        filename="nested-shell.zip",
+        content=_zip({"inner.zip": _zip({"invoice.php.txt": b"text"})}),
+        method="validate_zip_file",
+        expected=ZipContentError,
+        error_code=ErrorCode.ZIP_CONTENT_THREAT,
+        limits=_NESTED_ALLOWED,
+    ),
+    AttackSample(
+        name="symlink-smuggled-in-nested-archive",
+        filename="nested-link.zip",
+        content=_zip({"inner.zip": _zip_with_symlink()}),
+        method="validate_zip_file",
+        expected=ZipContentError,
+        error_code=ErrorCode.ZIP_CONTENT_THREAT,
+        limits=_NESTED_ALLOWED,
     ),
     AttackSample(
         name="gzip-decompression-bomb",
@@ -332,6 +370,94 @@ REJECTED: tuple[AttackSample, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class BenignSample:
+    """
+    A legitimate upload that must survive validation.
+
+    Attributes:
+        name: Sample name.
+        filename: Name the file is uploaded under.
+        content: Raw bytes of the upload.
+        method: ``FileValidator`` method under test.
+    """
+
+    name: str
+    filename: str
+    content: bytes
+    method: str
+
+
+# Realistically sized files. A detection tuned only against
+# hand-written 40-byte fixtures will pass its own tests while
+# rejecting every real upload: a megabyte of entropy-coded image
+# data contains every two-byte sequence many times over, so any
+# short signature matched without corroboration fires on all of
+# them.
+ACCEPTED: tuple[BenignSample, ...] = (
+    BenignSample(
+        name="photographic-jpeg-512kb",
+        filename="photo.jpg",
+        content=_jpeg(entropy_bytes(512 * 1024, seed=1)),
+        method="validate_image_file",
+    ),
+    BenignSample(
+        name="photographic-png-512kb",
+        filename="photo.png",
+        content=_png(1024, 768) + entropy_bytes(512 * 1024, seed=2),
+        method="validate_image_file",
+    ),
+    BenignSample(
+        name="gpx-with-many-trackpoints",
+        filename="track.gpx",
+        content=_gpx(
+            b"<trk><trkseg>"
+            + b'<trkpt lat="48.1" lon="11.5"><ele>520</ele></trkpt>' * 5000
+            + b"</trkseg></trk>"
+        ),
+        method="validate_activity_file",
+    ),
+    BenignSample(
+        name="tcx-activity",
+        filename="ride.tcx",
+        content=(
+            b'<?xml version="1.0"?>'
+            b'<TrainingCenterDatabase xmlns="http://www.garmin.com/'
+            b'xmlschemas/TrainingCenterDatabase/v2">'
+            b'<Activities><Activity Sport="Biking">'
+            + b"<Lap><Track><Trackpoint><DistanceMeters>1"
+            b"</DistanceMeters></Trackpoint></Track></Lap>"
+            * 500
+            + b"</Activity></Activities></TrainingCenterDatabase>"
+        ),
+        method="validate_activity_file",
+    ),
+    BenignSample(
+        name="zip-of-documents",
+        filename="export.zip",
+        content=_zip(
+            {
+                "readme.txt": b"Export of your activity data.\n",
+                "data/track-1.gpx": _gpx(),
+                "data/track-2.gpx": _gpx(),
+                "data/photo.jpg": _jpeg(entropy_bytes(64 * 1024, seed=3)),
+            },
+            zipfile.ZIP_DEFLATED,
+        ),
+        method="validate_zip_file",
+    ),
+    BenignSample(
+        name="gzipped-activity-export",
+        filename="track.gpx.gz",
+        content=gzip.compress(
+            _gpx(b'<trk><trkseg><trkpt lat="1" lon="2"/></trkseg></trk>')
+            + entropy_bytes(32 * 1024, seed=4)
+        ),
+        method="validate_gzip_file",
+    ),
+)
+
+
 @pytest.mark.corpus
 class TestAttackCorpus:
     """Every catalogued attack must be rejected."""
@@ -359,6 +485,35 @@ class TestAttackCorpus:
 
     def test_every_sample_is_uniquely_named(self):
         names = [s.name for s in REJECTED]
+        assert len(names) == len(set(names))
+
+
+@pytest.mark.corpus
+class TestBenignCorpus:
+    """Realistic uploads must survive, with and without deep scanning."""
+
+    @pytest.mark.parametrize(
+        "analysis", [False, True], ids=["analysis-off", "analysis-on"]
+    )
+    @pytest.mark.parametrize(
+        "sample", ACCEPTED, ids=[s.name for s in ACCEPTED]
+    )
+    @pytest.mark.asyncio
+    async def test_benign_upload_is_accepted(
+        self, sample, analysis, mock_upload_file
+    ):
+        config = FileSecurityConfig(
+            SecurityLimits(enable_content_analysis=analysis)
+        )
+        validator = FileValidator(config=config)
+        file = mock_upload_file(
+            filename=sample.filename, content=sample.content
+        )
+
+        await getattr(validator, sample.method)(file)
+
+    def test_every_benign_sample_is_uniquely_named(self):
+        names = [s.name for s in ACCEPTED]
         assert len(names) == len(set(names))
 
 

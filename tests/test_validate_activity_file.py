@@ -17,6 +17,7 @@ from safeuploads.exceptions import (
     UnicodeSecurityError,
 )
 from safeuploads.file_validator import FileValidator
+from tests.conftest import PE_EXECUTABLE
 
 # ---------------------------------------------------------------------------
 # Minimal valid activity file payloads
@@ -254,7 +255,7 @@ class TestValidateActivityFileContentAnalysis:
             SecurityLimits(enable_content_analysis=True)
         )
         validator = FileValidator(config=config)
-        f = mock_upload_file("activity.fit", _FIT_CONTENT + b"MZpayload")
+        f = mock_upload_file("activity.fit", _FIT_CONTENT + PE_EXECUTABLE)
 
         with pytest.raises(FileProcessingError, match="Content analysis"):
             await validator.validate_activity_file(f)

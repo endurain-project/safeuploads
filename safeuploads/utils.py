@@ -4,7 +4,7 @@ import logging
 import sys
 import time
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
 from types import TracebackType
 from typing import TypeVar
 
@@ -134,8 +134,83 @@ def _canonical_order(needles: Iterable[_TNeedle]) -> tuple[_TNeedle, ...]:
     return tuple(sorted(set(needles), key=lambda n: (-len(n), n)))
 
 
+# A crafted upload can hold millions of decoy occurrences of a
+# short signature. Corroborating every one of them is work an
+# attacker chooses, so stop after this many candidates per
+# signature; the scan is a heuristic layer, not the only control.
+_MAX_SIGNATURE_CANDIDATES = 4096
+
+SignatureVerifier = Callable[[bytes, bytes, int], bool]
+
+
+def iter_signature_offsets(
+    content: bytes,
+    signature: bytes,
+    start: int = 0,
+    limit: int = _MAX_SIGNATURE_CANDIDATES,
+) -> Iterator[int]:
+    """
+    Yield the offsets at which a signature occurs.
+
+    Args:
+        content: Raw bytes to scan.
+        signature: Byte sequence to locate.
+        start: Offset to begin scanning at.
+        limit: Maximum number of offsets yielded.
+
+    Yields:
+        Offsets of each occurrence, in ascending order.
+    """
+    if not signature:
+        return
+    pos = content.find(signature, start)
+    yielded = 0
+    while pos != -1 and yielded < limit:
+        yield pos
+        yielded += 1
+        pos = content.find(signature, pos + 1)
+
+
+# Bytes that appear in source, markup and plain prose. Everything
+# else marks the surrounding run as binary.
+_NON_TEXT_BYTES = bytes(
+    b for b in range(256) if not (0x20 <= b < 0x7F or b in (9, 10, 13))
+)
+
+# A pattern shorter than this matches binary data by chance about
+# once every 64 KB, so on its own it carries no signal in a
+# multi-megabyte window.
+_MIN_UNAMBIGUOUS_PATTERN = 5
+_TEXT_WINDOW_BYTES = 48
+_TEXT_WINDOW_RATIO = 0.9
+
+
+def in_text_run(
+    content: bytes, offset: int, size: int = _TEXT_WINDOW_BYTES
+) -> bool:
+    """
+    Report whether an offset sits inside a run of text.
+
+    Args:
+        content: Raw bytes being scanned.
+        offset: Offset to examine.
+        size: Bytes inspected either side of the offset.
+
+    Returns:
+        True if the surrounding window is predominantly text.
+    """
+    window = content[max(0, offset - size) : offset + size]
+    if not window:
+        return False
+    text_bytes = len(window.translate(None, _NON_TEXT_BYTES))
+    return text_bytes >= len(window) * _TEXT_WINDOW_RATIO
+
+
 def find_embedded_signature(
-    content: bytes, signatures: Iterable[bytes], start: int = 0
+    content: bytes,
+    signatures: Iterable[bytes],
+    start: int = 0,
+    verify: SignatureVerifier | None = None,
 ) -> bytes | None:
     """
     Return the first signature found anywhere in the content.
@@ -151,13 +226,23 @@ def find_embedded_signature(
         signatures: Candidate byte signatures.
         start: Offset to begin scanning at, so a caller can skip
             an expected header without slicing the buffer.
+        verify: Optional predicate called with the content, the
+            matched signature and its offset. A match is only
+            reported when it returns True, so a short signature
+            can be corroborated against the structure that must
+            follow it.
 
     Returns:
         The first matching signature, or None if none present.
     """
     for sig in _canonical_order(signatures):
-        if content.find(sig, start) != -1:
-            return sig
+        if verify is None:
+            if content.find(sig, start) != -1:
+                return sig
+            continue
+        for offset in iter_signature_offsets(content, sig, start):
+            if verify(content, sig, offset):
+                return sig
     return None
 
 
@@ -169,6 +254,11 @@ def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
     case-insensitive regex alternation over the same literals
     measures an order of magnitude slower on a large window, and
     decoding to text would cost a second full-size copy.
+
+    Patterns shorter than five bytes are only reported when they
+    sit inside a run of text. Scanning megabytes of compressed
+    image or archive data for a two-byte marker such as ``<%``
+    otherwise matches by coincidence on essentially every file.
 
     Args:
         content: Raw bytes to scan.
@@ -183,8 +273,14 @@ def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
 
     lowered = content.lower()
     for pattern in candidates:
-        if lowered.find(pattern.encode("utf-8")) != -1:
-            return pattern
+        needle = pattern.encode("utf-8")
+        if len(needle) >= _MIN_UNAMBIGUOUS_PATTERN:
+            if lowered.find(needle) != -1:
+                return pattern
+            continue
+        for offset in iter_signature_offsets(lowered, needle):
+            if in_text_run(lowered, offset):
+                return pattern
     return None
 
 

@@ -25,7 +25,7 @@ from safeuploads.exceptions import (
 )
 from safeuploads.file_validator import FileValidator
 from safeuploads.utils import safe_label
-from tests.conftest import JPEG_SOF0
+from tests.conftest import JPEG_SOF0, ZIP_LOCAL_HEADER
 
 
 class TestFileValidatorInitialization:
@@ -1540,7 +1540,7 @@ class TestImageContentAnalysisIntegration:
             b"\xff\xd8"
             + JPEG_SOF0
             + b"\x00" * 9000
-            + b"PK\x03\x04"
+            + ZIP_LOCAL_HEADER
             + b"\xff\xd9"
         )
         file = mock_upload_file(filename="poly.jpg", content=jpeg)

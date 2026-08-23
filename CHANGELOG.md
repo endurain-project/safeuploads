@@ -179,6 +179,30 @@ which uploads are accepted. Read the upgrade notes before bumping.
 
 ### Fixed
 
+- **Content analysis rejected legitimate uploads.** Executable and
+  web-shell signatures were matched anywhere in a window of up to
+  `content_scan_max_size`, including the two-byte `MZ` and `<%`
+  markers. Entropy-coded image data contains a given two-byte
+  sequence roughly once every 64 KB, so with
+  `enable_content_analysis=True` any photograph over a few hundred
+  kilobytes was reported as an embedded executable. A short
+  signature is now only reported when the surrounding bytes form
+  the header the format requires: `MZ` must have an `e_lfanew`
+  pointing at a COFF header with a known machine, ELF must carry a
+  valid class and data encoding, Mach-O a defined file type, a Java
+  class a released major version, `L\0\0\0` the ShellLink CLSID,
+  and `PK\x03\x04` a well-formed local file header. Text patterns
+  shorter than five bytes must sit inside a run of text. Real
+  embedded payloads are still detected; coincidental byte pairs are
+  not. The corpus now carries realistically sized benign uploads
+  that must pass both with and without deep scanning.
+- **Nested archives bypassed every entry-level check.** With
+  `allow_nested_archives=True`, `inspect_nested_archives()` applied
+  only the depth, cumulative-entry-count and quine-hash checks, so
+  an inner archive could carry a `../../etc/passwd` entry, a
+  symlink, or a blocked extension and be accepted. Entries below
+  the outermost archive now get the same per-entry screening as the
+  outermost one.
 - **Log injection (CWE-117):** a filename containing a newline could
   forge an audit log line, and directional or zero-width characters
   could hide the real name from an analyst. Untrusted text is now

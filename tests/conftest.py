@@ -1,6 +1,7 @@
 """Shared pytest fixtures for safeuploads tests."""
 
 import io
+import random
 import zipfile
 
 import pytest
@@ -19,6 +20,71 @@ JPEG_SOF0 = (
     b"\x03"  # Component count
     b"\x01\x11\x00\x02\x11\x01\x03\x11\x01"  # Component specs
 )
+
+# Structurally valid payload headers. Content analysis only
+# reports a short magic when the header it introduces is well
+# formed, so a bare `MZ` or `\x7fELF` is not a usable fixture.
+PE_EXECUTABLE = (
+    b"MZ"
+    + b"\x00" * 0x3A
+    + (0x40).to_bytes(4, "little")  # e_lfanew -> PE header
+    + b"PE\x00\x00"
+    + (0x8664).to_bytes(2, "little")  # Machine: x86-64
+    + b"\x00" * 18
+)
+
+ELF_EXECUTABLE = (
+    b"\x7fELF"
+    b"\x02"  # EI_CLASS: 64-bit
+    b"\x01"  # EI_DATA: little-endian
+    b"\x01" + b"\x00" * 25  # EI_VERSION
+)
+
+MACHO_EXECUTABLE = (
+    b"\xcf\xfa\xed\xfe"  # MH_CIGAM_64
+    + (0x0100000C).to_bytes(4, "little")  # cputype: ARM64
+    + (0).to_bytes(4, "little")  # cpusubtype
+    + (2).to_bytes(4, "little")  # filetype: MH_EXECUTE
+    + b"\x00" * 16
+)
+
+JAVA_CLASS = (
+    b"\xca\xfe\xba\xbe"
+    + (0).to_bytes(2, "big")  # minor version
+    + (61).to_bytes(2, "big")  # major version: Java 17
+    + b"\x00" * 16
+)
+
+WINDOWS_SHORTCUT = (
+    b"L\x00\x00\x00"  # ShellLinkHeader size
+    b"\x01\x14\x02\x00\x00\x00\x00\x00"
+    b"\xc0\x00\x00\x00\x00\x00\x00\x46" + b"\x00" * 16  # LinkCLSID
+)
+
+ZIP_LOCAL_HEADER = (
+    b"PK\x03\x04"
+    + (20).to_bytes(2, "little")  # Version needed
+    + b"\x00\x00"  # Flags
+    + (8).to_bytes(2, "little")  # Method: deflate
+    + b"\x00" * 16
+)
+
+
+def entropy_bytes(size: int, seed: int = 0) -> bytes:
+    """
+    Build reproducible high-entropy filler.
+
+    Models the entropy-coded body of a real photo, where every
+    two-byte sequence occurs roughly once per 64 KB.
+
+    Args:
+        size: Number of bytes to produce.
+        seed: Seed making the output reproducible.
+
+    Returns:
+        Pseudo-random bytes of the requested length.
+    """
+    return random.Random(seed).randbytes(size)
 
 
 @pytest.fixture

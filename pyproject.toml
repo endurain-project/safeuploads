@@ -93,6 +93,8 @@ select = [
 "tests/conftest.py" = [
     "S101",
     "D",
+    "S311",   # fixture entropy only needs to be reproducible,
+              # not unpredictable
 ]
 "tests/fuzz/**/*.py" = [
     "S101",

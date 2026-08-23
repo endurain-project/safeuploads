@@ -142,7 +142,10 @@ single-level content inspection.
   an extension in `ZipThreatCategory.NESTED_ARCHIVES` raises
   `ZIP_NESTED_ARCHIVE`.
 - When allowed, recursive inspection applies all depth, count,
-  and hash checks.
+  and hash checks, and every entry below the outermost archive
+  is put through the same per-entry screening as the outermost
+  one. Nesting is therefore not a way to smuggle a traversal
+  path, symlink, or blocked extension past inspection.
 
 ---
 
@@ -246,7 +249,9 @@ format.
   True`) scans for secondary format signatures
   (`MalwareSignatureCategory.POLYGLOT_SIGNATURES`) that should
   not appear in image or activity files: ZIP/JAR headers,
-  Java class headers, RAR headers.
+  Java class headers, RAR headers. A ZIP or class signature
+  must be followed by a well-formed local file header or class
+  version to be reported.
 - Polyglot checks are context-aware — ZIP signatures inside a
   file being validated as a ZIP are not flagged.
 
@@ -261,8 +266,20 @@ Windows shortcuts) embedded within uploaded files.
   signatures from `MalwareSignatureCategory`: PE/MZ headers,
   ELF headers, Mach-O headers (32/64-bit, both endiannesses),
   Java class magic, and Windows shortcut headers.
+- A match is only reported when the bytes around it form the
+  header the format requires — an `MZ` whose `e_lfanew` points
+  at a valid COFF machine field, an ELF magic with a valid
+  class and data encoding, a Mach-O magic with a defined file
+  type, a class magic with a released major version, an
+  `L\0\0\0` followed by the ShellLink CLSID. Without that
+  corroboration these two- to four-byte magics match
+  entropy-coded image data by coincidence: an ordinary JPEG
+  contains `MZ` about once per 64 KB, so scanning a
+  multi-megabyte window for the bare bytes rejects every real
+  photograph.
 - Web shell markers (`<?php`, `<%`, `<script`) are detected
-  in text content.
+  in text content. `<%` is two bytes and is only reported
+  inside a run of text, for the same reason.
 
 ### XML external entity injection (CWE-611)
 

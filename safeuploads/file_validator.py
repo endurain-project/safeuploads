@@ -501,8 +501,10 @@ class FileValidator:
             name_part = name_part[:max_name_len]
             filename = name_part + ext_part
 
-        # Ensure we don't end up with just an extension or empty name
-        if not name_part or name_part.strip() == "":
+        # Ensure we don't end up with just an extension, an empty
+        # name, or the `..` that stripping leaves behind when it
+        # removes everything between two dots.
+        if not name_part.strip(" ."):
             filename = f"file_{secrets.token_hex(8)}{ext_part}"
 
         # Final check: ensure the sanitized filename

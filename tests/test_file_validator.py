@@ -1318,6 +1318,41 @@ class TestSanitizeFilenameEdgeCases:
     @pytest.mark.parametrize(
         "raw",
         [
+            ".\x01.",  # Stripping joins the dots into `..`
+            ".\x00.\x00.",
+            "..",
+            ". . .",
+            "..\x85",
+        ],
+    )
+    def test_sanitize_never_returns_a_traversal_token(self, raw):
+        """
+        Test that a name of only dots is replaced, not returned.
+
+        Args:
+            raw: Filename that reduces to dots once sanitized.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+        result = validator._sanitize_filename(raw)
+        assert result.strip(" .")
+        assert result.startswith("file_")
+
+    def test_sanitize_keeps_dotfile_names(self):
+        """
+        Test that a leading dot alone does not trigger the fallback.
+
+        Returns:
+            None
+        """
+        validator = FileValidator()
+        assert validator._sanitize_filename(".hidden") == ".hidden"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
             "a\x85b.jpg",  # C1 next-line
             "a\x9bb.jpg",  # C1 control sequence introducer
             "a\u2028b.jpg",  # Line separator

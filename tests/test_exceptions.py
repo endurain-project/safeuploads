@@ -28,10 +28,8 @@ class TestErrorCode:
         # Filename errors
         assert hasattr(ErrorCode, "FILENAME_EMPTY")
         assert hasattr(ErrorCode, "FILENAME_INVALID")
-        assert hasattr(ErrorCode, "FILENAME_TOO_LONG")
 
         # Unicode errors
-        assert hasattr(ErrorCode, "UNICODE_SECURITY")
         assert hasattr(ErrorCode, "UNICODE_DANGEROUS_CHARS")
         assert hasattr(ErrorCode, "UNICODE_NORMALIZATION_ERROR")
 
@@ -65,7 +63,6 @@ class TestErrorCode:
 
         # Processing errors
         assert hasattr(ErrorCode, "PROCESSING_ERROR")
-        assert hasattr(ErrorCode, "IO_ERROR")
 
     def test_error_codes_are_strings(self):
         """Verify error codes are string values."""

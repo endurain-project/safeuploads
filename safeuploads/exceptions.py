@@ -70,10 +70,8 @@ class ErrorCode(StrEnum):
     # Filename validation errors
     FILENAME_EMPTY = "FILENAME_EMPTY"
     FILENAME_INVALID = "FILENAME_INVALID"
-    FILENAME_TOO_LONG = "FILENAME_TOO_LONG"
 
     # Unicode security errors
-    UNICODE_SECURITY = "UNICODE_SECURITY"
     UNICODE_DANGEROUS_CHARS = "UNICODE_DANGEROUS_CHARS"
     UNICODE_NORMALIZATION_ERROR = "UNICODE_NORMALIZATION_ERROR"
 
@@ -128,7 +126,6 @@ class ErrorCode(StrEnum):
 
     # Processing errors
     PROCESSING_ERROR = "PROCESSING_ERROR"
-    IO_ERROR = "IO_ERROR"
 
 
 # ============================================================================

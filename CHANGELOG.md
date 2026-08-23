@@ -15,21 +15,25 @@ which uploads are accepted. Read the upgrade notes before bumping.
 ### Upgrade notes
 
 1. **`max_validation_memory_mb` no longer fails a validation by
-   default.** This is the only change that makes safeuploads accept
-   something it previously rejected. If you relied on it, set
-   `enforce_memory_limit=True` — and only in a process that validates
-   one upload at a time. Configuration validation reports an
-   informational notice when the budget is customised but enforcement
-   is off; it does not fail strict validation, because leaving
-   enforcement off is the correct choice under concurrency.
-2. **More uploads are rejected than before.** Images whose dimensions
+   default.** If you relied on it, set `enforce_memory_limit=True` —
+   and only in a process that validates one upload at a time.
+   Configuration validation reports an informational notice when the
+   budget is customised but enforcement is off; it does not fail
+   strict validation, because leaving enforcement off is the correct
+   choice under concurrency.
+2. **Three changes make safeuploads accept uploads it previously
+   rejected**: the memory budget above, the content-analysis
+   corroboration fix, and byte-level text matching. The latter two
+   only stop rejections that were false positives — see *Fixed* and
+   *Changed*.
+3. **More uploads are rejected than before.** Images whose dimensions
    cannot be read, arbitrary XML behind a `.gpx`/`.tcx` name, and ZIPs
    containing executable or script entries all now fail. Re-run your
    own fixtures before deploying.
-3. **The time budget aborts mid-flight.** Uploads that previously ran
+4. **The time budget aborts mid-flight.** Uploads that previously ran
    past `max_validation_time_seconds` and still completed now raise
    `ResourceLimitError`.
-4. **Removed symbols raise `AttributeError`.** See *Removed* below;
+5. **Removed symbols raise `AttributeError`.** See *Removed* below;
    none of them could produce a meaningful result before.
 
 ### Added
@@ -162,11 +166,12 @@ which uploads are accepted. Read the upgrade notes before bumping.
   `validate_windows_reserved_names`, `validate_zip_compression_ratio`,
   `validate_xml_safety`). `BaseValidator` remains as a plain base
   class, matching `BaseInspector`.
-- **Breaking:** eight `ErrorCode` members that no code path could ever
-  produce: `FILE_SIZE_UNKNOWN`, `MIME_DETECTION_FAILED`,
+- **Breaking:** eleven `ErrorCode` members that no code path could
+  ever produce: `FILE_SIZE_UNKNOWN`, `MIME_DETECTION_FAILED`,
   `FILE_SIGNATURE_INVALID`, `ZIP_INVALID_STRUCTURE`,
   `ZIP_DIRECTORY_TRAVERSAL`, `ZIP_SYMLINK_DETECTED`,
-  `ZIP_ABSOLUTE_PATH`, and `MEMORY_ERROR`.
+  `ZIP_ABSOLUTE_PATH`, `MEMORY_ERROR`, `FILENAME_TOO_LONG`,
+  `UNICODE_SECURITY`, and `IO_ERROR`.
 - **Breaking:** three unused `ZipThreatCategory` members that held
   marker strings rather than extensions: `RECURSIVE_STRUCTURE`,
   `QUINE_ARCHIVE`, and `COMPLEXITY_ATTACK`. The corresponding
@@ -203,6 +208,14 @@ which uploads are accepted. Read the upgrade notes before bumping.
   symlink, or a blocked extension and be accepted. Entries below
   the outermost archive now get the same per-entry screening as the
   outermost one.
+- **Filename sanitization could return `..`.** Control characters are
+  stripped after the path components are removed, so a name such as
+  `.\x01.` collapsed to a traversal token, which `os.path.splitext`
+  reports as a non-empty base name and the empty-name fallback
+  therefore missed. A sanitized name consisting only of dots and
+  spaces is now replaced with a generated one. The public validators
+  already rejected the result for having no extension, so no upload
+  flow was affected.
 - **Log injection (CWE-117):** a filename containing a newline could
   forge an audit log line, and directional or zero-width characters
   could hide the real name from an analyst. Untrusted text is now

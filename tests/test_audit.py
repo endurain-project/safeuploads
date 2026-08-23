@@ -1,6 +1,7 @@
 """Tests for audit logging module."""
 
 import logging
+import time
 
 import pytest
 
@@ -8,6 +9,7 @@ from safeuploads.audit import (
     AuditEvent,
     AuditEventType,
     SecurityAuditLogger,
+    correlation_scope,
     get_correlation_id,
     get_source_ip,
     reset_correlation_id,
@@ -53,6 +55,45 @@ class TestCorrelationId:
         assert get_correlation_id() is None
 
 
+class TestCorrelationScope:
+    """Test the restoring correlation scope."""
+
+    def test_scope_binds_and_restores(self):
+        """An ID bound outside the scope survives it."""
+        set_correlation_id("app-request-id")
+        try:
+            with correlation_scope() as cid:
+                assert get_correlation_id() == cid
+                assert cid != "app-request-id"
+            assert get_correlation_id() == "app-request-id"
+        finally:
+            reset_correlation_id()
+
+    def test_scope_restores_none_when_nothing_was_bound(self):
+        """With no prior ID the scope leaves None behind."""
+        reset_correlation_id()
+        with correlation_scope("scoped"):
+            assert get_correlation_id() == "scoped"
+        assert get_correlation_id() is None
+
+    def test_scope_restores_on_exception(self):
+        """A raising body still restores the previous ID."""
+        set_correlation_id("outer")
+        try:
+            with pytest.raises(RuntimeError), correlation_scope():
+                raise RuntimeError("boom")
+            assert get_correlation_id() == "outer"
+        finally:
+            reset_correlation_id()
+
+    def test_nested_scopes_unwind_in_order(self):
+        """Nested scopes restore their immediate parent."""
+        with correlation_scope("a"):
+            with correlation_scope("b"):
+                assert get_correlation_id() == "b"
+            assert get_correlation_id() == "a"
+
+
 class TestAuditEvent:
     """Test AuditEvent dataclass."""
 
@@ -85,6 +126,15 @@ class TestAuditEvent:
         assert event.details == "zip bomb detected"
         assert event.duration_ms == 150.5
         assert event.source_ip == "192.168.1.1"
+
+    def test_timestamp_is_wall_clock(self):
+        """Timestamp must be joinable with other log records."""
+        before = time.time()
+        event = AuditEvent(
+            event_type=AuditEventType.VALIDATION_START,
+            correlation_id="abc123",
+        )
+        assert before <= event.timestamp <= time.time()
 
 
 class TestAuditEventType:

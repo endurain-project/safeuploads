@@ -67,8 +67,7 @@ which uploads are accepted. Read the upgrade notes before bumping.
   bomb.
 - `safe_label()` utility, applied to every untrusted filename and ZIP
   entry name before it reaches a log record, audit event, or exception
-  message.
-- `temp_dir` limit controlling where uploads larger than
+  message.- `temp_dir` limit controlling where uploads larger than
   `max_memory_buffer_size` spill to disk. Configuration validation
   reports `invalid_temp_dir` when the directory does not exist, rather
   than failing later at rollover time.
@@ -93,6 +92,12 @@ which uploads are accepted. Read the upgrade notes before bumping.
   event in the current context, together with `get_source_ip()` and
   `reset_source_ip()`. `AuditEvent.source_ip` existed but was never
   populated.
+- `correlation_scope()`, a context manager that binds a correlation ID
+  for a block and restores whatever was bound on entry. Validation now
+  uses it internally, so an application that sets its own
+  request-scoped ID with `set_correlation_id()` keeps it across a
+  `validate_*` call. `reset_correlation_id()` still clears rather than
+  restores, and is documented as such.
 - Release-verification instructions for consumers, covering PEP 740
   attestation checks with `pypi-attestations`.
 
@@ -154,6 +159,13 @@ which uploads are accepted. Read the upgrade notes before bumping.
   being escaped by the caller. Escaping twice could truncate an
   adversarial filename mid-escape-sequence, because the escaped form
   is longer than the input and is re-truncated on the second pass.
+- `AuditEvent.timestamp` is a Unix timestamp rather than a
+  `time.monotonic()` reading, which had no fixed epoch and so could
+  not be correlated with anything.
+- `FileValidator.magic_mime` is a per-thread libmagic handle rather
+  than one instance shared behind a lock. Cookies are not thread-safe,
+  and the lock let inspection running in a worker thread block MIME
+  detection on the event loop.
 
 ### Removed
 

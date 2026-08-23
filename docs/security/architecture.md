@@ -349,7 +349,7 @@ machine-readable classification.
 ```
 FileValidator.validate_*()
   │
-  ├── set_correlation_id()
+  ├── correlation_scope()  ── binds an ID, restoring the caller's on exit
   ├── audit.log(VALIDATION_START)
   │
   ├── [validation pipeline]
@@ -362,9 +362,12 @@ FileValidator.validate_*()
   ├── On success: audit.log(VALIDATION_SUCCESS)
   ├── On failure: audit.log(VALIDATION_FAILURE)
   │
-  └── reset_correlation_id()
+  └── previous correlation ID restored
 ```
 
 All log records include the correlation ID in `extra` via
 `log_extra()`, enabling full request-level tracing across
-sub-components.
+sub-components. An application that binds its own request ID with
+`set_correlation_id()` keeps it: validation binds its ID for the
+duration of the call only. Use `correlation_scope()` to group
+several validations under one ID.

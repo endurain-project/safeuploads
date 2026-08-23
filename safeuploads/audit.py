@@ -14,10 +14,12 @@ passing.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -60,8 +62,36 @@ def set_correlation_id(cid: str | None = None) -> str:
 
 
 def reset_correlation_id() -> None:
-    """Clear the current correlation ID."""
+    """
+    Clear the current correlation ID.
+
+    Clears rather than restores: any ID bound earlier in the same
+    context is lost. Use ``correlation_scope`` to bind an ID for a
+    block and put the previous one back afterwards.
+    """
     correlation_id_var.set(None)
+
+
+@contextlib.contextmanager
+def correlation_scope(cid: str | None = None) -> Iterator[str]:
+    """
+    Bind a correlation ID for the duration of a block.
+
+    Restores whatever was bound on entry, so an application's own
+    request-scoped ID survives a nested validation call.
+
+    Args:
+        cid: Explicit ID to bind. Generates a UUID4 if None.
+
+    Yields:
+        The correlation ID bound for the block.
+    """
+    resolved = uuid.uuid4().hex if cid is None else cid
+    token = correlation_id_var.set(resolved)
+    try:
+        yield resolved
+    finally:
+        correlation_id_var.reset(token)
 
 
 source_ip_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -153,7 +183,7 @@ class AuditEvent:
         details: Additional context information.
         duration_ms: Elapsed time in milliseconds.
         source_ip: Optional client IP address.
-        timestamp: Monotonic time when event was created.
+        timestamp: Unix time when the event was created.
     """
 
     event_type: AuditEventType
@@ -163,7 +193,7 @@ class AuditEvent:
     details: str = ""
     duration_ms: float = 0.0
     source_ip: str | None = field(default_factory=source_ip_var.get)
-    timestamp: float = field(default_factory=time.monotonic)
+    timestamp: float = field(default_factory=time.time)
 
 
 # ----------------------------------------------------------------

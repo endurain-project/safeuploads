@@ -3,9 +3,15 @@
 import asyncio
 import io
 import tempfile
+import threading
 
 import pytest
 
+from safeuploads.audit import (
+    get_correlation_id,
+    reset_correlation_id,
+    set_correlation_id,
+)
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     CompressionSecurityError,
@@ -182,6 +188,77 @@ class TestSanitizeFilename:
         assert second.startswith("file_")
         # Random token, so two identical inputs do not collide.
         assert first != second
+
+
+class TestCorrelationIdIsolation:
+    """A validation must not clobber the caller's correlation ID."""
+
+    @pytest.mark.asyncio
+    async def test_callers_correlation_id_survives_validation(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """An application's request-scoped ID is restored."""
+        validator = FileValidator()
+        set_correlation_id("app-request-42")
+        try:
+            file = mock_upload_file(
+                filename="photo.jpg", content=valid_jpeg_bytes
+            )
+            await validator.validate_image_file(file)
+
+            assert get_correlation_id() == "app-request-42"
+        finally:
+            reset_correlation_id()
+
+    @pytest.mark.asyncio
+    async def test_callers_correlation_id_survives_failure(
+        self, mock_upload_file
+    ):
+        """Restoration also happens when validation raises."""
+        validator = FileValidator()
+        set_correlation_id("app-request-43")
+        try:
+            file = mock_upload_file(filename="bad.jpg", content=b"not a jpeg")
+            with pytest.raises(MimeTypeError):
+                await validator.validate_image_file(file)
+
+            assert get_correlation_id() == "app-request-43"
+        finally:
+            reset_correlation_id()
+
+
+class TestMagicHandleIsolation:
+    """Each thread gets its own libmagic cookie."""
+
+    def test_each_thread_gets_its_own_handle(self):
+        """A worker thread must not share the loop's handle."""
+        validator = FileValidator()
+        main_handle = validator.magic_mime
+        worker_handles: list[object] = []
+
+        def _capture() -> None:
+            worker_handles.append(validator.magic_mime)
+
+        thread = threading.Thread(target=_capture)
+        thread.start()
+        thread.join()
+
+        assert validator.magic_mime is main_handle
+        assert worker_handles[0] is not main_handle
+
+    @pytest.mark.asyncio
+    async def test_detection_works_off_the_event_loop(self, valid_jpeg_bytes):
+        """MIME detection in a worker thread returns the same answer."""
+        validator = FileValidator()
+
+        loop_result = validator._detect_mime_type(
+            valid_jpeg_bytes, "photo.jpg"
+        )
+        worker_result = await asyncio.to_thread(
+            validator._detect_mime_type, valid_jpeg_bytes, "photo.jpg"
+        )
+
+        assert loop_result == worker_result == "image/jpeg"
 
 
 class TestValidateFilename:

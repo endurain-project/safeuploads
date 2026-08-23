@@ -31,8 +31,7 @@ else:
 from .audit import (
     AuditEventType,
     SecurityAuditLogger,
-    reset_correlation_id,
-    set_correlation_id,
+    correlation_scope,
 )
 from .config import FileSecurityConfig
 from .exceptions import (
@@ -109,7 +108,7 @@ class FileValidator:
         windows_validator: Validator enforcing Windows-specific constraints.
         compression_validator: Validator handling compressed file limits.
         zip_inspector: Inspector for ZIP archive contents.
-        magic_mime: MIME type detector based on python-magic.
+        magic_mime: Calling thread's python-magic MIME detector.
         magic_available: Whether python-magic was successfully initialized.
     """
 
@@ -135,7 +134,7 @@ class FileValidator:
             windows_validator: Validator enforcing Windows constraints.
             compression_validator: Validator for compressed file limits.
             zip_inspector: Inspector for ZIP archive contents.
-            magic_mime: MIME type detector based on python-magic.
+            magic_mime: Calling thread's python-magic MIME detector.
             magic_available: Whether python-magic initialized successfully.
         """
         self.config = config or FileSecurityConfig()
@@ -168,14 +167,15 @@ class FileValidator:
             enabled=self.config.limits.enable_audit_logging
         )
 
-        # Serialize access to the shared python-magic instance;
-        # libmagic cookies are not thread-safe and validation may
-        # run in worker threads via asyncio.to_thread.
-        self._magic_lock = threading.Lock()
+        # A libmagic cookie is not thread-safe and validation runs
+        # in worker threads, so each thread gets its own handle.
+        # Sharing one behind a lock would let a worker's detection
+        # block the event loop.
+        self._magic_local = threading.local()
 
         # Initialize python-magic for content-based detection
         try:
-            self.magic_mime = magic.Magic(mime=True)
+            self._magic_local.mime = magic.Magic(mime=True)
             self.magic_available = True
             logger.debug("File content detection (python-magic) initialized")
         except Exception as err:
@@ -184,6 +184,21 @@ class FileValidator:
                 "python-magic not available for content detection: %s",
                 err,
             )
+
+    @property
+    def magic_mime(self) -> magic.Magic:
+        """
+        Return the calling thread's libmagic handle.
+
+        Returns:
+            A ``magic.Magic`` instance owned by this thread,
+            created on first use.
+        """
+        instance = getattr(self._magic_local, "mime", None)
+        if instance is None:
+            instance = magic.Magic(mime=True)
+            self._magic_local.mime = instance
+        return instance
 
     def _monitor(self) -> ResourceMonitor:
         """
@@ -241,12 +256,11 @@ class FileValidator:
         detected_mime = None
 
         # Content-based detection using python-magic (most reliable).
-        # Guarded by a lock because libmagic is not thread-safe and
-        # detection may run concurrently in worker threads.
+        # Each thread uses its own handle because libmagic cookies
+        # are not thread-safe.
         if self.magic_available:
             try:
-                with self._magic_lock:
-                    detected_mime = self.magic_mime.from_buffer(file_content)
+                detected_mime = self.magic_mime.from_buffer(file_content)
             except Exception as err:
                 logger.warning("Magic MIME detection failed: %s", err)
 
@@ -863,57 +877,55 @@ class FileValidator:
             FileProcessingError: Propagated as-is or wrapping an
                 unexpected internal error.
         """
-        cid = set_correlation_id()
-        # Audit fields are escaped at the emission point, so pass
-        # the raw name through; escaping twice would truncate an
-        # adversarial name mid-escape-sequence.
-        raw_name = file.filename or "unknown"
-        self._audit.start(raw_name, cid)
-        logger.debug(
-            "Starting %s file validation: %s",
-            file_type,
-            safe_label(raw_name),
-        )
-        t0 = time.monotonic()
-        try:
-            await body(file)
-            ms = (time.monotonic() - t0) * 1000
-            self._audit.success(file.filename or raw_name, cid, ms)
-        except (
-            FileValidationError,
-            ResourceLimitError,
-            FileProcessingError,
-        ) as exc:
-            ms = (time.monotonic() - t0) * 1000
-            self._audit.failure(
-                file.filename or raw_name,
-                cid,
-                ms,
-                str(exc),
-                event_type=(
-                    AuditEventType.RESOURCE_LIMIT
-                    if isinstance(exc, ResourceLimitError)
-                    else AuditEventType.VALIDATION_FAILURE
-                ),
+        with correlation_scope() as cid:
+            # Audit fields are escaped at the emission point, so
+            # pass the raw name through; escaping twice would
+            # truncate an adversarial name mid-escape-sequence.
+            raw_name = file.filename or "unknown"
+            self._audit.start(raw_name, cid)
+            logger.debug(
+                "Starting %s file validation: %s",
+                file_type,
+                safe_label(raw_name),
             )
-            raise
-        except Exception as err:
-            ms = (time.monotonic() - t0) * 1000
-            self._audit.failure(
-                file.filename or raw_name,
-                cid,
-                ms,
-                "internal_error",
-            )
-            logger.exception(
-                "Error during %s file validation: %s", file_type, err
-            )
-            raise FileProcessingError(
-                "File validation failed due to internal error",
-                original_error=err,
-            ) from err
-        finally:
-            reset_correlation_id()
+            t0 = time.monotonic()
+            try:
+                await body(file)
+                ms = (time.monotonic() - t0) * 1000
+                self._audit.success(file.filename or raw_name, cid, ms)
+            except (
+                FileValidationError,
+                ResourceLimitError,
+                FileProcessingError,
+            ) as exc:
+                ms = (time.monotonic() - t0) * 1000
+                self._audit.failure(
+                    file.filename or raw_name,
+                    cid,
+                    ms,
+                    str(exc),
+                    event_type=(
+                        AuditEventType.RESOURCE_LIMIT
+                        if isinstance(exc, ResourceLimitError)
+                        else AuditEventType.VALIDATION_FAILURE
+                    ),
+                )
+                raise
+            except Exception as err:
+                ms = (time.monotonic() - t0) * 1000
+                self._audit.failure(
+                    file.filename or raw_name,
+                    cid,
+                    ms,
+                    "internal_error",
+                )
+                logger.exception(
+                    "Error during %s file validation: %s", file_type, err
+                )
+                raise FileProcessingError(
+                    "File validation failed due to internal error",
+                    original_error=err,
+                ) from err
 
     async def validate_image_file(self, file: UploadFile) -> None:
         """

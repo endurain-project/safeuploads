@@ -143,7 +143,7 @@ class FileValidator:
         # Validate the actual (possibly custom) config in use;
         # log any issues by severity without raising so
         # construction still succeeds. A valid config logs nothing.
-        for issue in self.config.validate_instance(strict=False):
+        for issue in self.config.validate_instance():
             log = logger.error if issue.severity == "error" else logger.warning
             log(
                 "Configuration %s: %s. %s",

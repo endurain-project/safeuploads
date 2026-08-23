@@ -523,31 +523,21 @@ class FileSecurityConfig:
         return None
 
     @classmethod
-    def validate_configuration(
-        cls, strict: bool = True
-    ) -> list[ConfigValidationError]:
+    def validate_configuration(cls) -> list[ConfigValidationError]:
         """
         Validate the class-level default configuration.
-
-        Args:
-            strict: Reserved for future behavior adjustments.
 
         Returns:
             List of detected validation errors.
         """
         return cls._collect_errors(cls.limits)
 
-    def validate_instance(
-        self, strict: bool = True
-    ) -> list[ConfigValidationError]:
+    def validate_instance(self) -> list[ConfigValidationError]:
         """
         Validate this instance's configuration.
 
         Validates the per-instance ``limits`` so a customized
         instance is checked instead of the class default.
-
-        Args:
-            strict: Reserved for future behavior adjustments.
 
         Returns:
             List of detected validation errors.
@@ -1370,7 +1360,7 @@ class FileSecurityConfig:
         Raises:
             FileSecurityConfigurationError: If strict and issues found.
         """
-        cls._report_errors(cls.validate_configuration(strict=strict), strict)
+        cls._report_errors(cls.validate_configuration(), strict)
 
     def validate_and_report_instance(self, strict: bool = True) -> None:
         """
@@ -1382,9 +1372,7 @@ class FileSecurityConfig:
         Raises:
             FileSecurityConfigurationError: If strict and issues found.
         """
-        type(self)._report_errors(
-            self.validate_instance(strict=strict), strict
-        )
+        type(self)._report_errors(self.validate_instance(), strict)
 
     @staticmethod
     def _report_errors(

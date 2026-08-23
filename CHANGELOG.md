@@ -178,6 +178,13 @@ which uploads are accepted. Read the upgrade notes before bumping.
   `validate_windows_reserved_names`, `validate_zip_compression_ratio`,
   `validate_xml_safety`). `BaseValidator` remains as a plain base
   class, matching `BaseInspector`.
+- **Breaking:** the `strict` parameter on
+  `FileSecurityConfig.validate_configuration()` and
+  `validate_instance()`. Both return the full list of issues and never
+  raised, so the flag changed nothing; it was documented as "reserved
+  for future behavior adjustments". `validate_and_report()` and
+  `validate_and_report_instance()` keep their `strict` flag, which
+  does decide whether issues are raised.
 - **Breaking:** eleven `ErrorCode` members that no code path could
   ever produce: `FILE_SIZE_UNKNOWN`, `MIME_DETECTION_FAILED`,
   `FILE_SIGNATURE_INVALID`, `ZIP_INVALID_STRUCTURE`,

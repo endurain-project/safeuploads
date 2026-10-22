@@ -1,6 +1,6 @@
 [project]
 name = "safeuploads"
-version = "1.1.1"
+version = "1.1.2"
 description = "A comprehensive file security system for validating uploads and preventing attacks"
 authors = [
     {name = "João Vitória Silva",email = "joao@endurain.com"}
@@ -40,7 +40,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-required-version = "0.12.5"
+required-version = "0.13.5"
 exclude-newer = "30 days"
 
 [tool.ruff]

@@ -9,8 +9,13 @@ from .audit import (
     AuditEvent,
     AuditEventType,
     SecurityAuditLogger,
+    correlation_scope,
     get_correlation_id,
+    get_source_ip,
+    reset_correlation_id,
+    reset_source_ip,
     set_correlation_id,
+    set_source_ip,
 )
 
 # Core classes and configurations
@@ -36,6 +41,7 @@ from .exceptions import (
     FileSignatureError,
     FileSizeError,
     FileValidationError,
+    ImageSecurityError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -54,7 +60,7 @@ from .inspectors import (
     GzipContentInspector,
     ZipContentInspector,
 )
-from .protocols import SeekableFile
+from .protocols import SeekableFile, UploadFileProtocol
 from .utils import ResourceMonitor
 
 # Specialized validators
@@ -79,6 +85,7 @@ __all__ = [
     "FileSecurityConfig",
     # Protocols
     "SeekableFile",
+    "UploadFileProtocol",
     # Exceptions
     "ConfigValidationError",
     "FileSecurityConfigurationError",
@@ -92,6 +99,7 @@ __all__ = [
     "FileSizeError",
     "MimeTypeError",
     "FileSignatureError",
+    "ImageSecurityError",
     "CompressionSecurityError",
     "ZipBombError",
     "ZipContentError",
@@ -127,4 +135,9 @@ __all__ = [
     "AuditEventType",
     "get_correlation_id",
     "set_correlation_id",
+    "reset_correlation_id",
+    "correlation_scope",
+    "get_source_ip",
+    "set_source_ip",
+    "reset_source_ip",
 ]

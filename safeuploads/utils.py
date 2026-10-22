@@ -3,8 +3,10 @@
 import logging
 import sys
 import time
-from collections.abc import Iterable
+import unicodedata
+from collections.abc import Callable, Iterable, Iterator
 from types import TracebackType
+from typing import TypeVar
 
 from .exceptions import ErrorCode, ResourceLimitError
 
@@ -37,6 +39,58 @@ def bytes_to_mb(num_bytes: int) -> int:
     return num_bytes // (1024 * 1024)
 
 
+# Control, format, surrogate and line/paragraph separator
+# characters. These are what let an attacker-supplied name forge
+# or hide inside a log line.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+
+def safe_label(value: str, max_length: int = 256) -> str:
+    """
+    Escape untrusted text for inclusion in a log record.
+
+    Args:
+        value: Untrusted text such as a filename or ZIP entry name.
+        max_length: Characters kept before truncation.
+
+    Returns:
+        Escaped, length-bounded text safe to log.
+    """
+    if not value:
+        return ""
+
+    escaped = "".join(
+        f"\\u{ord(char):04x}"
+        if unicodedata.category(char) in _UNSAFE_CATEGORIES
+        else char
+        for char in value[:max_length]
+    )
+    if len(value) > max_length:
+        escaped += "..."
+    return escaped
+
+
+def strip_unsafe_chars(value: str) -> str:
+    """
+    Remove characters that can forge or hide inside a log line.
+
+    Covers C0 and C1 controls, format and surrogate code points,
+    and the line and paragraph separators, so the result is safe
+    to store and to log without further escaping.
+
+    Args:
+        value: Untrusted text such as a filename.
+
+    Returns:
+        Text with every unsafe character removed.
+    """
+    return "".join(
+        char
+        for char in value
+        if unicodedata.category(char) not in _UNSAFE_CATEGORIES
+    )
+
+
 def matches_signature_prefix(
     content: bytes, signatures: Iterable[bytes]
 ) -> bytes | None:
@@ -59,69 +113,315 @@ def matches_signature_prefix(
     return None
 
 
+_TNeedle = TypeVar("_TNeedle", str, bytes)
+
+
+def _canonical_order(needles: Iterable[_TNeedle]) -> tuple[_TNeedle, ...]:
+    """
+    Deduplicate and order needles so scans are reproducible.
+
+    Callers pass sets, whose iteration order is an implementation
+    detail; without this, which of several matching patterns gets
+    reported could vary. Longest-first makes the most specific
+    candidate win when two of them match.
+
+    Args:
+        needles: Patterns or signatures to canonicalize.
+
+    Returns:
+        Deduplicated tuple ordered longest-first, then by value.
+    """
+    return tuple(sorted(set(needles), key=lambda n: (-len(n), n)))
+
+
+# A crafted upload can hold millions of decoy occurrences of a
+# short signature. Corroborating every one of them is work an
+# attacker chooses, so stop after this many candidates per
+# signature; the scan is a heuristic layer, not the only control.
+_MAX_SIGNATURE_CANDIDATES = 4096
+
+SignatureVerifier = Callable[[bytes, bytes, int], bool]
+
+
+def iter_signature_offsets(
+    content: bytes,
+    signature: bytes,
+    start: int = 0,
+    limit: int = _MAX_SIGNATURE_CANDIDATES,
+) -> Iterator[int]:
+    """
+    Yield the offsets at which a signature occurs.
+
+    Args:
+        content: Raw bytes to scan.
+        signature: Byte sequence to locate.
+        start: Offset to begin scanning at.
+        limit: Maximum number of offsets yielded.
+
+    Yields:
+        Offsets of each occurrence, in ascending order.
+    """
+    if not signature:
+        return
+    pos = content.find(signature, start)
+    yielded = 0
+    while pos != -1 and yielded < limit:
+        yield pos
+        yielded += 1
+        pos = content.find(signature, pos + 1)
+
+
+# Bytes that appear in source, markup and plain prose. Everything
+# else marks the surrounding run as binary.
+_NON_TEXT_BYTES = bytes(
+    b for b in range(256) if not (0x20 <= b < 0x7F or b in (9, 10, 13))
+)
+
+# A pattern shorter than this matches binary data by chance about
+# once every 64 KB, so on its own it carries no signal in a
+# multi-megabyte window.
+_MIN_UNAMBIGUOUS_PATTERN = 5
+_TEXT_WINDOW_BYTES = 48
+_TEXT_WINDOW_RATIO = 0.9
+
+
+def in_text_run(
+    content: bytes, offset: int, size: int = _TEXT_WINDOW_BYTES
+) -> bool:
+    """
+    Report whether an offset sits inside a run of text.
+
+    Args:
+        content: Raw bytes being scanned.
+        offset: Offset to examine.
+        size: Bytes inspected either side of the offset.
+
+    Returns:
+        True if the surrounding window is predominantly text.
+    """
+    window = content[max(0, offset - size) : offset + size]
+    if not window:
+        return False
+    text_bytes = len(window.translate(None, _NON_TEXT_BYTES))
+    return text_bytes >= len(window) * _TEXT_WINDOW_RATIO
+
+
 def find_embedded_signature(
-    content: bytes, signatures: Iterable[bytes]
+    content: bytes,
+    signatures: Iterable[bytes],
+    start: int = 0,
+    verify: SignatureVerifier | None = None,
 ) -> bytes | None:
     """
     Return the first signature found anywhere in the content.
 
     Substring match; use when detecting a format embedded inside
     otherwise-valid content (polyglots, appended payloads).
+    Scanning uses ``bytes.find`` from ``start``: its C search
+    beats a compiled alternation over the same literals, and the
+    offset skips an expected header without copying the window.
 
     Args:
         content: Raw bytes to scan.
         signatures: Candidate byte signatures.
+        start: Offset to begin scanning at, so a caller can skip
+            an expected header without slicing the buffer.
+        verify: Optional predicate called with the content, the
+            matched signature and its offset. A match is only
+            reported when it returns True, so a short signature
+            can be corroborated against the structure that must
+            follow it.
 
     Returns:
         The first matching signature, or None if none present.
     """
-    for sig in signatures:
-        if sig in content:
-            return sig
+    for sig in _canonical_order(signatures):
+        if verify is None:
+            if content.find(sig, start) != -1:
+                return sig
+            continue
+        for offset in iter_signature_offsets(content, sig, start):
+            if verify(content, sig, offset):
+                return sig
     return None
 
 
 def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
     """
-    Return the first text pattern present in decoded content.
+    Return the first text pattern present in the content.
 
-    Content is decoded as UTF-8 with errors ignored and lower-
-    cased so binary data degrades gracefully. Any decoding
-    failure is treated as "no match".
+    The window is lower-cased once and searched as bytes. A
+    case-insensitive regex alternation over the same literals
+    measures an order of magnitude slower on a large window, and
+    decoding to text would cost a second full-size copy.
+
+    Patterns shorter than five bytes are only reported when they
+    sit inside a run of text. Scanning megabytes of compressed
+    image or archive data for a two-byte marker such as ``<%``
+    otherwise matches by coincidence on essentially every file.
 
     Args:
         content: Raw bytes to scan.
-        patterns: Lower-case substrings to search for.
+        patterns: Lower-case ASCII substrings to search for.
 
     Returns:
-        The first matching pattern, or None if none present.
+        The matching pattern, or None if none are present.
     """
-    try:
-        text = content.decode("utf-8", errors="ignore").lower()
-    except Exception:
+    candidates = _canonical_order(patterns)
+    if not candidates:
         return None
-    for pattern in patterns:
-        if pattern in text:
-            return pattern
+
+    lowered = content.lower()
+    for pattern in candidates:
+        needle = pattern.encode("utf-8")
+        if len(needle) >= _MIN_UNAMBIGUOUS_PATTERN:
+            if lowered.find(needle) != -1:
+                return pattern
+            continue
+        for offset in iter_signature_offsets(lowered, needle):
+            if in_text_run(lowered, offset):
+                return pattern
+    return None
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+# Start-of-frame markers that carry the frame dimensions. 0xC4
+# (DHT), 0xC8 (JPG) and 0xCC (DAC) share the range but are not
+# start-of-frame markers, so they are excluded.
+_JPEG_SOF_MARKERS: frozenset[int] = frozenset(
+    {
+        0xC0,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC5,
+        0xC6,
+        0xC7,
+        0xC9,
+        0xCA,
+        0xCB,
+        0xCD,
+        0xCE,
+        0xCF,
+    }
+)
+
+
+def _parse_png_dimensions(content: bytes) -> tuple[int, int] | None:
+    """
+    Read width and height from a PNG IHDR chunk.
+
+    Args:
+        content: Raw bytes starting at the PNG signature.
+
+    Returns:
+        ``(width, height)`` tuple, or None if the IHDR chunk is
+        missing or truncated.
+    """
+    # IHDR is required to be the first chunk: 8-byte signature,
+    # 4-byte length, 4-byte type, then two big-endian uint32.
+    if len(content) < 24 or content[12:16] != b"IHDR":
+        return None
+    width = int.from_bytes(content[16:20], "big")
+    height = int.from_bytes(content[20:24], "big")
+    return width, height
+
+
+def _parse_jpeg_dimensions(content: bytes) -> tuple[int, int] | None:
+    """
+    Walk JPEG segments to the first start-of-frame marker.
+
+    Args:
+        content: Raw bytes starting at the SOI marker.
+
+    Returns:
+        ``(width, height)`` tuple, or None if no start-of-frame
+        segment is present before the entropy-coded data.
+    """
+    pos = 2  # Skip the SOI marker.
+    total = len(content)
+
+    while pos + 3 < total:
+        # Segments are contiguous; anything else is malformed.
+        if content[pos] != 0xFF:
+            return None
+
+        marker = content[pos + 1]
+
+        # 0xFF fill bytes may pad the gap before a marker.
+        if marker == 0xFF:
+            pos += 1
+            continue
+
+        # Standalone markers carry no length field.
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+            pos += 2
+            continue
+
+        # EOI or the start of scan data: no frame header found.
+        if marker in (0xD9, 0xDA):
+            return None
+
+        segment_len = int.from_bytes(content[pos + 2 : pos + 4], "big")
+        if segment_len < 2:
+            return None
+
+        if marker in _JPEG_SOF_MARKERS:
+            # SOF payload: precision, height, width.
+            sof = content[pos + 4 : pos + 9]
+            if len(sof) < 5:
+                return None
+            height = int.from_bytes(sof[1:3], "big")
+            width = int.from_bytes(sof[3:5], "big")
+            return width, height
+
+        pos += 2 + segment_len
+
+    return None
+
+
+def parse_image_dimensions(content: bytes) -> tuple[int, int] | None:
+    """
+    Extract pixel dimensions from a PNG or JPEG header.
+
+    Args:
+        content: Leading bytes of the image file.
+
+    Returns:
+        ``(width, height)`` tuple, or None if the format is
+        unsupported or the header is malformed or truncated.
+    """
+    if content.startswith(_PNG_SIGNATURE):
+        return _parse_png_dimensions(content)
+    if content.startswith(b"\xff\xd8"):
+        return _parse_jpeg_dimensions(content)
     return None
 
 
 class ResourceMonitor:
     """
-    Context manager that enforces wall-clock and memory limits.
+    Context manager that enforces a wall-clock limit.
 
-    Tracks elapsed time continuously and samples memory usage
-    via ``resource.getrusage``. Memory accounting uses the
-    process peak RSS (``ru_maxrss``), a monotonic high-water
-    mark for the whole process, so the reported delta is a
-    coarse, best-effort upper bound rather than the exact
-    memory used by this validation. Call ``check_time`` and
-    ``check_memory`` inside long loops for early enforcement;
-    otherwise limits are checked on context exit.
+    Elapsed time is a hard limit: call ``check`` inside long
+    loops so a runaway operation is aborted while it runs;
+    otherwise it is only checked on context exit.
+
+    Memory is **best-effort telemetry, not a limit**. Accounting
+    uses the process peak RSS (``ru_maxrss``), a monotonic
+    high-water mark for the whole process, so it never decreases
+    and may attribute concurrent work to this validation.
+    Exceeding ``max_memory_mb`` is logged as a warning; set
+    ``enforce_memory`` to raise instead, and only do so when the
+    process handles one validation at a time. Real memory bounds
+    come from the byte limits in ``SecurityLimits``, which cap
+    every buffer the library allocates.
 
     Attributes:
         max_time_seconds: Maximum allowed wall-clock seconds.
-        max_memory_bytes: Maximum allowed peak-RSS growth in bytes.
+        max_memory_bytes: Peak-RSS growth budget in bytes.
+        enforce_memory: Whether exceeding the memory budget
+            raises instead of logging a warning.
         start_time: Timestamp when the context was entered.
         start_memory: Peak process RSS in bytes at context entry.
     """
@@ -130,16 +430,20 @@ class ResourceMonitor:
         self,
         max_time_seconds: float = 30.0,
         max_memory_mb: int = 512,
+        enforce_memory: bool = False,
     ):
         """
         Initialize the resource monitor.
 
         Args:
             max_time_seconds: Wall-clock timeout in seconds.
-            max_memory_mb: Maximum memory delta in megabytes.
+            max_memory_mb: Peak-RSS growth budget in megabytes.
+            enforce_memory: Raise when the memory budget is
+                exceeded instead of logging a warning.
         """
         self.max_time_seconds = max_time_seconds
         self.max_memory_bytes = max_memory_mb * 1024 * 1024
+        self.enforce_memory = enforce_memory
         self.start_time: float = 0.0
         self.start_memory: int = 0
         self._elapsed: float = 0.0
@@ -171,8 +475,9 @@ class ResourceMonitor:
             exc_tb: Exception traceback if raised inside block.
 
         Raises:
-            ResourceLimitError: If time or memory limits were
-                exceeded during the monitored block.
+            ResourceLimitError: If the wall-clock limit was
+                exceeded, or the memory budget was exceeded and
+                enforcement is on.
         """
         if exc_type is not None:
             return
@@ -200,16 +505,32 @@ class ResourceMonitor:
         """
         Check peak memory growth mid-operation.
 
-        Enables early enforcement inside long-running loops
-        instead of waiting for context exit. Uses the process
-        peak RSS high-water mark, so it is a coarse upper bound.
+        Uses the process peak RSS high-water mark, so it is a
+        coarse upper bound. Only raises when ``enforce_memory``
+        is set; otherwise an over-budget reading is logged.
 
         Raises:
             ResourceLimitError: If peak-RSS growth since context
-                entry exceeds the configured memory limit.
+                entry exceeds the budget and enforcement is on.
         """
         delta = max(0, self._get_peak_rss_bytes() - self.start_memory)
         self._raise_if_memory_exceeded(delta)
+
+    def check(self) -> None:
+        """
+        Check the resource budgets mid-operation.
+
+        Memory is only sampled when ``enforce_memory`` is set, so
+        the common path costs a single clock read per call.
+
+        Raises:
+            ResourceLimitError: If the wall-clock limit has been
+                exceeded, or the memory budget has been exceeded
+                and enforcement is on.
+        """
+        self.check_time()
+        if self.enforce_memory:
+            self.check_memory()
 
     def _raise_if_time_exceeded(self, elapsed: float) -> None:
         """
@@ -240,18 +561,27 @@ class ResourceMonitor:
 
     def _raise_if_memory_exceeded(self, delta: int) -> None:
         """
-        Raise if peak-RSS growth exceeds the limit.
+        Report peak-RSS growth beyond the budget.
 
         Args:
             delta: Peak-RSS growth in bytes since context entry.
 
         Raises:
-            ResourceLimitError: If the memory limit is exceeded.
+            ResourceLimitError: If the budget is exceeded and
+                ``enforce_memory`` is set.
         """
         if delta <= self.max_memory_bytes:
             return
         delta_mb = bytes_to_mb(delta)
         max_mb = bytes_to_mb(self.max_memory_bytes)
+        if not self.enforce_memory:
+            logger.warning(
+                "Validation memory budget exceeded: %dMB > %dMB"
+                " (not enforced; peak RSS is process-wide)",
+                delta_mb,
+                max_mb,
+            )
+            return
         logger.error(
             "Validation memory limit exceeded: %dMB > %dMB",
             delta_mb,

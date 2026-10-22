@@ -1,11 +1,90 @@
 """Shared pytest fixtures for safeuploads tests."""
 
 import io
+import random
 import zipfile
 
 import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
+
+# Baseline SOF0 frame header declaring a 16x16 image. Real JPEGs
+# always carry a start-of-frame segment; without one the decoded
+# dimensions are unknown and validation rejects the file.
+JPEG_SOF0 = (
+    b"\xff\xc0"  # SOF0 marker
+    b"\x00\x11"  # Segment length (17)
+    b"\x08"  # Sample precision
+    b"\x00\x10"  # Height
+    b"\x00\x10"  # Width
+    b"\x03"  # Component count
+    b"\x01\x11\x00\x02\x11\x01\x03\x11\x01"  # Component specs
+)
+
+# Structurally valid payload headers. Content analysis only
+# reports a short magic when the header it introduces is well
+# formed, so a bare `MZ` or `\x7fELF` is not a usable fixture.
+PE_EXECUTABLE = (
+    b"MZ"
+    + b"\x00" * 0x3A
+    + (0x40).to_bytes(4, "little")  # e_lfanew -> PE header
+    + b"PE\x00\x00"
+    + (0x8664).to_bytes(2, "little")  # Machine: x86-64
+    + b"\x00" * 18
+)
+
+ELF_EXECUTABLE = (
+    b"\x7fELF"
+    b"\x02"  # EI_CLASS: 64-bit
+    b"\x01"  # EI_DATA: little-endian
+    b"\x01" + b"\x00" * 25  # EI_VERSION
+)
+
+MACHO_EXECUTABLE = (
+    b"\xcf\xfa\xed\xfe"  # MH_CIGAM_64
+    + (0x0100000C).to_bytes(4, "little")  # cputype: ARM64
+    + (0).to_bytes(4, "little")  # cpusubtype
+    + (2).to_bytes(4, "little")  # filetype: MH_EXECUTE
+    + b"\x00" * 16
+)
+
+JAVA_CLASS = (
+    b"\xca\xfe\xba\xbe"
+    + (0).to_bytes(2, "big")  # minor version
+    + (61).to_bytes(2, "big")  # major version: Java 17
+    + b"\x00" * 16
+)
+
+WINDOWS_SHORTCUT = (
+    b"L\x00\x00\x00"  # ShellLinkHeader size
+    b"\x01\x14\x02\x00\x00\x00\x00\x00"
+    b"\xc0\x00\x00\x00\x00\x00\x00\x46" + b"\x00" * 16  # LinkCLSID
+)
+
+ZIP_LOCAL_HEADER = (
+    b"PK\x03\x04"
+    + (20).to_bytes(2, "little")  # Version needed
+    + b"\x00\x00"  # Flags
+    + (8).to_bytes(2, "little")  # Method: deflate
+    + b"\x00" * 16
+)
+
+
+def entropy_bytes(size: int, seed: int = 0) -> bytes:
+    """
+    Build reproducible high-entropy filler.
+
+    Models the entropy-coded body of a real photo, where every
+    two-byte sequence occurs roughly once per 64 KB.
+
+    Args:
+        size: Number of bytes to produce.
+        seed: Seed making the output reproducible.
+
+    Returns:
+        Pseudo-random bytes of the requested length.
+    """
+    return random.Random(seed).randbytes(size)
 
 
 @pytest.fixture
@@ -56,7 +135,7 @@ def mock_upload_file():
         ):
             self.filename = filename
             self.content = content
-            self.size = size or len(content)
+            self.size = size if size is not None else len(content)
             self._position = 0
 
         async def read(self, size: int = -1) -> bytes:
@@ -101,7 +180,8 @@ def valid_jpeg_bytes() -> bytes:
     Returns:
         Minimal valid JPEG file content.
     """
-    # Minimal valid JPEG: SOI marker + APP0 segment + EOI marker
+    # Minimal valid JPEG: SOI marker + APP0 segment + SOF0 frame
+    # header + EOI marker
     return (
         b"\xff\xd8\xff\xe0"  # JPEG SOI + APP0
         b"\x00\x10"  # APP0 length
@@ -110,7 +190,8 @@ def valid_jpeg_bytes() -> bytes:
         b"\x00"  # Density units
         b"\x00\x01\x00\x01"  # X and Y density
         b"\x00\x00"  # Thumbnail dimensions
-        b"\xff\xd9"  # JPEG EOI
+        + JPEG_SOF0
+        + b"\xff\xd9"  # JPEG EOI
     )
 
 

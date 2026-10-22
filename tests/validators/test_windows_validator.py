@@ -137,17 +137,6 @@ class TestWindowsSecurityValidator:
         validator.validate_windows_reserved_names("context.log")
         validator.validate_windows_reserved_names("acon.txt")
 
-    def test_validate_method_delegates_correctly(self, default_config):
-        """Test that validate() method delegates correctly."""
-        validator = WindowsSecurityValidator(default_config)
-
-        # Should not raise for safe filename
-        validator.validate("normal.txt")
-
-        # Should raise for reserved name
-        with pytest.raises(WindowsReservedNameError):
-            validator.validate("CON.txt")
-
     def test_error_includes_filename(self, default_config):
         """Test that error includes the problematic filename."""
         validator = WindowsSecurityValidator(default_config)

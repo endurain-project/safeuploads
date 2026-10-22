@@ -1,7 +1,7 @@
 name: Test matrix safeuploads
 
 # Portability matrix on top of the fast default `Lint & Test` workflow:
-#   * every supported Python version (3.13, 3.14) with the full
+#   * every supported Python version (3.11 - 3.14) with the full
 #     dependency set (dev group + fastapi extra), proving the suite
 #     passes on every Python the package declares support for; and
 #   * a bare `import safeuploads` with only the base dependencies
@@ -40,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.13", "3.14"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -1,4 +1,6 @@
 site_name: safeuploads documentation
+site_description: Secure file upload validation for Python applications
+site_url: https://safeuploads.endurain.com/
 repo_url: https://github.com/endurain-project/safeuploads
 theme:
   name: material
@@ -16,7 +18,20 @@ theme:
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - toc.follow
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
 plugins:
+  - search
   - mkdocstrings:
       handlers:
         python:
@@ -24,11 +39,12 @@ plugins:
             docstring_style: google
             show_source: true
             separate_signature: true
+            show_root_heading: true
 nav:
   - Home: index.md
   - API: api.md
-  - Rate Limiting: rate-limiting.md
+  - Rate limiting: rate-limiting.md
   - Security:
-    - Threat Model: security/threat-model.md
+    - Threat model: security/threat-model.md
     - Architecture: security/architecture.md
-    - Integration Checklist: security/integration-checklist.md
+    - Integration checklist: security/integration-checklist.md

@@ -21,3 +21,8 @@ __pycache__
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Mutation testing
+mutants/
+.mutmut-cache
+mutants.sqlite

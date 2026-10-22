@@ -14,13 +14,17 @@ passing.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from .utils import safe_label
 
 # ----------------------------------------------------------------
 # Context variable for correlation ID
@@ -58,8 +62,69 @@ def set_correlation_id(cid: str | None = None) -> str:
 
 
 def reset_correlation_id() -> None:
-    """Clear the current correlation ID."""
+    """
+    Clear the current correlation ID.
+
+    Clears rather than restores: any ID bound earlier in the same
+    context is lost. Use ``correlation_scope`` to bind an ID for a
+    block and put the previous one back afterwards.
+    """
     correlation_id_var.set(None)
+
+
+@contextlib.contextmanager
+def correlation_scope(cid: str | None = None) -> Iterator[str]:
+    """
+    Bind a correlation ID for the duration of a block.
+
+    Restores whatever was bound on entry, so an application's own
+    request-scoped ID survives a nested validation call.
+
+    Args:
+        cid: Explicit ID to bind. Generates a UUID4 if None.
+
+    Yields:
+        The correlation ID bound for the block.
+    """
+    resolved = uuid.uuid4().hex if cid is None else cid
+    token = correlation_id_var.set(resolved)
+    try:
+        yield resolved
+    finally:
+        correlation_id_var.reset(token)
+
+
+source_ip_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "safeuploads_source_ip", default=None
+)
+
+
+def get_source_ip() -> str | None:
+    """
+    Return the client address recorded for this context.
+
+    Returns:
+        Client address string, or None if not set.
+    """
+    return source_ip_var.get()
+
+
+def set_source_ip(ip: str | None) -> None:
+    """
+    Record the client address for audit events in this context.
+
+    safeuploads never sees the request, so the application sets
+    this from its own framework before validating.
+
+    Args:
+        ip: Client address, or None to clear.
+    """
+    source_ip_var.set(ip)
+
+
+def reset_source_ip() -> None:
+    """Clear the client address recorded for this context."""
+    source_ip_var.set(None)
 
 
 def log_extra(
@@ -77,7 +142,7 @@ def log_extra(
     merged: dict[str, Any] = dict(extra) if extra else {}
     cid = correlation_id_var.get()
     if cid is not None:
-        merged["correlation_id"] = cid
+        merged["correlation_id"] = safe_label(cid)
     return merged
 
 
@@ -118,7 +183,7 @@ class AuditEvent:
         details: Additional context information.
         duration_ms: Elapsed time in milliseconds.
         source_ip: Optional client IP address.
-        timestamp: Monotonic time when event was created.
+        timestamp: Unix time when the event was created.
     """
 
     event_type: AuditEventType
@@ -127,8 +192,8 @@ class AuditEvent:
     result: str = ""
     details: str = ""
     duration_ms: float = 0.0
-    source_ip: str | None = None
-    timestamp: float = field(default_factory=time.monotonic)
+    source_ip: str | None = field(default_factory=source_ip_var.get)
+    timestamp: float = field(default_factory=time.time)
 
 
 # ----------------------------------------------------------------
@@ -164,20 +229,28 @@ class SecurityAuditLogger:
         """
         Emit an audit event as a structured log record.
 
+        Untrusted fields are escaped here so a crafted filename
+        cannot forge or hide inside a log line, regardless of
+        which caller built the event.
+
         Args:
             event: The audit event to record.
         """
         if not self.enabled:
             return
 
+        correlation_id = safe_label(event.correlation_id)
+        filename = safe_label(event.filename)
+        result = safe_label(event.result, max_length=512)
+
         extra = {
             "audit_event_type": event.event_type.value,
-            "audit_correlation_id": event.correlation_id,
-            "audit_filename": event.filename,
-            "audit_result": event.result,
-            "audit_details": event.details,
+            "audit_correlation_id": correlation_id,
+            "audit_filename": filename,
+            "audit_result": result,
+            "audit_details": safe_label(event.details, max_length=1024),
             "audit_duration_ms": event.duration_ms,
-            "audit_source_ip": event.source_ip or "",
+            "audit_source_ip": safe_label(event.source_ip or ""),
         }
 
         level = logging.INFO
@@ -191,10 +264,10 @@ class SecurityAuditLogger:
         _audit_logger.log(
             level,
             "[%s] %s file=%s result=%s",
-            event.correlation_id[:12],
+            correlation_id[:12],
             event.event_type.value,
-            event.filename,
-            event.result,
+            filename,
+            result,
             extra=extra,
         )
 
@@ -250,6 +323,7 @@ class SecurityAuditLogger:
         duration_ms: float,
         error: str,
         details: str = "",
+        event_type: AuditEventType = AuditEventType.VALIDATION_FAILURE,
     ) -> None:
         """
         Log a validation failure event.
@@ -260,10 +334,11 @@ class SecurityAuditLogger:
             duration_ms: Validation duration in milliseconds.
             error: Short error description.
             details: Additional failure context.
+            event_type: Category to record the failure under.
         """
         self.log_event(
             AuditEvent(
-                event_type=(AuditEventType.VALIDATION_FAILURE),
+                event_type=event_type,
                 correlation_id=correlation_id,
                 filename=filename,
                 result=error,

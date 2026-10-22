@@ -3,16 +3,20 @@
 import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
-from safeuploads.enums import MalwareSignatureCategory
 from safeuploads.exceptions import FileProcessingError
 from safeuploads.inspectors.content_inspector import (
     ContentSecurityInspector,
 )
-
-
-def _sig(category: MalwareSignatureCategory) -> bytes:
-    """Get first signature from a category."""
-    return next(iter(category.value))
+from tests.conftest import (
+    ELF_EXECUTABLE,
+    JAVA_CLASS,
+    JPEG_SOF0,
+    MACHO_EXECUTABLE,
+    PE_EXECUTABLE,
+    WINDOWS_SHORTCUT,
+    ZIP_LOCAL_HEADER,
+    entropy_bytes,
+)
 
 
 class TestContentSecurityInspector:
@@ -33,40 +37,42 @@ class TestContentSecurityInspector:
     def test_detect_pe_signature(self, default_config):
         """Test detection of PE executable header."""
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.PE_EXECUTABLE)
-        content = b"\x00" * 50 + sig + b"\x00" * 50
+        content = b"\x00" * 50 + PE_EXECUTABLE + b"\x00" * 50
         threats = inspector.scan_content(content, "f.dat", "")
         assert any("Executable signature" in t for t in threats)
 
     def test_detect_elf_signature(self, default_config):
         """Test detection of ELF executable header."""
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.ELF_EXECUTABLE)
-        content = sig + b"\x00" * 100
+        content = ELF_EXECUTABLE + b"\x00" * 100
         threats = inspector.scan_content(content, "f.dat", "")
         assert any("Executable signature" in t for t in threats)
 
     def test_detect_macho_signature(self, default_config):
         """Test detection of Mach-O executable header."""
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.MACHO_EXECUTABLE)
-        content = sig + b"\x00" * 100
+        content = MACHO_EXECUTABLE + b"\x00" * 100
         threats = inspector.scan_content(content, "f.dat", "")
         assert any("Executable signature" in t for t in threats)
 
     def test_detect_java_class_signature(self, default_config):
         """Test detection of Java class file header."""
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.JAVA_CLASS)
-        content = sig + b"\x00" * 100
+        content = JAVA_CLASS + b"\x00" * 100
+        threats = inspector.scan_content(content, "f.dat", "")
+        assert any("Executable signature" in t for t in threats)
+
+    def test_detect_windows_shortcut_signature(self, default_config):
+        """Test detection of a .lnk ShellLinkHeader."""
+        inspector = ContentSecurityInspector(default_config)
+        content = b"\x00" * 32 + WINDOWS_SHORTCUT
         threats = inspector.scan_content(content, "f.dat", "")
         assert any("Executable signature" in t for t in threats)
 
     def test_detect_webshell_signature(self, default_config):
         """Test detection of web shell byte marker."""
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.WEBSHELL_PATTERNS)
-        content = b"padding" + sig + b"extra"
+        content = b"padding" + b"<?php system($_GET[0]); ?>"
         threats = inspector.scan_content(content, "f.dat", "")
         assert any("Web shell" in t or "Script" in t for t in threats)
 
@@ -80,17 +86,15 @@ class TestContentSecurityInspector:
     def test_detect_polyglot_in_image(self, default_config):
         """Test polyglot detection for image type."""
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.POLYGLOT_SIGNATURES)
-        # Header padding + polyglot sig after 16 bytes
-        content = b"\x00" * 20 + sig + b"\x00" * 50
+        # Header padding + polyglot sig after 20 bytes
+        content = b"\x00" * 20 + ZIP_LOCAL_HEADER + b"\x00" * 50
         threats = inspector.scan_content(content, "f.jpg", "image")
         assert any("Polyglot" in t for t in threats)
 
     def test_polyglot_skipped_for_zip(self, default_config):
         """Test polyglot check skipped for zip type."""
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.POLYGLOT_SIGNATURES)
-        content = sig + b"\x00" * 100
+        content = ZIP_LOCAL_HEADER + b"\x00" * 100
         threats = inspector.scan_content(content, "f.zip", "zip")
         polyglot = [t for t in threats if "Polyglot" in t]
         assert len(polyglot) == 0
@@ -107,6 +111,67 @@ class TestContentSecurityInspector:
         """Test empty content produces no threats."""
         inspector = ContentSecurityInspector(default_config)
         threats = inspector.scan_content(b"", "e.dat", "")
+        assert threats == []
+
+
+class TestShortSignatureFalsePositives:
+    """Short magics must not fire on incidental byte pairs."""
+
+    @pytest.mark.parametrize("size", [64 * 1024, 1024 * 1024])
+    def test_high_entropy_content_is_clean(self, default_config, size):
+        """Entropy-coded data contains every 2-byte pair by chance."""
+        inspector = ContentSecurityInspector(default_config)
+        content = entropy_bytes(size, seed=size)
+
+        threats = inspector.scan_content(content, "photo.jpg", "image")
+
+        assert threats == []
+
+    def test_entropy_content_really_contains_the_magics(self):
+        """Guard the premise: the bytes are present, just meaningless."""
+        content = entropy_bytes(1024 * 1024, seed=1024 * 1024)
+        assert b"MZ" in content
+        assert b"<%" in content
+
+    def test_bare_mz_without_pe_header_is_ignored(self, default_config):
+        """An `MZ` with no PE header behind it is not an executable."""
+        inspector = ContentSecurityInspector(default_config)
+        content = b"\x00" * 64 + b"MZ\x90\x00" + b"\x00" * 64
+        threats = inspector.scan_content(content, "f.jpg", "image")
+        assert threats == []
+
+    def test_asp_tag_in_binary_is_ignored(self, default_config):
+        """`<%` surrounded by binary carries no signal."""
+        inspector = ContentSecurityInspector(default_config)
+        content = b"\xff\xd8" + b"\x81\x9f" * 40 + b"<%" + b"\x81\x9f" * 40
+        threats = inspector.scan_content(content, "f.jpg", "image")
+        assert threats == []
+
+    def test_asp_tag_in_text_is_detected(self, default_config):
+        """`<%` inside real markup is still reported."""
+        inspector = ContentSecurityInspector(default_config)
+        content = b"<html><body>" + b"padding text " * 4 + b"<%= Request(1) %>"
+        threats = inspector.scan_content(content, "f.jpg", "image")
+        assert any("<%" in t for t in threats)
+
+    def test_truncated_pe_header_is_ignored(self, default_config):
+        """An `MZ` whose e_lfanew runs off the buffer is ignored."""
+        inspector = ContentSecurityInspector(default_config)
+        threats = inspector.scan_content(b"MZ", "f.dat", "")
+        assert threats == []
+
+    def test_zip_header_with_unknown_method_is_ignored(self, default_config):
+        """A `PK\\x03\\x04` with a bogus method is not a ZIP."""
+        inspector = ContentSecurityInspector(default_config)
+        bogus = (
+            b"PK\x03\x04"
+            + (20).to_bytes(2, "little")
+            + b"\x00\x00"
+            + (777).to_bytes(2, "little")
+            + b"\x00" * 16
+        )
+        content = b"\x00" * 20 + bogus
+        threats = inspector.scan_content(content, "f.jpg", "image")
         assert threats == []
 
 
@@ -142,14 +207,18 @@ class TestContentAnalysisIntegration:
         )
         validator = FileValidator(config=config)
 
-        sig = _sig(MalwareSignatureCategory.PE_EXECUTABLE)
         content = (
             b"\xff\xd8\xff\xe0"
             b"\x00\x10"
             b"JFIF\x00"
             b"\x01\x01\x00"
             b"\x00\x01\x00\x01"
-            b"\x00\x00" + b"\x00" * 50 + sig + b"\x00" * 50 + b"\xff\xd9"
+            b"\x00\x00"
+            + JPEG_SOF0
+            + b"\x00" * 50
+            + PE_EXECUTABLE
+            + b"\x00" * 50
+            + b"\xff\xd9"
         )
         file = mock_upload_file(filename="bad.jpg", content=content)
         with pytest.raises(FileProcessingError) as exc:
@@ -181,14 +250,18 @@ class TestContentAnalysisIntegration:
         )
         validator = FileValidator(config=config)
 
-        sig = _sig(MalwareSignatureCategory.PE_EXECUTABLE)
         content = (
             b"\xff\xd8\xff\xe0"
             b"\x00\x10"
             b"JFIF\x00"
             b"\x01\x01\x00"
             b"\x00\x01\x00\x01"
-            b"\x00\x00" + b"\x00" * 50 + sig + b"\x00" * 50 + b"\xff\xd9"
+            b"\x00\x00"
+            + JPEG_SOF0
+            + b"\x00" * 50
+            + PE_EXECUTABLE
+            + b"\x00" * 50
+            + b"\xff\xd9"
         )
         file = mock_upload_file(filename="img.jpg", content=content)
         # Should pass — analysis disabled
@@ -198,7 +271,6 @@ class TestContentAnalysisIntegration:
 class TestContentInspectorActivityPolyglot:
     def test_polyglot_in_activity_file_is_detected(self, default_config):
         inspector = ContentSecurityInspector(default_config)
-        sig = _sig(MalwareSignatureCategory.POLYGLOT_SIGNATURES)
-        content = b"\x00" * 20 + sig + b"\x00" * 50
+        content = b"\x00" * 20 + ZIP_LOCAL_HEADER + b"\x00" * 50
         threats = inspector.scan_content(content, "run.gpx", "activity")
         assert any("Polyglot" in t for t in threats)

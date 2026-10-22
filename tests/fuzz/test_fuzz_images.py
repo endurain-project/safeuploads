@@ -11,6 +11,7 @@ from safeuploads.exceptions import (
     FileValidationError,
 )
 from safeuploads.file_validator import FileValidator
+from tests.conftest import JPEG_SOF0
 
 
 class _MockFile:
@@ -39,6 +40,7 @@ class _MockFile:
 # JPEG header prefix
 _JPEG_HDR = (
     b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    + JPEG_SOF0
 )
 
 # PNG header prefix

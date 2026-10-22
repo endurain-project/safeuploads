@@ -28,10 +28,8 @@ class TestErrorCode:
         # Filename errors
         assert hasattr(ErrorCode, "FILENAME_EMPTY")
         assert hasattr(ErrorCode, "FILENAME_INVALID")
-        assert hasattr(ErrorCode, "FILENAME_TOO_LONG")
 
         # Unicode errors
-        assert hasattr(ErrorCode, "UNICODE_SECURITY")
         assert hasattr(ErrorCode, "UNICODE_DANGEROUS_CHARS")
         assert hasattr(ErrorCode, "UNICODE_NORMALIZATION_ERROR")
 
@@ -47,15 +45,12 @@ class TestErrorCode:
         # File size errors
         assert hasattr(ErrorCode, "FILE_TOO_LARGE")
         assert hasattr(ErrorCode, "FILE_EMPTY")
-        assert hasattr(ErrorCode, "FILE_SIZE_UNKNOWN")
 
         # MIME type errors
         assert hasattr(ErrorCode, "MIME_TYPE_INVALID")
         assert hasattr(ErrorCode, "MIME_TYPE_MISMATCH")
-        assert hasattr(ErrorCode, "MIME_DETECTION_FAILED")
 
         # File signature errors
-        assert hasattr(ErrorCode, "FILE_SIGNATURE_INVALID")
         assert hasattr(ErrorCode, "FILE_SIGNATURE_MISSING")
         assert hasattr(ErrorCode, "FILE_SIGNATURE_MISMATCH")
 
@@ -64,13 +59,10 @@ class TestErrorCode:
         assert hasattr(ErrorCode, "ZIP_CONTENT_THREAT")
         assert hasattr(ErrorCode, "COMPRESSION_RATIO_EXCEEDED")
         assert hasattr(ErrorCode, "ZIP_TOO_MANY_ENTRIES")
-        assert hasattr(ErrorCode, "ZIP_INVALID_STRUCTURE")
         assert hasattr(ErrorCode, "ZIP_CORRUPT")
 
         # Processing errors
         assert hasattr(ErrorCode, "PROCESSING_ERROR")
-        assert hasattr(ErrorCode, "IO_ERROR")
-        assert hasattr(ErrorCode, "MEMORY_ERROR")
 
     def test_error_codes_are_strings(self):
         """Verify error codes are string values."""

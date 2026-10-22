@@ -1,9 +1,8 @@
-"""Base validator interface for file security checks."""
+"""Base validator providing shared configuration and audit state."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..audit import SecurityAuditLogger
 
@@ -11,9 +10,14 @@ if TYPE_CHECKING:
     from ..config import FileSecurityConfig
 
 
-class BaseValidator(ABC):
+class BaseValidator:
     """
-    Abstract base class for file security validators.
+    Base class for file security validators.
+
+    Centralizes storage of the security configuration and the
+    shared audit logger. Concrete validators expose a
+    purpose-named entry point rather than a common ``validate``
+    method, because their inputs are not interchangeable.
 
     Attributes:
         config: File security configuration parameters.
@@ -30,16 +34,3 @@ class BaseValidator(ABC):
         self._audit = SecurityAuditLogger(
             enabled=config.limits.enable_audit_logging
         )
-
-    @abstractmethod
-    def validate(self, *args: Any, **kwargs: Any) -> Any:
-        """
-        Validate data using subclass-specific logic.
-
-        Args:
-            *args: Positional arguments for concrete validator.
-            **kwargs: Keyword arguments for concrete validator.
-
-        Returns:
-            Validated result defined by subclass.
-        """

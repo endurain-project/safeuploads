@@ -98,15 +98,6 @@ class TestUnicodeSecurityValidator:
         assert "\u0301" not in result  # No combining character
         assert "é" in result  # Has composed é
 
-    def test_validate_method_delegates_to_validate_unicode_security(
-        self, default_config
-    ):
-        """Test that validate() method delegates correctly."""
-        validator = UnicodeSecurityValidator(default_config)
-        filename = "test.txt"
-        result = validator.validate(filename)
-        assert result == filename
-
     def test_dangerous_char_position_tracking(self, default_config):
         """Test that character positions are correctly tracked."""
         validator = UnicodeSecurityValidator(default_config)

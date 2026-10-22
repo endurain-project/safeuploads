@@ -126,17 +126,6 @@ class TestExtensionSecurityValidator:
         with pytest.raises(ExtensionSecurityError):
             validator.validate_extensions("archive.Tar.Gz")
 
-    def test_validate_method_delegates_correctly(self, default_config):
-        """Test that validate() method delegates to validate_extensions()."""
-        validator = ExtensionSecurityValidator(default_config)
-
-        # Should not raise for safe extension
-        validator.validate("safe.txt")
-
-        # Should raise for dangerous extension
-        with pytest.raises(ExtensionSecurityError):
-            validator.validate("dangerous.exe")
-
     def test_all_parts_checked_for_dangerous_extensions(self, default_config):
         """Test that all extension parts are checked."""
         validator = ExtensionSecurityValidator(default_config)

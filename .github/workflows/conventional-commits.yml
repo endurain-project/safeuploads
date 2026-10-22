@@ -22,8 +22,13 @@ jobs:
           fetch-depth: 0
 
       - name: Validate PR title
-        # The PR title is passed through an environment variable to prevent
-        # shell injection via crafted titles (see security-and-owasp guidelines).
+        # The title only changes on opened/edited/reopened. Skipping it on
+        # `synchronize` keeps a push to a branch shared with another open PR
+        # (for example a WIP umbrella PR) from failing on that PR's title
+        # before the commit-range check below can run.
+        if: github.event.action != 'synchronize'
+        # The PR title is untrusted data: passed through an environment variable
+        # (never interpolated into the shell) to the trusted base-ref checker.
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |

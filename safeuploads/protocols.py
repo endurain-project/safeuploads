@@ -23,7 +23,7 @@ class SeekableFile(Protocol):
         tell: Return current file pointer position.
     """
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int = -1, /) -> bytes:
         """
         Read bytes from the file.
 
@@ -35,7 +35,7 @@ class SeekableFile(Protocol):
         """
         ...  # pragma: no cover
 
-    def seek(self, offset: int, whence: int = 0) -> int:
+    def seek(self, offset: int, whence: int = 0, /) -> int:
         """
         Move file pointer to specified position.
 
@@ -76,7 +76,7 @@ class UploadFileProtocol(Protocol):
     filename: str | None
     size: int | None
 
-    async def read(self, size: int = -1) -> bytes:
+    async def read(self, size: int = -1, /) -> bytes:
         """
         Read bytes from the uploaded file.
 
@@ -88,7 +88,7 @@ class UploadFileProtocol(Protocol):
         """
         ...  # pragma: no cover
 
-    async def seek(self, offset: int) -> int:
+    async def seek(self, offset: int) -> int | None:
         """
         Move file pointer to specified position.
 
@@ -96,6 +96,7 @@ class UploadFileProtocol(Protocol):
             offset: Position to move to in bytes.
 
         Returns:
-            New position in the file.
+            New position in the file, or None for implementations
+            (such as Starlette's UploadFile) that return nothing.
         """
         ...  # pragma: no cover

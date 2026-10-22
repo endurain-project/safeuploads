@@ -51,6 +51,34 @@ jobs:
         run: uv run mypy
 
   # ----------------------------------------------------------------
+  # Type check with ty (advisory)
+  # ty is pre-1.0 and runs beside mypy for evaluation: findings are
+  # reported but never block a merge. mypy is the gate.
+  # ----------------------------------------------------------------
+  typecheck-ty:
+    name: Type check (ty, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          version-file: pyproject.toml
+
+      - name: Install dependencies
+        # Same environment as the mypy step: ty resolves third-party types from it.
+        run: uv sync --frozen --dev --extra fastapi
+
+      - name: Type check (ty)
+        run: uv run --no-sync ty check --python .venv
+
+  # ----------------------------------------------------------------
   # Test
   # Runs the full pytest suite with coverage. Only runs after lint
   # passes so we don't waste runner minutes on broken code.

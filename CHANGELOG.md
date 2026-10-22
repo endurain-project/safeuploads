@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-10-22
+
+### Changed
+
+- Development: the Astral `ty` type checker runs beside mypy as an advisory CI job (`Type check (ty, advisory)`); mypy remains the gate.
+- `SeekableFile.read` and `seek` take positional-only parameters, so `BytesIO` and `SpooledTemporaryFile` satisfy the protocol under `ty`. No runtime change.
+- `UploadFileProtocol.seek` may return `int | None`, so FastAPI/Starlette's `UploadFile` (whose `seek` returns `None`) satisfies the protocol under strict type checking. No runtime change.
+
 ## [1.1.2] - 2026-10-22
 
 ### Changed
@@ -104,6 +112,7 @@ Initial release.
 - **MIME type verification:** magic-number validation for common file types.
 - Framework-agnostic async validation, a rich exception hierarchy with machine-readable error codes, secure defaults, and full type hints.
 
+[1.1.3]: https://github.com/endurain-project/safeuploads/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/endurain-project/safeuploads/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/endurain-project/safeuploads/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/endurain-project/safeuploads/compare/v1.0.1...v1.1.0

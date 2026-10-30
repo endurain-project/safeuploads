@@ -24,7 +24,7 @@ Secure file upload validation for Python 3.13+ applications. Catches dangerous f
 - Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing
 - Gzip archive validation with decompression bomb detection
 - Streaming validation for memory-efficient large file processing
-- Resource monitoring (CPU time and memory limits)
+- Resource monitoring (wall-clock time and memory limits)
 - Content analysis with malware signature and polyglot detection
 - Structured audit logging with correlation IDs
 - Rich exception hierarchy with machine-readable error codes
@@ -119,12 +119,12 @@ except FileValidationError as err:
 - **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
-- **Resource Monitoring**: CPU time and memory limits enforced via `ResourceMonitor`
+- **Resource Monitoring**: wall-clock time and memory limits enforced via `ResourceMonitor` during the work
 - **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing
 - **Gzip Support**: Gzip archive validation with decompression bomb detection
 - **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
 - **Audit Logging**: Structured security event logging with correlation IDs via `contextvars`
-- **Performance Optimizations**: Pre-compiled pattern sets, `frozenset` lookups, LRU-cached MIME guessing
+- **Performance Optimizations**: Pre-compiled pattern sets, `frozenset` lookups
 - **Rich Exception System**: Machine-readable error codes with detailed context
 - **Fuzzing Tests**: Hypothesis-based property testing for filenames, ZIP, images, and config
 

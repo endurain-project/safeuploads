@@ -16,12 +16,19 @@ intended upload directory.
 
 **Mitigations:**
 
-- `UnicodeSecurityValidator` normalizes Unicode to NFC form and
-  strips zero-width characters before any path checks.
-- `ExtensionSecurityValidator` rejects filenames containing
-  traversal sequences from `SuspiciousFilePattern.DIRECTORY_TRAVERSAL`.
-- Null bytes in filenames are rejected to prevent C-string
-  truncation attacks.
+- `UnicodeSecurityValidator` rejects filenames containing
+  dangerous Unicode characters (including zero-width ones) with
+  `UnicodeSecurityError` and normalizes the rest to NFC form
+  before any path checks.
+- Upload filenames are reduced to their last path component
+  (`os.path.basename`), and the characters `<>:"/\|?*` are
+  replaced with `_`, so traversal sequences cannot survive into
+  the sanitized name. The traversal patterns in
+  `SuspiciousFilePattern.DIRECTORY_TRAVERSAL` are applied to ZIP
+  entry names only.
+- Null bytes and other control characters (code points below 32
+  and `0x7f`) are stripped from upload filenames to prevent
+  C-string truncation attacks.
 - The extension and Windows reserved-name checks run again on
   the final name after it is shortened to
   `max_sanitized_name_length`, so truncation cannot expose a
@@ -230,6 +237,11 @@ extension.
 
 - `python-magic` detects the actual MIME type from file content
   (first 8 KB).
+- Detection never falls back to the filename extension. If
+  libmagic cannot be initialized, `FileValidator` still
+  constructs, logs an error and rejects every upload with
+  `MimeTypeError` (`MIME_DETECTION_FAILED`). A libmagic failure
+  or an empty result for a file is rejected the same way.
 - The detected MIME type is validated against the allowlist for
   the file type being validated.
 - File signatures (magic bytes) are verified independently of
@@ -274,12 +286,19 @@ to server-side file reads or SSRF.
 
 **Mitigations:**
 
-- `XmlSecurityValidator` uses `defusedxml` with
-  `forbid_dtd=True`, blocking all DTD declarations, external
+- `XmlSecurityValidator` parses with `defusedxml`'s
+  `DefusedXMLParser` and `forbid_dtd=True`, blocking all DTD declarations, external
   entities, and entity expansion attacks (billion laughs).
-- `DTDForbidden`, `EntitiesForbidden`, and
-  `ExternalReferenceForbidden` are caught and reported as
-  validation failures.
+- `DTDForbidden`, `EntitiesForbidden`,
+  `ExternalReferenceForbidden` and `ParseError` are caught and
+  re-raised as `FileProcessingError` (`PROCESSING_ERROR`).
+  `FileProcessingError` is not a `FileValidationError`, so a
+  host that catches only `FileValidationError` does not catch
+  them. `ResourceLimitError` is re-raised unchanged.
+- The document is fed to the parser in `chunk_size` chunks with
+  a target that builds no element tree, so memory does not grow
+  with the document, and the resource limits are checked after
+  each chunk.
 
 ---
 
@@ -295,9 +314,17 @@ significantly during validation consumes all available memory.
 - Streaming validation via `SpooledTemporaryFile` keeps memory
   usage under `max_memory_buffer_size` (default 10 MB) by
   spilling to disk for larger files.
-- `ResourceMonitor` tracks memory delta via
-  `resource.getrusage()` and enforces
-  `max_validation_memory_mb` (default 512 MB).
+- `ResourceMonitor` tracks the process peak RSS
+  (`resource.getrusage()` `ru_maxrss`, a high-water mark) and
+  enforces `max_validation_memory_mb` (default 512 MB) as growth
+  since the monitor started. The figure is a coarse upper
+  bound that concurrent work in the same process can also trip;
+  on Windows memory accounting is disabled.
+- The limit is checked at loop boundaries (upload streaming, ZIP
+  entry loops, gzip decompression, each XML chunk) and on exit,
+  and raises `ResourceLimitError` with
+  `RESOURCE_MEMORY_EXCEEDED`. A single blocking call is not
+  interrupted mid-call.
 - File size is enforced progressively during chunked reads,
   not after loading the entire file.
 
@@ -309,12 +336,25 @@ paths (e.g., ZIP with many entries, deeply nested structures).
 **Mitigations:**
 
 - `ResourceMonitor` enforces `max_validation_time_seconds`
-  (default 30 s) using `time.monotonic()`.
+  (default 30 s wall-clock, `time.monotonic()`) at the same loop
+  boundaries and on exit, raising `ResourceLimitError` with
+  `RESOURCE_TIME_EXCEEDED`. The monitor is held in a context
+  variable, which worker threads inherit through the copied
+  context. A single blocking call, such as one `zipfile`
+  central-directory parse, is not interrupted mid-call.
 - ZIP analysis has its own `zip_analysis_timeout` (default 5 s),
   compared against `time.monotonic()` on each entry during
   iteration.
 - `max_zip_entries` (default 10,000) caps per-archive entry
-  count.
+  count. Before `zipfile` parses the archive, the
+  central-directory headers are counted (located as `zipfile`
+  locates them, reading only the fixed headers and building no
+  `ZipInfo`) and the walk stops at `max_zip_entries + 1`, so an
+  archive with too many entries is rejected with
+  `ZIP_TOO_MANY_ENTRIES` at bounded cost, even if its end record
+  under-reports the count. Malformed directories are left to
+  `zipfile` (`ZIP_CORRUPT`). The parsed count is checked again
+  after parsing.
 
 ### Gzip Decompression Bombs
 
@@ -345,6 +385,14 @@ threat detections) go unlogged, preventing incident response.
   success, failure, and threat detection.
 - Correlation IDs (via `contextvars`) link all log messages
   from a single validation call.
+- The `filename`, `result` and `details` fields of an audit
+  record are attacker-controlled, so `SecurityAuditLogger`
+  escapes control, format (such as bidi overrides), surrogate,
+  private-use, unassigned and line or paragraph separator
+  characters with `repr()`-style escapes and caps each field at
+  1,024 characters, marking a cut with `...[truncated]`. A
+  newline in a filename therefore cannot forge a second log
+  record. Other log messages that print a filename use `%r`.
 - Audit logging is off by default (`enable_audit_logging=
   False`) to avoid noise in development, enabled in production.
 

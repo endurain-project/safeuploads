@@ -24,6 +24,7 @@ safeuploads/
 │   ├── compression_validator.py # ZIP bomb detection
 │   └── xml_validator.py       # XXE-safe XML parsing
 └── inspectors/
+    ├── base.py                # BaseInspector interface
     ├── zip_inspector.py       # Deep ZIP content analysis
     ├── gzip_inspector.py      # Gzip bomb detection
     └── content_inspector.py   # Malware/polyglot scanning
@@ -37,16 +38,16 @@ safeuploads/
 | `FileSecurityConfig` | Centralizes all configuration: allowed MIME types, extensions, blocked extensions, Unicode characters, and Windows reserved names. |
 | `SecurityLimits` | Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps. |
 | `BaseValidator` | Abstract base class; validators inherit and implement `validate()`. |
-| `UnicodeSecurityValidator` | NFC normalization, dangerous character detection, null byte rejection. |
-| `ExtensionSecurityValidator` | Allowlist/blocklist enforcement, compound extension checks. |
+| `UnicodeSecurityValidator` | NFC normalization and dangerous character detection (rejects with `UnicodeSecurityError`). |
+| `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. The allowlist check is `FileValidator._validate_file_extension`. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities. |
 | `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures. |
 | `GzipContentInspector` | Streams gzip decompression, checking ratio and size progressively. |
 | `ContentSecurityInspector` | Scans raw bytes for malware signatures, web shells, and polyglot patterns. |
-| `ResourceMonitor` | Context manager enforcing wall-clock time and memory limits. |
-| `SecurityAuditLogger` | Emits structured audit events under `safeuploads.audit` with correlation IDs. |
+| `ResourceMonitor` | Context manager enforcing wall-clock time and peak-RSS memory limits at loop boundaries and on exit. |
+| `SecurityAuditLogger` | Emits structured audit events under `safeuploads.audit` with correlation IDs, escaping and length-capping attacker-controlled fields. |
 
 ---
 
@@ -73,13 +74,13 @@ UploadFile
               │
               ▼
 ┌─────────────────────────────┐
-│ 3. File Size Check          │
-│    (chunked progressive)    │
+│ 3. ResourceMonitor START    │
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│ 4. ResourceMonitor START    │
+│ 4. File Size Check          │
+│    (chunked progressive)    │
 └─────────────┬───────────────┘
               │
               ▼
@@ -132,12 +133,12 @@ UploadFile
               │
               ▼
 ┌─────────────────────────────┐
-│ 3. File Size Check          │
+│ 3. ResourceMonitor START    │
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│ 4. ResourceMonitor START    │
+│ 4. File Size Check          │
 └─────────────┬───────────────┘
               │
               ▼
@@ -213,13 +214,13 @@ UploadFile (.gpx, .tcx, .fit)
                │
                ▼
 ┌──────────────────────────────┐
-│ 3. File Size Check           │
-│    (max_activity_file_size)  │
+│ 3. ResourceMonitor START     │
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│ 4. ResourceMonitor START     │
+│ 4. File Size Check           │
+│    (max_activity_file_size)  │
 └──────────────┬───────────────┘
                │
                ▼
@@ -268,13 +269,13 @@ UploadFile (.gz)
                │
                ▼
 ┌──────────────────────────────┐
-│ 3. File Size Check           │
-│    (max_gzip_size)           │
+│ 3. ResourceMonitor START     │
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│ 4. ResourceMonitor START     │
+│ 4. File Size Check           │
+│    (max_gzip_size)           │
 └──────────────┬───────────────┘
                │
                ▼
@@ -315,7 +316,7 @@ UploadFile (.gz)
 | Compression validation | ZIP central directory (metadata only) | Metadata |
 | ZIP content inspection | Per-entry read for binary/text scan | First 512 bytes per entry |
 | Gzip inspection | Chunked streaming decompression | `chunk_size` at a time |
-| XML validation | Full XML content parsed by `defusedxml` | Full file (bounded by `max_activity_file_size`) |
+| XML validation | Chunked feed to `defusedxml`'s parser, no element tree built | `chunk_size` at a time |
 | Content analysis | Full file byte scan | Bounded by `content_scan_max_size` (50 MB) |
 
 ---
@@ -349,24 +350,36 @@ machine-readable classification.
 ## Audit Event Flow
 
 ```
-FileValidator.validate_*()
+FileValidator.validate_*()  (_run_validation)
   │
   ├── set_correlation_id()
-  ├── audit.log(VALIDATION_START)
+  ├── audit.start()            # VALIDATION_START
   │
   ├── [validation pipeline]
   │   │
-  │   ├── ZipContentInspector ──► audit.log(THREAT_DETECTED)
-  │   ├── GzipContentInspector ─► audit.log(THREAT_DETECTED)
-  │   ├── CompressionValidator ─► audit.log(THREAT_DETECTED)
-  │   └── ContentSecurityInspector ► audit.log(THREAT_DETECTED)
+  │   ├── ZipContentInspector ──► audit.threat()
+  │   ├── GzipContentInspector ─► audit.threat()
+  │   ├── CompressionValidator ─► audit.threat()
+  │   └── ContentSecurityInspector ► audit.threat()
   │
-  ├── On success: audit.log(VALIDATION_SUCCESS)
-  ├── On failure: audit.log(VALIDATION_FAILURE)
+  ├── On success: audit.success()   # VALIDATION_SUCCESS
+  ├── On failure: audit.failure()   # VALIDATION_FAILURE
   │
   └── reset_correlation_id()
 ```
 
-All log records include the correlation ID in `extra` via
-`log_extra()`, enabling full request-level tracing across
-sub-components.
+`start`, `success`, `failure` and `threat` are methods of
+`SecurityAuditLogger`; each builds an `AuditEvent` and passes it
+to `log_event`. Audit records carry the correlation ID as
+`audit_correlation_id` in `extra`, together with the
+`audit_event_type`, `audit_filename`, `audit_result`,
+`audit_details`, `audit_duration_ms` and `audit_source_ip`
+fields. Other log records from validators and inspectors add
+`correlation_id` to `extra` through `log_extra()` where they call
+it, enabling request-level tracing across those sub-components.
+
+`log_event` escapes control, format, surrogate, private-use,
+unassigned and line or paragraph separator characters in the
+filename, result and details fields with `repr()`-style escapes,
+and caps each field at 1,024 characters, marking a cut with
+`...[truncated]`.

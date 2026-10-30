@@ -14,10 +14,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Nested archives are detected by magic bytes (`ZipThreatCategory.NESTED_ARCHIVE_SIGNATURES`) as well as by extension, so ZIP-based formats such as `.docx`, `.xlsx` and `.jar` inside a ZIP are rejected unless `allow_nested_archives=True`.
 - The null-byte check on ZIP entry names now inspects the raw name; it previously could never trigger.
 - Directory entries that declare data are rejected with `ZIP_INVALID_STRUCTURE`.
+- Audit records escape control, format, surrogate, private-use, unassigned and line/paragraph separator characters in the filename, result and details fields and cap each at 1,024 characters (`...[truncated]` marks a cut), so an attacker-controlled filename cannot forge log lines. Other log messages that print a filename use `%r`.
+- MIME detection no longer falls back to the filename extension. A libmagic failure or empty result rejects the upload with `MIME_DETECTION_FAILED`.
+- The image header is read from byte 0 regardless of where the host left the stream position.
+- The `.tar.Z` compound extension is now matched (stored as `.tar.z`, since filenames are lowercased before matching); the old spelling could never match.
+- `max_validation_time_seconds` and `max_validation_memory_mb` are enforced during the work, not only when validation ends: the upload streaming loops, the ZIP compression and inspection entry loops, the gzip decompression loop and each XML chunk check the active `ResourceMonitor`. A single blocking call, such as one `zipfile` central-directory parse, is not interrupted mid-call.
+- `ResourceLimitError` propagates from the inspectors and validators with its own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED` code; it was wrapped into a generic internal-error `FileProcessingError`.
+- The ZIP entry count is bounded before `zipfile` parses the archive: the central-directory headers are counted, stopping at `max_zip_entries + 1`, so an archive with too many entries is rejected with `ZIP_TOO_MANY_ENTRIES` at bounded cost even if its end record under-reports the count.
+- GPX and TCX files are parsed in `chunk_size` chunks with a target that builds no element tree, so memory does not grow with the document. The DTD, entity and external-reference protections are unchanged.
 
 ### Changed
 
 - **Breaking:** these checks reject uploads that 1.1.3 accepted under the default configuration (for example `.bin`, `.ini`, `.cfg` or `.docx` entries inside a ZIP).
+- **Breaking:** `FileValidator(config)` raises `FileSecurityConfigurationError` when `validate_instance()` reports any error-severity issue; it only logged them before. New error-severity checks: type checks on every `SecurityLimits` field, positive values for the size, buffer, chunk, memory, scan, timeout, filename/path length and entry-count limits, `max_zip_depth >= 0`, allow-lists for activity and gzip files checked like image and ZIP, and uppercase extension entries. Warnings are still only logged.
+- **Breaking:** uploads are rejected with `MIME_DETECTION_FAILED` when libmagic is unavailable or fails. `FileValidator` still constructs without libmagic, sets `magic_available=False` and logs an error.
 
 ## [1.1.3] - 2026-10-22
 

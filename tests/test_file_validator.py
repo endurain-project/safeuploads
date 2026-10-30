@@ -180,6 +180,75 @@ class TestSanitizeFilename:
         assert first != second
 
 
+class TestSanitizeFilenameTruncation:
+    """Test that extension checks run on the truncated filename."""
+
+    def test_truncation_exposing_php_is_blocked(self):
+        """Test that truncation cannot expose a blocked extension."""
+        validator = FileValidator()
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._sanitize_filename("A" * 96 + ".phpBBBB.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    def test_truncation_exposing_js_is_blocked(self):
+        """Test that truncation cannot expose a blocked .js extension."""
+        validator = FileValidator()
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._sanitize_filename("A" * 97 + ".jsQ.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    def test_truncation_exposing_compound_extension_is_blocked(self):
+        """Test that truncation cannot expose a compound extension."""
+        validator = FileValidator()
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._sanitize_filename("A" * 96 + ".tar.gzXX.gz")
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
+        )
+
+    @pytest.mark.asyncio
+    async def test_validate_image_truncation_exposing_php_is_blocked(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Test end-to-end rejection of a truncation-exposed extension."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="A" * 96 + ".phpBBBB.jpg", content=valid_jpeg_bytes
+        )
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    def test_long_name_truncated_to_limit(self):
+        """Test that a name over the limit is truncated to 100 chars."""
+        validator = FileValidator()
+        result = validator._sanitize_filename("A" * 150 + ".jpg")
+
+        assert result == "A" * 100 + ".jpg"
+
+    def test_name_at_limit_unchanged(self):
+        """Test that a 100-char name part is returned unchanged."""
+        validator = FileValidator()
+        result = validator._sanitize_filename("A" * 100 + ".jpg")
+
+        assert result == "A" * 100 + ".jpg"
+
+    def test_name_one_over_limit_truncated(self):
+        """Test that a 101-char name part is truncated to 100 chars."""
+        validator = FileValidator()
+        result = validator._sanitize_filename("A" * 101 + ".jpg")
+
+        assert result == "A" * 100 + ".jpg"
+
+
 class TestValidateFilename:
     """Test filename validation."""
 

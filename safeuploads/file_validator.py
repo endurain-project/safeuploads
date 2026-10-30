@@ -415,9 +415,11 @@ class FileValidator:
         if not name_part or name_part.strip() == "":
             filename = f"file_{secrets.token_hex(8)}{ext_part}"
 
-        # Final check: ensure the sanitized filename
-        # doesn't become a reserved name
+        # Final checks on the returned name: truncation can expose a
+        # blocked extension or a reserved name that the earlier checks
+        # never saw, so both run again on the final filename
         self.windows_validator.validate_windows_reserved_names(filename)
+        self.extension_validator.validate_extensions(filename)
 
         # Log with %r so control characters in the raw input are
         # escaped rather than injected into the log stream.

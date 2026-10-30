@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- ZIP entries whose content cannot be opened or read (encrypted flag, unsupported compression method, CRC mismatch, local/central header name mismatch) are now rejected with `ZIP_CONTENT_THREAT`; they were accepted unscanned.
+- Uploaded filenames truncated to `max_sanitized_name_length` are re-checked for blocked extensions, so a name such as `<96 chars>.phpXXXX.jpg` can no longer become `….php.jpg`.
+- ZIP entries with an extension in `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES` or `SYSTEM_FILES` are now rejected, as the threat model already documented.
+- Nested archives are detected by magic bytes (`ZipThreatCategory.NESTED_ARCHIVE_SIGNATURES`) as well as by extension, so ZIP-based formats such as `.docx`, `.xlsx` and `.jar` inside a ZIP are rejected unless `allow_nested_archives=True`.
+- The null-byte check on ZIP entry names now inspects the raw name; it previously could never trigger.
+- Directory entries that declare data are rejected with `ZIP_INVALID_STRUCTURE`.
+
+### Changed
+
+- **Breaking:** these checks reject uploads that 1.1.3 accepted under the default configuration (for example `.bin`, `.ini`, `.cfg` or `.docx` entries inside a ZIP).
+
 ## [1.1.3] - 2026-10-22
 
 ### Changed

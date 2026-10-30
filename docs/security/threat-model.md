@@ -22,6 +22,10 @@ intended upload directory.
   traversal sequences from `SuspiciousFilePattern.DIRECTORY_TRAVERSAL`.
 - Null bytes in filenames are rejected to prevent C-string
   truncation attacks.
+- The extension and Windows reserved-name checks run again on
+  the final name after it is shortened to
+  `max_sanitized_name_length`, so truncation cannot expose a
+  blocked extension.
 
 ### Unicode Obfuscation (CWE-116)
 
@@ -92,6 +96,10 @@ uncompressed), exhausting disk and memory.
 - `max_uncompressed_size` (default 1 GB) caps total extraction.
 - `max_individual_file_size` (default 500 MB) caps per-entry
   size.
+- A directory entry (name ending in `/`) that declares
+  uncompressed data is rejected with `ZIP_INVALID_STRUCTURE`, so
+  data cannot hide from the size and ratio checks behind a
+  directory name.
 - `zip_analysis_timeout` (default 5 s) prevents slow analysis.
 - All timeout checks use `time.monotonic()` to prevent bypass
   via NTP clock adjustment.
@@ -140,6 +148,16 @@ single-level content inspection.
 - When `allow_nested_archives=False` (default), any entry with
   an extension in `ZipThreatCategory.NESTED_ARCHIVES` raises
   `ZIP_NESTED_ARCHIVE`.
+- Extensions are taken from the entry name after stripping
+  trailing dots and spaces, as Windows drops them on
+  extraction.
+- When `scan_zip_content` is enabled (default) and nested
+  archives are not allowed, the first bytes of each entry are
+  checked against `ZipThreatCategory.NESTED_ARCHIVE_SIGNATURES`
+  (ZIP and ZIP-based formats such as `.docx` and `.jar`, gzip,
+  bzip2, xz, 7z and RAR). A renamed archive is rejected and
+  reported under `ZIP_CONTENT_THREAT`. Tar is recognised by
+  extension only.
 - When allowed, recursive inspection applies all depth, count,
   and hash checks.
 
@@ -156,8 +174,10 @@ outside the extraction directory (Zip Slip).
 
 - `ZipContentInspector._inspect_zip_entry()` checks for
   traversal patterns and absolute paths.
-- Null bytes in entry filenames are rejected first to prevent
-  C-string truncation bypasses (CWE-158).
+- Null bytes are rejected first, checked on the raw entry name
+  (`ZipInfo.orig_filename`), to prevent C-string truncation
+  bypasses (CWE-158). Python's `zipfile` truncates `filename`
+  at the first NUL, so the raw name is needed.
 
 ### Executable Content in ZIP
 
@@ -166,13 +186,25 @@ hidden inside ZIP archives.
 
 **Mitigations:**
 
-- Entry extensions are checked against
+- The entry's final extension, after stripping trailing dots
+  and spaces, is checked against
   `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, and
   `SYSTEM_FILES`.
 - Binary content is scanned for executable magic bytes from
-  `SuspiciousFilePattern.EXECUTABLE_SIGNATURES`.
+  `SuspiciousFilePattern.EXECUTABLE_SIGNATURES`. The first 512
+  bytes of each entry are read for this scan.
 - Text content is scanned for script injection patterns
-  (shebangs, `eval()`, `<?php`, `<script`).
+  (shebangs, `eval()`, `<?php`, `<script`) in the first 512
+  bytes of each entry.
+- An entry whose content cannot be opened or read (encrypted,
+  unsupported compression method, local header name differing
+  from the central directory, or a CRC mismatch seen during
+  the read) is rejected with `ZIP_CONTENT_THREAT`, because its
+  content cannot be inspected.
+- A CRC mismatch is seen by this read only when the read
+  reaches the end of the entry's data, which is the case for
+  small entries. For larger entries it is caught only with
+  `verify_zip_decompression=True`.
 
 ### Symbolic Links in ZIP (CWE-59)
 

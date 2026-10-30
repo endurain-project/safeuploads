@@ -168,9 +168,11 @@ UploadFile
 │    │   ├── Path traversal   │
 │    │   ├── Absolute paths   │
 │    │   └── Symlinks         │
-│    ├── Extension checks     │
+│    ├── Dangerous entry types│
 │    ├── Binary signatures    │
+│    ├── Nested archive magic │
 │    ├── Script patterns      │
+│    ├── Unreadable entries   │
 │    └── Recursive inspection │
 │        ├── Depth tracking   │
 │        ├── Hash tracking    │
@@ -311,7 +313,7 @@ UploadFile (.gz)
 | MIME detection | First 8 KB via `python-magic` | 8 KB |
 | Signature check | First 4-12 bytes depending on format | Minimal |
 | Compression validation | ZIP central directory (metadata only) | Metadata |
-| ZIP content inspection | Per-entry read for binary/text scan | Per-entry, bounded by `max_individual_file_size` |
+| ZIP content inspection | Per-entry read for binary/text scan | First 512 bytes per entry |
 | Gzip inspection | Chunked streaming decompression | `chunk_size` at a time |
 | XML validation | Full XML content parsed by `defusedxml` | Full file (bounded by `max_activity_file_size`) |
 | Content analysis | Full file byte scan | Bounded by `content_scan_max_size` (50 MB) |

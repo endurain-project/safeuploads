@@ -1785,3 +1785,111 @@ class TestZipInspectorLimitBoundaries:
             )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
+
+
+def _gzip_with_name(content: bytes, name: str) -> bytes:
+    """
+    Build a gzip stream whose header stores the given filename.
+
+    Args:
+        content: Data to compress.
+        name: Filename written to the gzip header (FNAME field).
+
+    Returns:
+        Raw gzip bytes.
+    """
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename=name, mode="wb", fileobj=buf, mtime=0) as gz:
+        gz.write(content)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def nested_allowed_inspector() -> ZipContentInspector:
+    """Return an inspector that permits nested archives."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(allow_nested_archives=True)
+    return ZipContentInspector(config)
+
+
+class TestGzipEntryContent:
+    """Gzip entries are scanned by their decompressed start."""
+
+    def test_compressed_bytes_matching_pattern_accepted(
+        self, nested_allowed_inspector
+    ):
+        """A valid gzip whose raw bytes contain ``<%`` is accepted."""
+        entry = _gzip_with_name(b".FIT" + b"\x00" * 64, "a<%b.fit")
+        assert b"<%" in entry[:512]
+        nested_allowed_inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"activities/1.fit.gz": entry}))
+        )
+
+    def test_benign_text_gzip_accepted(self, nested_allowed_inspector):
+        """A gzip of benign text with ``<%`` in its header is accepted."""
+        entry = _gzip_with_name(b"<gpx></gpx>", "a<%b.gpx")
+        nested_allowed_inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"activities/1.gpx.gz": entry}))
+        )
+
+    def test_gzipped_script_rejected(self, nested_allowed_inspector):
+        """A script inside a valid gzip entry is detected."""
+        data = _build_zip(
+            {"x.txt.gz": gzip.compress(b"<?php eval($_GET['x']); ?>")}
+        )
+        with pytest.raises(ZipContentError, match="Script content"):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_gzipped_executable_rejected(self, nested_allowed_inspector):
+        """An executable inside a valid gzip entry is detected."""
+        data = _build_zip({"x.gz": gzip.compress(b"\x7fELF" + b"\x00" * 64)})
+        with pytest.raises(ZipContentError, match="Executable content"):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_plaintext_script_named_gz_rejected(
+        self, nested_allowed_inspector
+    ):
+        """A plaintext script named ``.fit.gz`` is still scanned."""
+        data = _build_zip({"x.fit.gz": b"<?php eval($_GET['x']); ?>"})
+        with pytest.raises(ZipContentError, match="Script content"):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_executable_named_gz_rejected(self, nested_allowed_inspector):
+        """An executable named ``.fit.gz`` is still rejected."""
+        data = _build_zip({"x.fit.gz": b"MZ" + b"\x00" * 64})
+        with pytest.raises(ZipContentError, match="Executable content"):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"\x1f\x8b<?php eval($_GET['x']); ?>",
+            gzip.compress(b"x" * 4096)[:12] + b"<?php eval(1); ?>" * 30,
+            gzip.compress(bytes(range(256)) * 16)[:40],
+        ],
+        ids=["magic-only", "header-then-plaintext", "truncated"],
+    )
+    def test_invalid_gzip_rejected(self, nested_allowed_inspector, content):
+        """Gzip magic without a readable stream is rejected."""
+        data = _build_zip({"x.fit.gz": content})
+        with pytest.raises(
+            ZipContentError, match="Entry content could not be inspected"
+        ):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_gzip_in_gzip_rejected(self, nested_allowed_inspector):
+        """A gzip stream inside a gzip entry is rejected."""
+        inner = gzip.compress(b"<?php eval($_GET['x']); ?>")
+        data = _build_zip({"x.fit.gz": gzip.compress(inner)})
+        with pytest.raises(
+            ZipContentError, match="Entry content could not be inspected"
+        ):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_script_in_txt_entry_still_rejected(
+        self, nested_allowed_inspector
+    ):
+        """A plain ``.txt`` entry with a script is still rejected."""
+        data = _build_zip({"notes.txt": b"<?php eval($_GET['x']); ?>"})
+        with pytest.raises(ZipContentError, match="Script content"):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))

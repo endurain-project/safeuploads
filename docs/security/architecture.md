@@ -174,6 +174,7 @@ UploadFile
 │    ├── Binary signatures    │
 │    ├── Nested archive magic │
 │    ├── Script patterns      │
+│    ├── Gzip entry start     │
 │    ├── Unreadable entries   │
 │    └── Recursive inspection │
 │        ├── Depth tracking   │

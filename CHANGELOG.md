@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Nested archives are detected by magic bytes (`ZipThreatCategory.NESTED_ARCHIVE_SIGNATURES`) as well as by extension, so ZIP-based formats such as `.docx`, `.xlsx` and `.jar` inside a ZIP are rejected unless `allow_nested_archives=True`.
 - The null-byte check on ZIP entry names now inspects the raw name; it previously could never trigger.
 - Directory entries that declare data are rejected with `ZIP_INVALID_STRUCTURE`.
+- ZIP entries that start with the gzip magic are scanned by their first 512 decompressed bytes for executable signatures and script patterns. The compressed bytes were scanned before, which missed real content and rejected valid entries such as `.fit.gz` files from Strava exports when the compressed data happened to contain a pattern such as `<%`.
 - Audit records escape control, format, surrogate, private-use, unassigned and line/paragraph separator characters in the filename, result and details fields and cap each at 1,024 characters (`...[truncated]` marks a cut), so an attacker-controlled filename cannot forge log lines. Other log messages that print a filename use `%r`.
 - MIME detection no longer falls back to the filename extension. A libmagic failure or empty result rejects the upload with `MIME_DETECTION_FAILED`.
 - The image header is read from byte 0 regardless of where the host left the stream position.
@@ -27,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - **Breaking:** these checks reject uploads that 1.1.3 accepted under the default configuration (for example `.bin`, `.ini`, `.cfg` or `.docx` entries inside a ZIP).
+- **Breaking:** with `allow_nested_archives=True`, ZIP entries that start with the gzip magic but are not a readable gzip stream, or that contain a gzip stream inside the gzip stream, are rejected with `ZIP_CONTENT_THREAT`.
 - **Breaking:** `FileValidator(config)` raises `FileSecurityConfigurationError` when `validate_instance()` reports any error-severity issue; it only logged them before. New error-severity checks: type checks on every `SecurityLimits` field, positive values for the size, buffer, chunk, memory, scan, timeout, filename/path length and entry-count limits, `max_zip_depth >= 0`, allow-lists for activity and gzip files checked like image and ZIP, and uppercase extension entries. Warnings are still only logged.
 - **Breaking:** ZIP archives with bytes outside their listed entries, such as trailing padding written by `bsdtar` to a pipe, or with non-empty stored entries that use a data descriptor, are rejected with `ZIP_INVALID_STRUCTURE`.
 - **Breaking:** uploads are rejected with `MIME_DETECTION_FAILED` when libmagic is unavailable or fails. `FileValidator` still constructs without libmagic, sets `magic_available=False` and logs an error.

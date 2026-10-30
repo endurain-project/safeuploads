@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import logging
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_GZIP_MAGIC = b"\x1f\x8b"
 
 
 class ZipContentInspector(BaseInspector):
@@ -499,7 +502,11 @@ class ZipContentInspector(BaseInspector):
                     )
 
                 ext = os.path.splitext(entry.filename)[1].lower()
-                if (
+                if content_sample.startswith(_GZIP_MAGIC):
+                    # Compressed bytes only match script patterns by
+                    # chance; scan the decompressed start instead
+                    threats.extend(self._inspect_gzip_entry(entry, zip_file))
+                elif (
                     ext not in self._binary_exts
                     and self._contains_script_patterns(
                         content_sample, entry.filename
@@ -518,6 +525,59 @@ class ZipContentInspector(BaseInspector):
             threats.append(
                 f"Entry content could not be inspected: '{entry.filename}'"
             )
+
+        return threats
+
+    def _inspect_gzip_entry(
+        self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
+    ) -> list[str]:
+        """
+        Inspect the decompressed start of a gzip ZIP entry.
+
+        At most 512 decompressed bytes are read, so the cost does not
+        depend on the stream's expansion. The script scan is skipped
+        when the name without its ``.gz`` suffix has a binary
+        extension (``x.fit.gz``). A gzip stream inside the gzip stream
+        is reported as uninspectable, since its content cannot be
+        scanned at this depth.
+
+        Args:
+            entry: ZIP entry whose content starts with the gzip magic.
+            zip_file: Parent ZIP archive.
+
+        Returns:
+            List of content threat descriptions.
+
+        Raises:
+            gzip.BadGzipFile: If the entry is not a valid gzip stream.
+            zlib.error: If the compressed data is invalid.
+            EOFError: If the stream ends before the sample is read.
+        """
+        with (
+            zip_file.open(entry, "r") as file,
+            gzip.GzipFile(fileobj=file, mode="rb") as gz,
+        ):
+            sample = gz.read(512)
+
+        if sample.startswith(_GZIP_MAGIC):
+            return [
+                f"Entry content could not be inspected: '{entry.filename}'"
+            ]
+
+        threats = []
+        if matches_signature_prefix(sample, self._exec_signatures):
+            threats.append(
+                f"Executable content detected in '{entry.filename}'"
+            )
+
+        name, ext = os.path.splitext(entry.filename)
+        if ext.lower() == ".gz":
+            ext = os.path.splitext(name)[1]
+        if (
+            ext.lower() not in self._binary_exts
+            and self._contains_script_patterns(sample, entry.filename)
+        ):
+            threats.append(f"Script content detected in '{entry.filename}'")
 
         return threats
 

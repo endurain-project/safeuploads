@@ -240,6 +240,15 @@ hidden inside ZIP archives.
 - Text content is scanned for script injection patterns
   (shebangs, `eval()`, `<?php`, `<script`) in the first 512
   bytes of each entry.
+- An entry that starts with the gzip magic (`\x1f\x8b`) is
+  decided by content, not name: its first 512 decompressed bytes
+  are checked for executable signatures and script patterns, so
+  compressed bytes cannot match a pattern by chance. The script
+  scan is skipped when the name without `.gz` has a binary
+  extension (`x.fit.gz`). An entry with the gzip magic that is
+  not a readable gzip stream, or whose content is itself gzip,
+  is rejected as uninspectable. Only this start is decompressed,
+  so the expansion of the whole stream is not checked here.
 - An entry whose content cannot be opened or read (encrypted,
   unsupported compression method, local header name differing
   from the central directory, or a CRC mismatch seen during

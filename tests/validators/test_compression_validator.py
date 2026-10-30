@@ -860,3 +860,78 @@ class TestVerifyZipDecompression:
         validator.validate_zip_compression_ratio(
             io.BytesIO(zip_bytes), len(zip_bytes)
         )
+
+
+class TestDirectoryEntryWithData:
+    """Tests that directory-named entries cannot carry file data."""
+
+    @staticmethod
+    def _zip_with_entry(name: str, data: bytes, compression: int) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=compression) as zf:
+            zf.writestr(name, data)
+        return buf.getvalue()
+
+    def test_reject_directory_entry_with_compressed_zeros(self):
+        """A 'd/' entry holding 20MB of zeros is rejected as invalid."""
+        config = FileSecurityConfig()
+        validator = CompressionSecurityValidator(config)
+        zip_bytes = self._zip_with_entry(
+            "d/", b"\x00" * (20 * 1024 * 1024), zipfile.ZIP_DEFLATED
+        )
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    def test_reject_directory_entry_with_one_stored_byte(self):
+        """A 'd/' entry declaring a single stored byte is rejected."""
+        config = FileSecurityConfig()
+        validator = CompressionSecurityValidator(config)
+        zip_bytes = self._zip_with_entry("d/", b"x", zipfile.ZIP_STORED)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(zip_bytes), len(zip_bytes)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    def test_accept_empty_stored_directory_entry(self):
+        """An empty stored 'd/' entry is a valid directory."""
+        config = FileSecurityConfig()
+        validator = CompressionSecurityValidator(config)
+        zip_bytes = self._zip_with_entry("d/", b"", zipfile.ZIP_STORED)
+
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
+
+    def test_accept_empty_deflated_directory_entry(self):
+        """
+        An empty deflated 'd/' entry is valid even though zipfile
+        records a 2-byte compressed size for it.
+        """
+        config = FileSecurityConfig()
+        validator = CompressionSecurityValidator(config)
+        zip_bytes = self._zip_with_entry("d/", b"", zipfile.ZIP_DEFLATED)
+
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )
+
+    def test_accept_mkdir_directory_entry(self):
+        """A directory created with ZipFile.mkdir is valid."""
+        config = FileSecurityConfig()
+        validator = CompressionSecurityValidator(config)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.mkdir("d")
+        zip_bytes = buf.getvalue()
+
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(zip_bytes), len(zip_bytes)
+        )

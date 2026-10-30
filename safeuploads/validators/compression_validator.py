@@ -66,9 +66,10 @@ class CompressionSecurityValidator(BaseValidator):
         Raises:
             ZipBombError: If compression ratio exceeds maximum allowed
                 or total uncompressed size is too large.
-            CompressionSecurityError: If ZIP structure is invalid, too
-                many entries, nested archives detected, or individual
-                file too large.
+            CompressionSecurityError: If ZIP structure is invalid
+                (including a directory entry that declares file data),
+                too many entries, nested archives detected, or
+                individual file too large.
             FileProcessingError: If unexpected error occurs during
                 validation such as memory errors or I/O errors.
         """
@@ -149,8 +150,29 @@ class CompressionSecurityValidator(BaseValidator):
                             compression_ratio=0,
                         )
 
-                    # Skip directories
+                    # Directory entries hold no data; a declared
+                    # file_size means the name hides file content.
+                    # compress_size is not checked because some
+                    # writers store 2 bytes for empty directories.
                     if entry.is_dir():
+                        if entry.file_size > 0:
+                            logger.warning(
+                                "Directory entry carries data",
+                                extra=log_extra(
+                                    {
+                                        "error_type": "zip_dir_with_data",
+                                        "file_name": entry.filename,
+                                        "file_size": entry.file_size,
+                                    }
+                                ),
+                            )
+                            raise CompressionSecurityError(
+                                message=(
+                                    "Directory entry carries data:"
+                                    f" '{entry.filename}'"
+                                ),
+                                error_code=ErrorCode.ZIP_INVALID_STRUCTURE,
+                            )
                         continue
 
                     # Track uncompressed size

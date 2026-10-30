@@ -8,7 +8,7 @@ from safeuploads.exceptions import (
     ErrorCode,
     ResourceLimitError,
 )
-from safeuploads.utils import ResourceMonitor
+from safeuploads.utils import ResourceMonitor, check_resource_limits
 
 
 class TestResourceMonitorInit:
@@ -227,21 +227,120 @@ class TestResourceMonitorMemoryExceeded:
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        _calls = {"n": 0}
-
-        def _fake_rss() -> int:
-            _calls["n"] += 1
-            if _calls["n"] == 1:
-                return 100 * 1024 * 1024  # 100 MB at entry
-            return 700 * 1024 * 1024  # 700 MB later → delta 600 MB
-
+        rss_mb = {"value": 100}  # 100 MB at entry
         monkeypatch.setattr(
-            ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
+            ResourceMonitor,
+            "_get_peak_rss_bytes",
+            staticmethod(lambda: rss_mb["value"] * 1024 * 1024),
         )
 
-        monitor = ResourceMonitor(max_time_seconds=30.0, max_memory_mb=512)
-        monitor.__enter__()
-        with pytest.raises(ResourceLimitError) as exc_info:
-            monitor.check_memory()
+        # Exit the block so the monitor stops being the active one
+        with ResourceMonitor(
+            max_time_seconds=30.0, max_memory_mb=512
+        ) as monitor:
+            rss_mb["value"] = 700  # 700 MB later → delta 600 MB
+            with pytest.raises(ResourceLimitError) as exc_info:
+                monitor.check_memory()
+            rss_mb["value"] = 100
 
         assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+
+
+def _check_repeatedly(limit: float, clock, progress: list[int]) -> None:
+    """Run up to 100 checks in a monitor while the clock advances."""
+    with ResourceMonitor(max_time_seconds=limit):
+        clock.advancing = True
+        for _ in range(100):
+            check_resource_limits()
+            progress.append(1)
+
+
+def _nested_then_outer_check(clock, progress: list[int]) -> None:
+    """Spend outer budget in a nested monitor, then check the outer."""
+    with ResourceMonitor(max_time_seconds=10.0):
+        with ResourceMonitor(max_time_seconds=1000.0):
+            clock.advancing = True
+            clock.step = 50.0
+            check_resource_limits()
+        clock.step = 0.0
+        check_resource_limits()
+        progress.append(1)
+
+
+class TestCheckResourceLimits:
+    """Test enforcement of the active monitor during the work."""
+
+    def test_no_active_monitor_is_a_no_op(self, fake_clock):
+        """Test the check does nothing outside a monitor."""
+        fake_clock.advancing = True
+        fake_clock.step = 1000.0
+        check_resource_limits()
+
+    def test_within_limits_passes(self, fake_clock):
+        """Test the check passes while the work stays in budget."""
+        progress: list[int] = []
+        fake_clock.step = 0.05
+        _check_repeatedly(10.0, fake_clock, progress)
+        assert len(progress) == 100
+
+    def test_time_exceeded_raises_mid_operation(self, fake_clock):
+        """Test the check raises as soon as the time limit is spent."""
+        progress: list[int] = []
+        with pytest.raises(ResourceLimitError) as exc_info:
+            _check_repeatedly(10.0, fake_clock, progress)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert len(progress) == 10
+
+    def test_memory_exceeded_raises_mid_operation(self, monkeypatch):
+        """
+        Test the check raises when peak RSS grows past the limit.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        rss_mb = {"value": 100}
+        monkeypatch.setattr(
+            ResourceMonitor,
+            "_get_peak_rss_bytes",
+            staticmethod(lambda: rss_mb["value"] * 1024 * 1024),
+        )
+        with ResourceMonitor(max_memory_mb=512):
+            check_resource_limits()
+            rss_mb["value"] = 700
+            with pytest.raises(ResourceLimitError) as exc_info:
+                check_resource_limits()
+            rss_mb["value"] = 100
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+
+    def test_monitor_inactive_after_exit(self, fake_clock):
+        """Test leaving the block deactivates the monitor."""
+        with ResourceMonitor(max_time_seconds=10.0):
+            pass
+        fake_clock.advancing = True
+        fake_clock.step = 1000.0
+        check_resource_limits()
+
+    def test_monitor_inactive_after_exception(self, fake_clock):
+        """Test an exception leaving the block deactivates it."""
+
+        def _fail_inside_monitor() -> None:
+            with ResourceMonitor(max_time_seconds=10.0):
+                raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            _fail_inside_monitor()
+        fake_clock.advancing = True
+        fake_clock.step = 1000.0
+        check_resource_limits()
+
+    def test_nested_monitor_restores_outer(self, fake_clock):
+        """Test the outer monitor is enforced again after a nested one."""
+        progress: list[int] = []
+        with pytest.raises(ResourceLimitError) as exc_info:
+            _nested_then_outer_check(fake_clock, progress)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        # Raised by the check after the nested block, not at exit
+        assert progress == []

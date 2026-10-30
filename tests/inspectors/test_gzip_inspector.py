@@ -1,6 +1,7 @@
 """Tests for GzipContentInspector."""
 
 import gzip
+import hashlib
 import io
 
 import pytest
@@ -10,6 +11,7 @@ from safeuploads.exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipBombError,
 )
 from safeuploads.inspectors.gzip_inspector import GzipContentInspector
@@ -253,3 +255,43 @@ class TestGzipInspectorEdgeCases:
             )
         assert exc.value.error_code == ErrorCode.ZIP_CORRUPT
         assert "corrupted" in str(exc.value).lower()
+
+
+class TestGzipResourceLimits:
+    """Tests that the active resource monitor stops decompression."""
+
+    @staticmethod
+    def _gzip_of_chunks(chunks: int) -> bytes:
+        """Build a gzip that decompresses to ``chunks`` 64 KB chunks."""
+        block = hashlib.shake_256(b"gzip").digest(16 * 1024)
+        return gzip.compress(block * (4 * chunks), mtime=0)
+
+    def test_within_budget_passes(self, default_config, fake_clock):
+        """Decompression that stays in budget is accepted."""
+        inspector = GzipContentInspector(default_config)
+        data = self._gzip_of_chunks(20)
+        fake_clock.step = 0.01
+
+        fake_clock.run_monitored(
+            lambda: inspector.inspect_gzip_content(io.BytesIO(data), len(data))
+        )
+
+    def test_over_budget_raises_inside_read_loop(
+        self, default_config, fake_clock
+    ):
+        """Slow decompression raises ResourceLimitError unchanged."""
+        inspector = GzipContentInspector(default_config)
+        data = self._gzip_of_chunks(20)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_gzip_content(
+                    io.BytesIO(data), len(data)
+                )
+            )
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "inspect_gzip_content" in {
+            entry.name for entry in exc_info.traceback
+        }

@@ -47,7 +47,7 @@ from .exceptions import (
 from .inspectors import ZipContentInspector
 from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
-from .utils import ResourceMonitor, bytes_to_mb
+from .utils import ResourceMonitor, bytes_to_mb, check_resource_limits
 from .validators import (
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
@@ -582,6 +582,7 @@ class FileValidator:
         file_size = 0
         while True:
             chunk = await file.read(chunk_size)
+            check_resource_limits()
             if not chunk:
                 break
             file_size += len(chunk)
@@ -638,6 +639,7 @@ class FileValidator:
         try:
             while True:
                 chunk = await file.read(chunk_size)
+                check_resource_limits()
                 if not chunk:
                     break
                 total_bytes += len(chunk)

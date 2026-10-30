@@ -11,9 +11,10 @@ from ..exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipBombError,
 )
-from ..utils import bytes_to_mb
+from ..utils import bytes_to_mb, check_resource_limits
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ class GzipContentInspector(BaseInspector):
                 size exceeds configured limits.
             CompressionSecurityError: If the gzip structure is
                 invalid or corrupted.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
             FileProcessingError: If an unexpected error occurs.
         """
         file_obj.seek(0)
@@ -68,6 +71,7 @@ class GzipContentInspector(BaseInspector):
             with gzip.open(file_obj, "rb") as gz:
                 while True:
                     chunk = gz.read(chunk_size)
+                    check_resource_limits()
                     if not chunk:
                         break
                     total_uncompressed += len(chunk)
@@ -134,7 +138,7 @@ class GzipContentInspector(BaseInspector):
                                 ),
                             )
 
-        except ZipBombError:
+        except (ZipBombError, ResourceLimitError):
             raise
         except gzip.BadGzipFile as err:
             logger.error(

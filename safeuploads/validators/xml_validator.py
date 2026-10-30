@@ -13,7 +13,8 @@ from defusedxml.common import (
     ExternalReferenceForbidden,
 )
 
-from ..exceptions import FileProcessingError
+from ..exceptions import FileProcessingError, ResourceLimitError
+from ..utils import check_resource_limits
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -22,6 +23,16 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class _DiscardTarget:
+    """
+    Parser target with no callbacks, so parsing builds nothing.
+
+    ``XMLParser`` installs element, text, comment and PI handlers
+    only for the callbacks its target defines; this target defines
+    none, so the document is checked without keeping any of it.
+    """
 
 
 class XmlSecurityValidator(BaseValidator):
@@ -49,21 +60,38 @@ class XmlSecurityValidator(BaseValidator):
         """
         Parse XML with XXE protections and validate structure.
 
+        The document is fed to ``defusedxml``'s parser in chunks of
+        ``limits.chunk_size`` with a target that builds no element
+        tree, so memory does not grow with the number of elements
+        (expat buffers only the token it is parsing); resource
+        limits are checked after every chunk.
+
         Args:
             file_obj: Seekable file containing XML data.
 
         Raises:
             FileProcessingError: If the XML is malformed, contains
                 XXE attacks, or fails safety checks.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
         """
         file_obj.seek(0)
+        chunk_size = self.config.limits.chunk_size
 
         logger.debug("Parsing activity XML with XXE protections")
         try:
             # defusedxml blocks external entities and
             # entity expansion by default.
             # forbid_dtd=True rejects ALL DTD declarations.
-            DefusedET.parse(file_obj, forbid_dtd=True)
+            parser = DefusedET.DefusedXMLParser(
+                target=_DiscardTarget(), forbid_dtd=True
+            )
+            while chunk := file_obj.read(chunk_size):
+                parser.feed(chunk)
+                check_resource_limits()
+            parser.close()
+        except ResourceLimitError:
+            raise
         except DTDForbidden as err:
             logger.warning("XML contains forbidden DTD declaration")
             raise FileProcessingError(

@@ -11,8 +11,10 @@ from safeuploads.exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipBombError,
 )
+from safeuploads.validators import compression_validator
 from safeuploads.validators.compression_validator import (
     CompressionSecurityValidator,
 )
@@ -935,3 +937,366 @@ class TestDirectoryEntryWithData:
         validator.validate_zip_compression_ratio(
             io.BytesIO(zip_bytes), len(zip_bytes)
         )
+
+
+_EOCD = "<4s4H2LH"
+_ZIP64_EOCD = "<4sQ2H2L4Q"
+_ZIP64_LOCATOR = "<4sLQL"
+_EOCD_SIZE = struct.calcsize(_EOCD)
+# Bytes placed before an archive, like a self-extractor stub
+_STUB = b"MZ" + b"\x00" * 62
+
+
+def _zip_with_entries(count: int, comment: bytes = b"") -> bytes:
+    """Build a stored ZIP with ``count`` small text entries."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for i in range(count):
+            zf.writestr(f"f{i}.txt", b"x")
+        zf.comment = comment
+    return buf.getvalue()
+
+
+def _eocd_fields(zip_bytes: bytes) -> tuple:
+    """Unpack the comment-free EOCD record ending ``zip_bytes``."""
+    return struct.unpack(_EOCD, zip_bytes[-_EOCD_SIZE:])
+
+
+def _with_eocd(zip_bytes: bytes, count: int, cd_size: int) -> bytes:
+    """Rewrite the EOCD entry counts and central-directory size."""
+    fields = list(_eocd_fields(zip_bytes))
+    fields[3] = fields[4] = count
+    fields[5] = cd_size
+    return zip_bytes[:-_EOCD_SIZE] + struct.pack(_EOCD, *fields)
+
+
+def _under_reported(zip_bytes: bytes) -> bytes:
+    """Make the EOCD declare a single entry."""
+    return _with_eocd(zip_bytes, 1, _eocd_fields(zip_bytes)[5])
+
+
+def _over_reported(zip_bytes: bytes) -> bytes:
+    """Make the EOCD declare 500 entries."""
+    return _with_eocd(zip_bytes, 500, _eocd_fields(zip_bytes)[5])
+
+
+def _with_truncated_header(zip_bytes: bytes) -> bytes:
+    """End the central directory with 10 bytes of a cut header."""
+    fields = _eocd_fields(zip_bytes)
+    cd_end = fields[6] + fields[5]
+    padded = zip_bytes[:cd_end] + b"PK\x01\x02" + b"\x00" * 6
+    return _with_eocd(padded + zip_bytes[cd_end:], fields[3], fields[5] + 10)
+
+
+def _with_bad_header_signature(zip_bytes: bytes) -> bytes:
+    """Corrupt the signature of the first central-directory header."""
+    data = bytearray(zip_bytes)
+    data[_eocd_fields(zip_bytes)[6] + 3] = 0
+    return bytes(data)
+
+
+def _as_zip64(
+    zip_bytes: bytes,
+    declared: int,
+    eocd_count: int,
+    extensible: bytes = b"",
+) -> bytes:
+    """
+    Rewrite a comment-free ZIP to end in ZIP64 records.
+
+    The ZIP64 record declares ``declared`` entries and the classic
+    record ``eocd_count`` (0xFFFF is the usual ZIP64 marker);
+    ``extensible`` is the ZIP64 extensible data sector.
+    """
+    fields = _eocd_fields(zip_bytes)
+    cd_size, cd_offset = fields[5], fields[6]
+    cd_end = cd_offset + cd_size
+    zip64 = struct.pack(
+        _ZIP64_EOCD,
+        b"PK\x06\x06",
+        44 + len(extensible),
+        45,
+        45,
+        0,
+        0,
+        declared,
+        declared,
+        cd_size,
+        cd_offset,
+    )
+    locator = struct.pack(_ZIP64_LOCATOR, b"PK\x06\x07", 0, cd_end, 1)
+    eocd = struct.pack(
+        _EOCD,
+        b"PK\x05\x06",
+        0,
+        0,
+        eocd_count,
+        eocd_count,
+        cd_size,
+        cd_offset,
+        0,
+    )
+    return zip_bytes[:cd_end] + zip64 + extensible + locator + eocd
+
+
+def _patch_zip64(zip64_bytes: bytes, offset: int, value: int) -> bytes:
+    """Overwrite one byte of the trailing ZIP64 records."""
+    data = bytearray(zip64_bytes)
+    data[len(data) + offset] = value
+    return bytes(data)
+
+
+def _with_fake_eocd_in_comment(zip_bytes: bytes, declared: int) -> bytes:
+    """Append a comment holding a forged EOCD record."""
+    fake = struct.pack(_EOCD, b"PK\x05\x06", 0, 0, declared, declared, 0, 0, 0)
+    buf = io.BytesIO(zip_bytes)
+    with zipfile.ZipFile(buf, "a") as zf:
+        zf.comment = b"note " + fake
+    return buf.getvalue()
+
+
+def _entry_limit_validator(limit: int) -> CompressionSecurityValidator:
+    """Return a validator allowing at most ``limit`` ZIP entries."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(max_zip_entries=limit)
+    return CompressionSecurityValidator(config)
+
+
+def _spy_zipfile(monkeypatch) -> list[int]:
+    """Record every ``zipfile.ZipFile`` construction."""
+    calls: list[int] = []
+    real = zipfile.ZipFile
+
+    def _spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(compression_validator.zipfile, "ZipFile", _spy)
+    return calls
+
+
+def _zipfile_entry_count(data: bytes) -> int | None:
+    """Return how many entries zipfile lists, None if it rejects."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            return len(zf.infolist())
+    except zipfile.BadZipFile:
+        return None
+
+
+_ZIP64_3 = _as_zip64(_zip_with_entries(3), 7, 0xFFFF)
+
+_CORPUS = [
+    pytest.param(_zip_with_entries(3), id="plain"),
+    pytest.param(_zip_with_entries(3, b"hello"), id="comment"),
+    pytest.param(_zip_with_entries(0), id="empty-archive"),
+    pytest.param(_under_reported(_zip_with_entries(21)), id="under-reported"),
+    pytest.param(_over_reported(_zip_with_entries(3)), id="over-reported"),
+    pytest.param(
+        _with_fake_eocd_in_comment(_zip_with_entries(3), 50),
+        id="fake-eocd-in-comment",
+    ),
+    pytest.param(_STUB + _zip_with_entries(3), id="prefixed"),
+    pytest.param(
+        _STUB + _under_reported(_zip_with_entries(21)),
+        id="prefixed-under-reported",
+    ),
+    pytest.param(_ZIP64_3, id="zip64"),
+    pytest.param(_as_zip64(_zip_with_entries(3), 3, 1), id="zip64-eocd-1"),
+    pytest.param(
+        _as_zip64(_zip_with_entries(3), 3, 0xFFFF, b"\x00" * 8),
+        id="zip64-extensible",
+    ),
+    pytest.param(_STUB + _ZIP64_3, id="zip64-prefixed"),
+    pytest.param(_patch_zip64(_ZIP64_3, -26, 2), id="zip64-multi-disk"),
+    pytest.param(_patch_zip64(_ZIP64_3, -98, 0), id="zip64-no-signature"),
+    pytest.param(_patch_zip64(_ZIP64_3, -94, 9), id="zip64-inconsistent"),
+    pytest.param(
+        _with_truncated_header(_zip_with_entries(3)), id="truncated-header"
+    ),
+    pytest.param(
+        _with_bad_header_signature(_zip_with_entries(3)),
+        id="bad-header-signature",
+    ),
+    pytest.param(
+        _with_eocd(_zip_with_entries(3), 3, 1 << 20), id="negative-start"
+    ),
+    pytest.param(_zip_with_entries(3)[:-30], id="no-eocd"),
+    pytest.param(b"PK\x05\x06", id="tiny"),
+    pytest.param(b"", id="empty"),
+]
+
+
+class TestCentralDirectoryEntryCount:
+    """Tests that ZIP entries are counted before zipfile parses them."""
+
+    def test_exactly_max_entries_accepted(self):
+        """An archive at the entry limit passes."""
+        data = _zip_with_entries(20)
+        _entry_limit_validator(20).validate_zip_compression_ratio(
+            io.BytesIO(data), len(data)
+        )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(_zip_with_entries(21), id="honest-eocd"),
+            pytest.param(
+                _under_reported(_zip_with_entries(21)), id="under-reported"
+            ),
+            pytest.param(_STUB + _zip_with_entries(21), id="prefixed"),
+            pytest.param(
+                _as_zip64(_zip_with_entries(21), 1, 0xFFFF), id="zip64"
+            ),
+        ],
+    )
+    def test_one_over_max_rejected_before_parsing(self, monkeypatch, data):
+        """One record over the limit is rejected without zipfile."""
+        calls = _spy_zipfile(monkeypatch)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _entry_limit_validator(20).validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_TOO_MANY_ENTRIES
+        assert calls == []
+
+    def test_prefixed_archive_at_limit_accepted(self):
+        """Data before the archive does not change its count."""
+        data = _STUB + _zip_with_entries(20)
+        _entry_limit_validator(20).validate_zip_compression_ratio(
+            io.BytesIO(data), len(data)
+        )
+
+    def test_over_reported_count_within_limit_accepted(self):
+        """A count only declared in the EOCD is not what is checked."""
+        data = _over_reported(_zip_with_entries(3))
+        assert _zipfile_entry_count(data) == 3
+        _entry_limit_validator(20).validate_zip_compression_ratio(
+            io.BytesIO(data), len(data)
+        )
+
+    def test_zip64_at_limit_accepted(self):
+        """A ZIP64 archive at the entry limit passes."""
+        data = _as_zip64(_zip_with_entries(20), 20, 0xFFFF)
+        _entry_limit_validator(20).validate_zip_compression_ratio(
+            io.BytesIO(data), len(data)
+        )
+
+    def test_real_zip64_archive_rejected_before_parsing(self, monkeypatch):
+        """A zipfile-written ZIP64 archive is walked like any other."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", allowZip64=True) as zf:
+            for i in range(0x10000):
+                zf.writestr(zipfile.ZipInfo(f"{i}"), b"")
+        data = buf.getvalue()
+        assert data.rfind(b"PK\x06\x06") > 0
+        calls = _spy_zipfile(monkeypatch)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _entry_limit_validator(20).validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_TOO_MANY_ENTRIES
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(
+                _with_truncated_header(_zip_with_entries(3)),
+                id="truncated-header",
+            ),
+            pytest.param(
+                _with_bad_header_signature(_zip_with_entries(3)),
+                id="bad-header-signature",
+            ),
+            pytest.param(_zip_with_entries(3)[:-30], id="no-eocd"),
+        ],
+    )
+    def test_malformed_directory_left_to_zipfile(self, data):
+        """A directory zipfile cannot read is reported as corrupt."""
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _entry_limit_validator(20).validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+    @pytest.mark.parametrize("data", _CORPUS)
+    def test_count_matches_zipfile(self, data):
+        """The walk counts exactly the entries zipfile lists."""
+        expected = _zipfile_entry_count(data)
+
+        assert (
+            compression_validator._count_zip_entries(io.BytesIO(data), 10**6)
+            == expected
+        )
+
+    @pytest.mark.parametrize("data", _CORPUS)
+    def test_low_limit_never_rejects_what_zipfile_accepts(self, data):
+        """With limit 1 the walk stops at 2 or defers to zipfile."""
+        expected = _zipfile_entry_count(data)
+        count = compression_validator._count_zip_entries(io.BytesIO(data), 1)
+
+        if expected is None:
+            assert count in (None, 2)
+        else:
+            assert count == min(expected, 2)
+
+
+class TestCompressionResourceLimits:
+    """Tests that the active resource monitor stops ZIP analysis."""
+
+    def test_entry_loop_over_budget_raises(self, fake_clock):
+        """A slow entry loop raises ResourceLimitError unchanged."""
+        data = _zip_with_entries(50)
+        validator = CompressionSecurityValidator(FileSecurityConfig())
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: validator.validate_zip_compression_ratio(
+                    io.BytesIO(data), len(data)
+                )
+            )
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "validate_zip_compression_ratio" in {
+            entry.name for entry in exc_info.traceback
+        }
+
+    def test_entry_loop_within_budget_passes(self, fake_clock):
+        """The same archive passes when the loop stays in budget."""
+        data = _zip_with_entries(50)
+        validator = CompressionSecurityValidator(FileSecurityConfig())
+        fake_clock.step = 0.01
+
+        fake_clock.run_monitored(
+            lambda: validator.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+        )
+
+    def test_verify_read_loop_over_budget_raises(self, fake_clock):
+        """A slow decompression check stops inside its read loop."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("big.bin", b"\x01" * (20 * 65536))
+        data = buf.getvalue()
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(verify_zip_decompression=True)
+        validator = CompressionSecurityValidator(config)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: validator.validate_zip_compression_ratio(
+                    io.BytesIO(data), len(data)
+                )
+            )
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "_verify_entries_decompress" in {
+            entry.name for entry in exc_info.traceback
+        }

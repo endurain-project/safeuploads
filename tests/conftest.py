@@ -2,10 +2,12 @@
 
 import io
 import zipfile
+from collections.abc import Callable
 
 import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
+from safeuploads.utils import ResourceMonitor
 
 
 @pytest.fixture
@@ -186,3 +188,66 @@ def dangerous_unicode_filename() -> str:
     """
     # Right-to-left override (U+202E) - can disguise file extensions
     return "document\u202etxt.exe"
+
+
+class FakeClock:
+    """
+    Monotonic clock for ``safeuploads.utils`` that tests drive.
+
+    Time stands still until ``advancing`` is set; from then on
+    every reading moves the clock forward by ``step`` seconds.
+
+    Attributes:
+        now: Current clock reading in seconds.
+        step: Seconds added per reading while advancing.
+        advancing: Whether readings move the clock forward.
+    """
+
+    def __init__(self, step: float = 1.0) -> None:
+        self.now = 1000.0
+        self.step = step
+        self.advancing = False
+
+    def monotonic(self) -> float:
+        """
+        Return the clock reading, advancing it when enabled.
+
+        Returns:
+            The current reading in seconds.
+        """
+        if self.advancing:
+            self.now += self.step
+        return self.now
+
+    def run_monitored(
+        self, work: Callable[[], object], max_time_seconds: float = 10.0
+    ) -> None:
+        """
+        Run ``work`` in a ResourceMonitor while the clock advances.
+
+        Args:
+            work: Callable doing the monitored work.
+            max_time_seconds: Time limit of the monitor.
+        """
+        with ResourceMonitor(max_time_seconds=max_time_seconds):
+            self.advancing = True
+            work()
+
+
+@pytest.fixture
+def fake_clock(monkeypatch) -> FakeClock:
+    """
+    Replace the clock ``ResourceMonitor`` reads with a FakeClock.
+
+    Only ``safeuploads.utils`` sees the fake clock; asyncio and
+    the rest of the package keep the real one.
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture.
+
+    Returns:
+        The installed FakeClock.
+    """
+    clock = FakeClock()
+    monkeypatch.setattr("safeuploads.utils.time", clock)
+    return clock

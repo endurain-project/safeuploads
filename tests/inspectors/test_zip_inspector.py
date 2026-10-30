@@ -11,6 +11,7 @@ from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipContentError,
 )
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
@@ -1511,3 +1512,74 @@ class TestNullByteInEntryName:
         inspector.inspect_zip_content(
             io.BytesIO(_build_zip({"evil.shQQQQ.txt": b"hello"}))
         )
+
+
+class TestZipInspectorResourceLimits:
+    """Tests that the active resource monitor stops ZIP inspection."""
+
+    @staticmethod
+    def _flat_zip(count: int) -> bytes:
+        """Build a ZIP with ``count`` small text entries."""
+        return _build_zip({f"f{i}.txt": b"hello" for i in range(count)})
+
+    @staticmethod
+    def _nested_zip(inner_count: int) -> bytes:
+        """Build a ZIP whose single entry is a ZIP of many entries."""
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(inner_count)})
+        return _build_zip({"inner.zip": inner})
+
+    @staticmethod
+    def _nested_config() -> FileSecurityConfig:
+        """Return a config that recurses into nested archives."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        return config
+
+    def test_entry_loop_within_budget_passes(self, default_config, fake_clock):
+        """Inspection that stays in budget is accepted."""
+        inspector = ZipContentInspector(default_config)
+        data = self._flat_zip(50)
+        fake_clock.step = 0.01
+
+        fake_clock.run_monitored(
+            lambda: inspector.inspect_zip_content(io.BytesIO(data))
+        )
+
+    def test_entry_loop_over_budget_raises(self, default_config, fake_clock):
+        """A slow entry loop raises ResourceLimitError unchanged."""
+        inspector = ZipContentInspector(default_config)
+        data = self._flat_zip(50)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_zip_content(io.BytesIO(data))
+            )
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_nested_loop_within_budget_passes(self, fake_clock):
+        """Recursive inspection that stays in budget is accepted."""
+        inspector = ZipContentInspector(self._nested_config())
+        data = self._nested_zip(50)
+        fake_clock.step = 0.01
+
+        fake_clock.run_monitored(
+            lambda: inspector.inspect_zip_content(io.BytesIO(data))
+        )
+
+    def test_nested_loop_over_budget_raises(self, fake_clock):
+        """A slow recursion raises instead of being logged and skipped."""
+        inspector = ZipContentInspector(self._nested_config())
+        data = self._nested_zip(50)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_zip_content(io.BytesIO(data))
+            )
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "inspect_nested_archives" in {
+            entry.name for entry in exc_info.traceback
+        }

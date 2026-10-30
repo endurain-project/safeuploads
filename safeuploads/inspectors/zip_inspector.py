@@ -16,8 +16,17 @@ from ..enums import (
     SuspiciousFilePattern,
     ZipThreatCategory,
 )
-from ..exceptions import ErrorCode, FileProcessingError, ZipContentError
-from ..utils import find_text_pattern, matches_signature_prefix
+from ..exceptions import (
+    ErrorCode,
+    FileProcessingError,
+    ResourceLimitError,
+    ZipContentError,
+)
+from ..utils import (
+    check_resource_limits,
+    find_text_pattern,
+    matches_signature_prefix,
+)
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -90,6 +99,8 @@ class ZipContentInspector(BaseInspector):
             ZipContentError: If security threats are detected in ZIP
                 content such as directory traversal, symlinks, nested
                 archives, or suspicious patterns.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
             FileProcessingError: If ZIP structure is invalid or
                 unexpected error occurs during inspection.
         """
@@ -106,6 +117,8 @@ class ZipContentInspector(BaseInspector):
 
                 # Analyze each entry in the ZIP
                 for entry in zip_entries:
+                    check_resource_limits()
+
                     # Check for timeout
                     if (
                         time.monotonic() - start_time
@@ -179,7 +192,7 @@ class ZipContentInspector(BaseInspector):
                 file_obj.seek(0)
                 self.inspect_nested_archives(file_obj)
 
-        except ZipContentError:
+        except (ZipContentError, ResourceLimitError):
             # Re-raise our own exceptions
             raise
         except zipfile.BadZipFile as err:
@@ -574,6 +587,8 @@ class ZipContentInspector(BaseInspector):
         Raises:
             ZipContentError: If recursive structure, quine,
                 or complexity attack is detected.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
         """
         if seen_hashes is None:
             seen_hashes = set()
@@ -632,6 +647,8 @@ class ZipContentInspector(BaseInspector):
                     )
 
                 for entry in entries:
+                    check_resource_limits()
+
                     # Timeout
                     elapsed = time.monotonic() - start_time
                     if elapsed > timeout:
@@ -681,7 +698,7 @@ class ZipContentInspector(BaseInspector):
                         start_time=start_time,
                     )
 
-        except ZipContentError:
+        except (ZipContentError, ResourceLimitError):
             raise
         except zipfile.BadZipFile:
             # A corrupt archive at this nesting level is not itself a

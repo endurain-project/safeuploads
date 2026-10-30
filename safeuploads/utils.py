@@ -1,5 +1,6 @@
 """Utility helpers for resource monitoring and content scanning."""
 
+import contextvars
 import logging
 import sys
 import time
@@ -110,14 +111,14 @@ class ResourceMonitor:
     """
     Context manager that enforces wall-clock and memory limits.
 
-    Tracks elapsed time continuously and samples memory usage
-    via ``resource.getrusage``. Memory accounting uses the
-    process peak RSS (``ru_maxrss``), a monotonic high-water
-    mark for the whole process, so the reported delta is a
-    coarse, best-effort upper bound rather than the exact
-    memory used by this validation. Call ``check_time`` and
-    ``check_memory`` inside long loops for early enforcement;
-    otherwise limits are checked on context exit.
+    While the block runs the monitor is the active one for the
+    current context (and worker threads that copy it), so
+    ``check_resource_limits`` enforces both limits at the loop
+    boundaries of long-running work; they are checked again on
+    exit. A single blocking call, such as one ``zipfile`` parse,
+    is not interrupted mid-call. Memory is the process-wide peak
+    RSS (``ru_maxrss``), a high-water mark, so the delta is a
+    coarse upper bound that concurrent work can also trip.
 
     Attributes:
         max_time_seconds: Maximum allowed wall-clock seconds.
@@ -125,6 +126,9 @@ class ResourceMonitor:
         start_time: Timestamp when the context was entered.
         start_memory: Peak process RSS in bytes at context entry.
     """
+
+    # Restores the previously active monitor on exit
+    _token: contextvars.Token["ResourceMonitor | None"]
 
     def __init__(
         self,
@@ -147,13 +151,14 @@ class ResourceMonitor:
 
     def __enter__(self) -> "ResourceMonitor":
         """
-        Record baseline time and memory on context entry.
+        Record baseline time and memory and become the active monitor.
 
         Returns:
             Self for use in ``with`` statements.
         """
         self.start_time = time.monotonic()
         self.start_memory = self._get_peak_rss_bytes()
+        self._token = _active_monitor.set(self)
         return self
 
     def __exit__(
@@ -163,7 +168,11 @@ class ResourceMonitor:
         exc_tb: TracebackType | None,
     ) -> None:
         """
-        Check resource usage on context exit.
+        Restore the previous active monitor and check usage.
+
+        The previous monitor is restored even when the block
+        raised; the limits are checked only on a clean exit so
+        an exception from the block is not masked.
 
         Args:
             exc_type: Exception type if raised inside block.
@@ -174,6 +183,7 @@ class ResourceMonitor:
             ResourceLimitError: If time or memory limits were
                 exceeded during the monitored block.
         """
+        _active_monitor.reset(self._token)
         if exc_type is not None:
             return
 
@@ -200,9 +210,8 @@ class ResourceMonitor:
         """
         Check peak memory growth mid-operation.
 
-        Enables early enforcement inside long-running loops
-        instead of waiting for context exit. Uses the process
-        peak RSS high-water mark, so it is a coarse upper bound.
+        Uses the process peak RSS high-water mark, so it is a
+        coarse upper bound.
 
         Raises:
             ResourceLimitError: If peak-RSS growth since context
@@ -309,3 +318,28 @@ class ResourceMonitor:
             return 0
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return usage.ru_maxrss * _RSS_UNIT_BYTES
+
+
+_active_monitor: contextvars.ContextVar[ResourceMonitor | None] = (
+    contextvars.ContextVar("safeuploads_resource_monitor", default=None)
+)
+
+
+def check_resource_limits() -> None:
+    """
+    Enforce the active ``ResourceMonitor`` limits, if any.
+
+    Called at the loop boundaries of long-running work; returns
+    at once when no monitor is active. The active monitor is held
+    in a context variable, so a worker thread started with a copy
+    of the caller's context sees the caller's monitor.
+
+    Raises:
+        ResourceLimitError: If the active monitor's time or
+            memory limit has been exceeded.
+    """
+    monitor = _active_monitor.get()
+    if monitor is None:
+        return
+    monitor.check_time()
+    monitor.check_memory()

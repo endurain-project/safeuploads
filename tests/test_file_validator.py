@@ -2,8 +2,11 @@
 
 import asyncio
 import gzip
+import hashlib
 import io
 import logging
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -25,6 +28,7 @@ from safeuploads.exceptions import (
     ZipContentError,
 )
 from safeuploads.file_validator import FileValidator
+from safeuploads.utils import ResourceMonitor, check_resource_limits
 
 
 class TestFileValidatorInitialization:
@@ -1240,6 +1244,249 @@ class TestResourceMonitorIntegration:
 
         with pytest.raises(ResourceLimitError):
             await validator.validate_image_file(file)
+
+
+# Seconds the fake clock advances per reading for work that must
+# exceed the default 30 s budget, and for work that stays within it.
+_HOSTILE_STEP = 5.0
+_BENIGN_STEP = 0.01
+
+
+def _audited_validator() -> FileValidator:
+    """Return a validator with default limits and audit logging on."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(enable_audit_logging=True)
+    return FileValidator(config=config)
+
+
+def _advance_clock_during_inspection(validator, clock, monkeypatch) -> None:
+    """Start the fake clock when the offloaded inspection begins."""
+    original = validator._to_thread
+
+    async def _to_thread(func, *args):
+        clock.advancing = True
+        return await original(func, *args)
+
+    monkeypatch.setattr(validator, "_to_thread", _to_thread)
+
+
+def _raised_in(exc_info) -> set[str]:
+    """Return the function names on the exception's traceback."""
+    return {entry.name for entry in exc_info.traceback}
+
+
+def _zip_of(count: int, content: bytes = b"data") -> bytes:
+    """Build a stored ZIP with ``count`` text entries."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for i in range(count):
+            zf.writestr(f"f{i}.txt", content)
+    return buf.getvalue()
+
+
+def _gzip_of_chunks(chunks: int) -> bytes:
+    """Build a gzip that decompresses to ``chunks`` 64 KB chunks."""
+    block = hashlib.shake_256(b"gzip").digest(16 * 1024)
+    return gzip.compress(block * (4 * chunks), mtime=0)
+
+
+def _gpx_of_size(size: int) -> bytes:
+    """Build a valid GPX document of roughly ``size`` bytes."""
+    head = b'<?xml version="1.0" encoding="UTF-8"?><gpx><trk><trkseg>'
+    point = b'<trkpt lat="45.1" lon="7.1"><ele>100.0</ele></trkpt>'
+    return head + point * (size // len(point)) + b"</trkseg></trk></gpx>"
+
+
+class TestResourceLimitsEnforcedDuringWork:
+    """Test limits are enforced inside the work, not only at exit."""
+
+    @pytest.mark.parametrize("use_executor", [False, True])
+    async def test_check_in_worker_thread_sees_monitor(
+        self, fake_clock, use_executor
+    ):
+        """Test a check run through _to_thread sees the monitor."""
+        executor = ThreadPoolExecutor(max_workers=1) if use_executor else None
+        validator = FileValidator(executor=executor)
+        try:
+            with ResourceMonitor(max_time_seconds=10.0):
+                fake_clock.now += 100.0
+                with pytest.raises(ResourceLimitError) as exc_info:
+                    await validator._to_thread(check_resource_limits)
+                fake_clock.now -= 100.0
+            fake_clock.now += 100.0
+            await validator._to_thread(check_resource_limits)
+        finally:
+            if executor is not None:
+                executor.shutdown()
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    async def test_zip_within_budget_passes(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test a ZIP whose inspection stays in budget is accepted."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.zip", content=_zip_of(50))
+
+        await validator.validate_zip_file(file)
+
+    async def test_zip_inspection_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch, caplog
+    ):
+        """Test a slow ZIP inspection is stopped inside its loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.zip", content=_zip_of(50))
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_zip_file(file)
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert {
+            "check_resource_limits",
+            "validate_zip_compression_ratio",
+        } <= _raised_in(exc_info)
+        assert "validation_failure" in caplog.text
+
+    async def test_zip_memory_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test peak-RSS growth during ZIP inspection is rejected."""
+        validator = _audited_validator()
+        fake_clock.step = 0.0
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        monkeypatch.setattr(
+            ResourceMonitor,
+            "_get_peak_rss_bytes",
+            staticmethod(lambda: (1 << 30) if fake_clock.advancing else 1),
+        )
+        file = mock_upload_file(filename="a.zip", content=_zip_of(50))
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            await validator.validate_zip_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+        assert "validate_zip_compression_ratio" in _raised_in(exc_info)
+
+    async def test_zip_upload_streaming_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock
+    ):
+        """Test a slow upload stream is stopped while streaming."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        content = _zip_of(50, hashlib.shake_256(b"zip").digest(20 * 1024))
+        file = mock_upload_file(filename="a.zip", content=content)
+        fake_clock.advancing = True
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            await validator.validate_zip_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "_stream_to_temp_file" in _raised_in(exc_info)
+
+    async def test_gzip_within_budget_passes(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test a gzip whose decompression stays in budget passes."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.gz", content=_gzip_of_chunks(20))
+
+        await validator.validate_gzip_file(file)
+
+    async def test_gzip_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch, caplog
+    ):
+        """Test a slow gzip decompression is stopped inside its loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.gz", content=_gzip_of_chunks(20))
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_gzip_file(file)
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "inspect_gzip_content" in _raised_in(exc_info)
+        assert "validation_failure" in caplog.text
+
+    async def test_activity_within_budget_passes(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test a GPX whose parse stays in budget is accepted."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        content = _gpx_of_size(1536 * 1024)
+        file = mock_upload_file(filename="run.gpx", content=content)
+
+        await validator.validate_activity_file(file)
+
+    async def test_activity_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch, caplog
+    ):
+        """Test a slow GPX parse is stopped inside the parse loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        content = _gpx_of_size(1536 * 1024)
+        file = mock_upload_file(filename="run.gpx", content=content)
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_activity_file(file)
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "validate_xml_safety" in _raised_in(exc_info)
+        assert "validation_failure" in caplog.text
+
+    async def test_image_within_budget_passes(
+        self, mock_upload_file, valid_jpeg_bytes, fake_clock
+    ):
+        """Test an image whose size check stays in budget passes."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        content = valid_jpeg_bytes + b"\x00" * (1024 * 1024)
+        file = mock_upload_file(filename="photo.jpg", content=content)
+        fake_clock.advancing = True
+
+        await validator.validate_image_file(file)
+
+    async def test_image_over_budget_raises_inside_loop(
+        self, mock_upload_file, valid_jpeg_bytes, fake_clock, caplog
+    ):
+        """Test a slow image stream is stopped inside the size loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        content = valid_jpeg_bytes + b"\x00" * (1024 * 1024)
+        file = mock_upload_file(filename="photo.jpg", content=content)
+        fake_clock.advancing = True
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_image_file(file)
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "_validate_file_size" in _raised_in(exc_info)
+        assert "validation_failure" in caplog.text
 
 
 class TestDetectMimeTypeMagicException:

@@ -41,7 +41,7 @@ safeuploads/
 | `UnicodeSecurityValidator` | NFC normalization and dangerous character detection (rejects with `UnicodeSecurityError`). |
 | `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. The allowlist check is `FileValidator._validate_file_extension`. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
-| `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits. |
+| `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities. |
 | `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures. |
 | `GzipContentInspector` | Streams gzip decompression, checking ratio and size progressively. |
@@ -158,7 +158,8 @@ UploadFile
 │    ├── Ratio check          │
 │    ├── Uncompressed size    │
 │    ├── Entry count          │
-│    └── Nested archive check │
+│    ├── Nested archive check │
+│    └── Exact file layout    │
 └─────────────┬───────────────┘
               │
               ▼
@@ -313,7 +314,7 @@ UploadFile (.gz)
 | Stream to temp | Chunked reads to `SpooledTemporaryFile` | In-memory up to `max_memory_buffer_size` (10 MB), then disk |
 | MIME detection | First 8 KB via `python-magic` | 8 KB |
 | Signature check | First 4-12 bytes depending on format | Minimal |
-| Compression validation | ZIP central directory (metadata only) | Metadata |
+| Compression validation | ZIP central directory, local headers and data descriptors | Metadata; entries with a data descriptor are inflated in `chunk_size` chunks |
 | ZIP content inspection | Per-entry read for binary/text scan | First 512 bytes per entry |
 | Gzip inspection | Chunked streaming decompression | `chunk_size` at a time |
 | XML validation | Chunked feed to `defusedxml`'s parser, no element tree built | `chunk_size` at a time |

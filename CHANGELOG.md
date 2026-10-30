@@ -22,11 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `ResourceLimitError` propagates from the inspectors and validators with its own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED` code; it was wrapped into a generic internal-error `FileProcessingError`.
 - The ZIP entry count is bounded before `zipfile` parses the archive: the central-directory headers are counted, stopping at `max_zip_entries + 1`, so an archive with too many entries is rejected with `ZIP_TOO_MANY_ENTRIES` at bounded cost even if its end record under-reports the count.
 - GPX and TCX files are parsed in `chunk_size` chunks with a target that builds no element tree, so memory does not grow with the document. The DTD, entity and external-reference protections are unchanged.
+- ZIP archives whose listed entries do not fill the file exactly are rejected with `ZIP_INVALID_STRUCTURE`, so an extractor that walks local headers cannot see entries that validation never saw. This covers fake end records or archives hidden in the comment, concatenated archives, unlisted entries, prepended or trailing bytes, local headers that disagree with the central directory, and data-descriptor entries whose end a streaming reader cannot find (a deflate stream must end exactly at the declared size; stored entries with a descriptor must be empty).
 
 ### Changed
 
 - **Breaking:** these checks reject uploads that 1.1.3 accepted under the default configuration (for example `.bin`, `.ini`, `.cfg` or `.docx` entries inside a ZIP).
 - **Breaking:** `FileValidator(config)` raises `FileSecurityConfigurationError` when `validate_instance()` reports any error-severity issue; it only logged them before. New error-severity checks: type checks on every `SecurityLimits` field, positive values for the size, buffer, chunk, memory, scan, timeout, filename/path length and entry-count limits, `max_zip_depth >= 0`, allow-lists for activity and gzip files checked like image and ZIP, and uppercase extension entries. Warnings are still only logged.
+- **Breaking:** ZIP archives with bytes outside their listed entries, such as trailing padding written by `bsdtar` to a pipe, or with non-empty stored entries that use a data descriptor, are rejected with `ZIP_INVALID_STRUCTURE`.
 - **Breaking:** uploads are rejected with `MIME_DETECTION_FAILED` when libmagic is unavailable or fails. `FileValidator` still constructs without libmagic, sets `magic_available=False` and logs an error.
 
 ## [1.1.3] - 2026-10-22

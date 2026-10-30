@@ -168,6 +168,43 @@ single-level content inspection.
 - When allowed, recursive inspection applies all depth, count,
   and hash checks.
 
+### Ambiguous Archive Layout (Parser Differential)
+
+**Attack:** A ZIP built so that `zipfile`, which reads the
+central directory, sees different entries from an extractor
+that walks local headers from the start of the file. Examples
+are a fake end record or a whole benign archive hidden in the
+archive comment, two concatenated archives, an unlisted entry
+between listed ones, a local header whose sizes or name differ
+from the central directory, and a deflate stream that ends
+before a data-descriptor entry's declared size. The validated
+archive then passes while the extractor writes hidden files.
+
+**Mitigations:**
+
+- `CompressionSecurityValidator` requires the listed entries to
+  fill the file exactly: local headers start at offset 0 and
+  follow one another without gaps or overlaps, the central
+  directory sits at its declared offset right after the last
+  entry, and the end records with their declared comment end
+  the file. Prepended or trailing bytes, including zero
+  padding, are rejected.
+- Each local header must agree with its central-directory
+  record: name bytes, name encoding flag, compression method,
+  data-descriptor flag and, without a descriptor, CRC-32 and
+  sizes (ZIP64 sizes are read from the local extra field).
+- Entries with a data descriptor are accepted only when a
+  streaming reader can find the descriptor unambiguously: a
+  deflated entry is inflated in `chunk_size` chunks and its
+  stream must end exactly at the declared compressed size, and
+  a stored entry must be empty with a signed descriptor right
+  after its header. Other descriptor entries are rejected. The
+  descriptor values must equal the central directory's.
+- This check runs after the size and ratio limits, so inflation
+  is bounded by them, and it raises `ZIP_INVALID_STRUCTURE`.
+- Nested archives are not checked this way when
+  `allow_nested_archives=True`.
+
 ---
 
 ## Content Threats (ZIP Entries)

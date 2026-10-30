@@ -1,7 +1,9 @@
 """Tests for FileValidator integration."""
 
 import asyncio
+import gzip
 import io
+import logging
 
 import pytest
 
@@ -433,29 +435,28 @@ class TestDetectMimeType:
 
         assert mime_type == "image/jpeg"
 
-    def test_detect_mime_fallback_to_mimetypes(self):
-        """Test MIME detection falls back to mimetypes module."""
-        validator = FileValidator()
-        # Temporarily disable magic
-        original_magic_available = validator.magic_available
-        validator.magic_available = False
-
-        try:
-            mime_type = validator._detect_mime_type(
-                b"fake content", "document.pdf"
-            )
-            assert mime_type == "application/pdf"
-        finally:
-            validator.magic_available = original_magic_available
-
-    def test_detect_mime_unknown_fallback(self):
-        """Test MIME detection returns octet-stream for unknown."""
+    def test_detect_mime_magic_unavailable_rejects(self):
+        """Test detection fails closed when libmagic is unavailable."""
         validator = FileValidator()
         validator.magic_available = False
 
-        mime_type = validator._detect_mime_type(b"fake", "unknown.xyz123")
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator._detect_mime_type(b"fake content", "document.pdf")
 
-        assert mime_type == "application/octet-stream"
+        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
+        assert exc_info.value.filename == "document.pdf"
+
+    def test_detect_mime_empty_result_rejects(self, monkeypatch):
+        """Test an empty magic result is rejected, not guessed."""
+        validator = FileValidator()
+        monkeypatch.setattr(
+            validator.magic_mime, "from_buffer", lambda _content: ""
+        )
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator._detect_mime_type(b"fake", "photo.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
 
 
 class TestValidateFileSignature:
@@ -820,6 +821,21 @@ class TestValidateZipFile:
         await validator.validate_zip_file(file)
 
 
+def _break_magic_init(monkeypatch) -> None:
+    """
+    Make ``magic.Magic`` fail so libmagic cannot initialise.
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture.
+    """
+    import safeuploads.file_validator as _fv
+
+    def _fail(**_):
+        raise Exception("python-magic unavailable")
+
+    monkeypatch.setattr(_fv.magic, "Magic", _fail)
+
+
 class TestFileValidatorMagicUnavailable:
     """Tests for FileValidator when python-magic fails to initialise."""
 
@@ -842,30 +858,38 @@ class TestFileValidatorMagicUnavailable:
         validator = FileValidator()
         assert validator.magic_available is False
 
-    async def test_magic_unavailable_falls_back_to_mimetypes(
+    async def test_magic_unavailable_logs_error(self, monkeypatch, caplog):
+        """
+        Test construction logs an ERROR that uploads will be rejected.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+            caplog: pytest log capture fixture.
+        """
+        _break_magic_init(monkeypatch)
+        with caplog.at_level(logging.ERROR, logger="safeuploads"):
+            FileValidator()
+        assert any(
+            r.levelno == logging.ERROR and "rejected" in r.getMessage()
+            for r in caplog.records
+        )
+
+    async def test_magic_unavailable_detect_rejects(
         self, monkeypatch, valid_jpeg_bytes
     ):
         """
-        Test MIME detection falls back to mimetypes when magic absent.
+        Test detection rejects instead of guessing from the filename.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
             valid_jpeg_bytes: Valid JPEG bytes fixture.
         """
-        import safeuploads.file_validator as _fv
-
-        monkeypatch.setattr(
-            _fv.magic,
-            "Magic",
-            lambda **_: (_ for _ in ()).throw(
-                Exception("python-magic unavailable")
-            ),
-        )
+        _break_magic_init(monkeypatch)
         validator = FileValidator()
         assert validator.magic_available is False
-        # Fallback should return a sensible MIME based on filename
-        mime = validator._detect_mime_type(b"data", "photo.jpg")
-        assert mime == "image/jpeg"
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
+        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
 
 
 class TestValidateFilenameExceptionWrapping:
@@ -1180,11 +1204,11 @@ class TestResourceMonitorIntegration:
 class TestDetectMimeTypeMagicException:
     """Tests for _detect_mime_type when magic raises."""
 
-    def test_magic_from_buffer_exception_falls_back(
+    def test_magic_from_buffer_exception_rejects(
         self, monkeypatch, valid_jpeg_bytes
     ):
         """
-        Test MIME fallback when magic.from_buffer raises.
+        Test detection rejects when magic.from_buffer raises.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
@@ -1194,13 +1218,76 @@ class TestDetectMimeTypeMagicException:
         assert validator.magic_available is True
 
         def _explode(_content):
-            raise RuntimeError("magic failed")
+            raise RuntimeError("secret internal detail")
 
         monkeypatch.setattr(validator.magic_mime, "from_buffer", _explode)
 
-        mime = validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
-        # Falls back to mimetypes guess from filename
-        assert mime == "image/jpeg"
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
+        assert "secret internal detail" not in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+class TestMimeDetectionFailureEndToEnd:
+    """MIME detection failure rejects every upload type."""
+
+    _HTML_JPEG = b"\xff\xd8\xff<html><script>alert(1)</script>"
+
+    @staticmethod
+    def _break(validator, how, monkeypatch):
+        """
+        Make MIME detection fail in the requested way.
+
+        Args:
+            validator: Validator whose detector to break.
+            how: ``"unavailable"`` or ``"raises"``.
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        if how == "unavailable":
+            validator.magic_available = False
+            return
+
+        def _explode(_content):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(validator.magic_mime, "from_buffer", _explode)
+
+    @pytest.mark.parametrize("how", ["unavailable", "raises"])
+    @pytest.mark.parametrize(
+        ("method", "name", "payload"),
+        [
+            ("validate_image_file", "x.jpg", _HTML_JPEG),
+            ("validate_zip_file", "x.zip", b"PK\x05\x06" + b"\x00" * 18),
+            ("validate_gzip_file", "x.gz", gzip.compress(b"hello")),
+            (
+                "validate_activity_file",
+                "x.gpx",
+                b'<?xml version="1.0"?><gpx></gpx>',
+            ),
+        ],
+    )
+    async def test_detection_failure_rejects(
+        self, mock_upload_file, monkeypatch, how, method, name, payload
+    ):
+        """Each validate_* method raises MIME_DETECTION_FAILED."""
+        validator = FileValidator()
+        self._break(validator, how, monkeypatch)
+        file = mock_upload_file(name, payload)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await getattr(validator, method)(file)
+
+        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
+
+    async def test_valid_jpeg_with_working_magic_accepted(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """A valid JPEG passes when libmagic works."""
+        validator = FileValidator()
+        file = mock_upload_file("x.jpg", valid_jpeg_bytes)
+        await validator.validate_image_file(file)
 
 
 class TestValidateFileSignatureEdgeCases:

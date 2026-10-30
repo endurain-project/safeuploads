@@ -2,9 +2,7 @@
 
 import asyncio
 import contextvars
-import functools
 import logging
-import mimetypes
 import os
 import secrets
 import tempfile
@@ -144,8 +142,9 @@ class FileValidator:
             logger.debug("File content detection (python-magic) initialized")
         except Exception as err:
             self.magic_available = False
-            logger.warning(
-                "python-magic not available for content detection: %s",
+            logger.error(
+                "python-magic not available for content detection;"
+                " uploads will be rejected: %s",
                 err,
             )
 
@@ -178,57 +177,52 @@ class FileValidator:
 
     def _detect_mime_type(self, file_content: bytes, filename: str) -> str:
         """
-        Determine MIME type for file content.
+        Determine MIME type for file content using libmagic.
+
+        Detection never falls back to the filename: the extension
+        is already allow-listed, so a guess from it would let the
+        MIME check pass for any content.
 
         Args:
             file_content: Raw bytes of the file to inspect.
-            filename: Original filename for fallback MIME detection.
+            filename: Filename used for error context.
 
         Returns:
-            Detected MIME type or "application/octet-stream" if detection
-            fails.
-        """
-        detected_mime = None
+            Detected MIME type.
 
-        # Content-based detection using python-magic (most reliable).
+        Raises:
+            MimeTypeError: If libmagic is unavailable, raises, or
+                returns an empty result
+                (``ErrorCode.MIME_DETECTION_FAILED``).
+        """
+        if not self.magic_available:
+            raise MimeTypeError(
+                "File type could not be determined",
+                filename=filename,
+                error_code=ErrorCode.MIME_DETECTION_FAILED,
+            )
+
         # Guarded by a lock because libmagic is not thread-safe and
         # detection may run concurrently in worker threads.
-        if self.magic_available:
-            try:
-                with self._magic_lock:
-                    detected_mime = self.magic_mime.from_buffer(file_content)
-            except Exception as err:
-                logger.warning("Magic MIME detection failed: %s", err)
+        try:
+            with self._magic_lock:
+                detected_mime = self.magic_mime.from_buffer(file_content)
+        except Exception as err:
+            logger.error("Magic MIME detection failed: %s", err)
+            raise MimeTypeError(
+                "File type could not be determined",
+                filename=filename,
+                error_code=ErrorCode.MIME_DETECTION_FAILED,
+            ) from err
 
-        # Fallback to filename-based detection
         if not detected_mime:
-            logger.info("Fallback to filename-based MIME detection")
-            ext = os.path.splitext(filename)[1].lower()
-            detected_mime = self._guess_mime_by_ext(ext)
+            raise MimeTypeError(
+                "File type could not be determined",
+                filename=filename,
+                error_code=ErrorCode.MIME_DETECTION_FAILED,
+            )
 
-        return detected_mime or "application/octet-stream"
-
-    @staticmethod
-    @functools.lru_cache(maxsize=64)
-    def _guess_mime_by_ext(ext: str) -> str | None:
-        """
-        Guess MIME type from a file extension with caching.
-
-        Keyed solely on the lower-cased extension so the LRU
-        cache stays small and attacker-controlled filenames
-        cannot bloat it.
-
-        Args:
-            ext: Lower-cased extension including the leading dot
-                (e.g. ".jpg"), or an empty string.
-
-        Returns:
-            Guessed MIME type or None.
-        """
-        if not ext:
-            return None
-        mime, _ = mimetypes.guess_type(f"file{ext}")
-        return mime
+        return detected_mime
 
     def _enforce_mime(
         self,
@@ -691,6 +685,7 @@ class FileValidator:
             Tuple of the header bytes and the detected MIME type.
 
         Raises:
+            MimeTypeError: If MIME detection fails.
             FileSignatureError: If the header does not match the
                 expected signature type.
         """

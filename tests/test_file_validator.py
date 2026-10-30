@@ -556,6 +556,33 @@ class TestValidateImageFile:
         await validator.validate_image_file(file)
 
     @pytest.mark.asyncio
+    async def test_header_read_ignores_host_stream_position(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Header checks see byte 0 even if the host read part."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="x.jpg", content=b"<html>" + valid_jpeg_bytes
+        )
+        file._position = 6  # host consumed the HTML prefix
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_INVALID
+
+    @pytest.mark.asyncio
+    async def test_valid_jpeg_with_stream_at_end_accepted(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """A fully read host stream is rewound before validation."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="x.jpg", content=valid_jpeg_bytes)
+        file._position = len(valid_jpeg_bytes)
+
+        await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
     async def test_validate_valid_png(self, mock_upload_file, valid_png_bytes):
         """Test validation of valid PNG image."""
         validator = FileValidator()

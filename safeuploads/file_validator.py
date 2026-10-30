@@ -549,7 +549,9 @@ class FileValidator:
         Raises:
             FileSizeError: File size exceeds maximum or file is empty.
         """
-        # Read first chunk for content analysis
+        # Start at byte 0: the host may have left the stream
+        # mid-file, which would hide the real header.
+        await file.seek(0)
         file_content = await file.read(8192)  # Read first 8KB
 
         # Reset file position

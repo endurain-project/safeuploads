@@ -4,6 +4,7 @@ import io
 import struct
 import types
 import zipfile
+import zlib
 
 import pytest
 
@@ -15,6 +16,7 @@ from safeuploads.exceptions import (
     ResourceLimitError,
     ZipBombError,
 )
+from safeuploads.file_validator import FileValidator
 from safeuploads.validators import compression_validator
 from safeuploads.validators.compression_validator import (
     CompressionSecurityValidator,
@@ -1163,12 +1165,19 @@ class TestCentralDirectoryEntryCount:
         assert exc_info.value.error_code == ErrorCode.ZIP_TOO_MANY_ENTRIES
         assert calls == []
 
-    def test_prefixed_archive_at_limit_accepted(self):
-        """Data before the archive does not change its count."""
+    def test_prefixed_archive_at_limit_rejected_as_layout(self):
+        """
+        Data before the archive does not change its count, so the
+        archive passes the entry limit and fails the layout check.
+        """
         data = _STUB + _zip_with_entries(20)
-        _entry_limit_validator(20).validate_zip_compression_ratio(
-            io.BytesIO(data), len(data)
-        )
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _entry_limit_validator(20).validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
 
     def test_over_reported_count_within_limit_accepted(self):
         """A count only declared in the EOCD is not what is checked."""
@@ -1303,16 +1312,28 @@ class TestCompressionResourceLimits:
         }
 
 
-def _with_declared_sizes(
-    data: bytes, compress_size: int, file_size: int
-) -> bytes:
-    """Rewrite the sizes declared by every central-directory record."""
-    buf = bytearray(data)
-    pos = buf.find(b"PK\x01\x02")
-    while pos != -1:
-        struct.pack_into("<LL", buf, pos + 20, compress_size, file_size)
-        pos = buf.find(b"PK\x01\x02", pos + 4)
-    return bytes(buf)
+def _declared_zip(entries: list[tuple[str, int, int]]) -> bytes:
+    """
+    Build a stored ZIP whose entries declare the given sizes.
+
+    Each ``(name, compress_size, file_size)`` entry stores
+    ``compress_size`` bytes, so the layout is exact, and its local
+    and central headers declare ``file_size`` as its uncompressed
+    size.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for name, compress_size, _ in entries:
+            zf.writestr(name, b"x" * compress_size)
+    data = bytearray(buf.getvalue())
+    central = data.find(b"PK\x01\x02")
+    for info, (_, _, file_size) in zip(
+        _infos(bytes(data)), entries, strict=True
+    ):
+        struct.pack_into("<L", data, info.header_offset + 22, file_size)
+        struct.pack_into("<L", data, central + 24, file_size)
+        central = data.find(b"PK\x01\x02", central + 4)
+    return bytes(data)
 
 
 def _stored_zip(names: list[str]) -> bytes:
@@ -1336,14 +1357,14 @@ class TestCompressionLimitBoundaries:
 
     def test_entry_ratio_at_limit_accepted(self):
         """A declared 1000:100 entry is exactly 10:1 and passes."""
-        data = _with_declared_sizes(_stored_zip(["a.bin"]), 100, 1000)
+        data = _declared_zip([("a.bin", 100, 1000)])
         validator = _limits_validator(max_compression_ratio=10)
 
         validator.validate_zip_compression_ratio(io.BytesIO(data), 10_000)
 
     def test_entry_ratio_over_limit_rejected(self):
         """A declared 1001:100 entry is above 10:1 and is rejected."""
-        data = _with_declared_sizes(_stored_zip(["a.bin"]), 100, 1001)
+        data = _declared_zip([("a.bin", 100, 1001)])
         validator = _limits_validator(max_compression_ratio=10)
 
         with pytest.raises(ZipBombError) as exc_info:
@@ -1356,14 +1377,14 @@ class TestCompressionLimitBoundaries:
 
     def test_overall_ratio_at_limit_accepted(self):
         """1000 bytes over a 100-byte archive is exactly 10:1."""
-        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1000, 1000)
+        data = _declared_zip([("a.bin", 1000, 1000)])
         validator = _limits_validator(max_compression_ratio=10)
 
         validator.validate_zip_compression_ratio(io.BytesIO(data), 100)
 
     def test_overall_ratio_over_limit_rejected(self):
         """1000 bytes over a 99-byte archive is above 10:1."""
-        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1000, 1000)
+        data = _declared_zip([("a.bin", 1000, 1000)])
         validator = _limits_validator(max_compression_ratio=10)
 
         with pytest.raises(ZipBombError) as exc_info:
@@ -1376,14 +1397,14 @@ class TestCompressionLimitBoundaries:
 
     def test_individual_size_at_limit_accepted(self):
         """An entry declaring exactly the individual limit passes."""
-        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1000, 1000)
+        data = _declared_zip([("a.bin", 1000, 1000)])
         validator = _limits_validator(max_individual_file_size=1000)
 
         validator.validate_zip_compression_ratio(io.BytesIO(data), 1000)
 
     def test_individual_size_over_limit_rejected(self):
         """An entry declaring one byte over the limit is rejected."""
-        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1001, 1001)
+        data = _declared_zip([("a.bin", 1001, 1001)])
         validator = _limits_validator(max_individual_file_size=1000)
 
         with pytest.raises(CompressionSecurityError) as exc_info:
@@ -1393,7 +1414,7 @@ class TestCompressionLimitBoundaries:
 
     def test_total_uncompressed_at_limit_accepted(self):
         """Two 500-byte entries total exactly the 1000-byte limit."""
-        data = _with_declared_sizes(_stored_zip(["a.bin", "b.bin"]), 500, 500)
+        data = _declared_zip([("a.bin", 500, 500), ("b.bin", 500, 500)])
         validator = _limits_validator(
             max_uncompressed_size=1000, max_individual_file_size=600
         )
@@ -1402,20 +1423,13 @@ class TestCompressionLimitBoundaries:
 
     def test_total_uncompressed_over_limit_rejected(self):
         """Entries totalling 1001 bytes exceed a 1000-byte limit."""
-        data = _stored_zip(["a.bin", "b.bin"])
-        first = _with_declared_sizes(data, 500, 500)
-        second = bytearray(first)
-        # Raise only the second record's declared sizes to 501
-        pos = second.rfind(b"PK\x01\x02")
-        struct.pack_into("<LL", second, pos + 20, 501, 501)
+        data = _declared_zip([("a.bin", 500, 500), ("b.bin", 501, 501)])
         validator = _limits_validator(
             max_uncompressed_size=1000, max_individual_file_size=600
         )
 
         with pytest.raises(ZipBombError) as exc_info:
-            validator.validate_zip_compression_ratio(
-                io.BytesIO(bytes(second)), 1001
-            )
+            validator.validate_zip_compression_ratio(io.BytesIO(data), 1001)
 
         assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
         assert exc_info.value.uncompressed_size == 1001
@@ -1471,3 +1485,658 @@ class TestCompressionLimitBoundaries:
             )
 
         assert "timeout" in str(exc_info.value).lower()
+
+
+class _Unseekable(io.RawIOBase):
+    """Write-only stream without seek, so zipfile adds descriptors."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data) -> int:
+        self.data += data
+        return len(data)
+
+
+def _descriptor_zip(
+    force_zip64: bool = False,
+    compression: int = zipfile.ZIP_DEFLATED,
+    entries: tuple[tuple[str, bytes], ...] = (
+        ("a.txt", b"hello " * 20),
+        ("b.txt", b""),
+    ),
+) -> bytes:
+    """Build a ZIP whose entries are followed by data descriptors."""
+    stream = _Unseekable()
+    with zipfile.ZipFile(stream, "w", compression) as zf:
+        for name, content in entries:
+            with zf.open(name, "w", force_zip64=force_zip64) as entry:
+                entry.write(content)
+    assert all(
+        info.flag_bits & 0x08
+        for info in zipfile.ZipFile(io.BytesIO(stream.data)).infolist()
+    )
+    return bytes(stream.data)
+
+
+def _deflated_zip() -> bytes:
+    """Build a deflated ZIP with two compressible entries."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a.txt", b"hello " * 50)
+        zf.writestr("b.txt", b"world " * 50)
+    return buf.getvalue()
+
+
+def _zip_with_directories() -> bytes:
+    """Build a ZIP holding directory entries and a file."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.mkdir("d")
+        zf.writestr("e/", b"")
+        zf.writestr("d/a.txt", b"hello")
+    return buf.getvalue()
+
+
+def _forced_zip64_zip() -> bytes:
+    """Build a ZIP whose local headers carry ZIP64 extra fields."""
+    buf = io.BytesIO()
+    with (
+        zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf,
+        zf.open("a.txt", "w", force_zip64=True) as entry,
+    ):
+        entry.write(b"hello " * 20)
+    return buf.getvalue()
+
+
+_EVIL = [("payload.sh", b"#!/bin/sh\necho owned\n")]
+_BENIGN = [("ok.gpx", b'<?xml version="1.0"?><gpx></gpx>')]
+
+
+def _build(entries: list[tuple[str, bytes]]) -> bytes:
+    """Build a deflated comment-free ZIP from name/content pairs."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in entries:
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _infos(data: bytes) -> list[zipfile.ZipInfo]:
+    """Return the entries zipfile lists, in central-directory order."""
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return zf.infolist()
+
+
+def _data_end(data: bytes, info: zipfile.ZipInfo) -> int:
+    """Return where an entry's compressed data ends."""
+    name_len, extra_len = struct.unpack_from(
+        "<2H", data, info.header_offset + 26
+    )
+    return info.header_offset + 30 + name_len + extra_len + info.compress_size
+
+
+def _directory_records(data: bytes) -> list[bytes]:
+    """Split the central directory of a comment-free ZIP."""
+    fields = _eocd_fields(data)
+    directory = data[fields[6] : fields[6] + fields[5]]
+    records = []
+    while directory:
+        name, extra, comment = struct.unpack_from("<3H", directory, 28)
+        size = 46 + name + extra + comment
+        records.append(directory[:size])
+        directory = directory[size:]
+    return records
+
+
+def _with_directory(data: bytes, records: list[bytes], shift: int) -> bytes:
+    """
+    Replace the central directory of a comment-free ZIP.
+
+    Every local-header offset in ``records`` and the declared
+    directory offset move by ``shift``; the directory stays where
+    it is.
+    """
+    fields = list(_eocd_fields(data))
+    moved = []
+    for record in records:
+        record = bytearray(record)
+        (offset,) = struct.unpack_from("<L", record, 42)
+        struct.pack_into("<L", record, 42, offset + shift)
+        moved.append(bytes(record))
+    directory = b"".join(moved)
+    start = fields[6]
+    fields[3] = fields[4] = len(records)
+    fields[5] = len(directory)
+    fields[6] += shift
+    return data[:start] + directory + struct.pack(_EOCD, *fields)
+
+
+def _splice(data: bytes, at: int, blob: bytes, remove: int = 0) -> bytes:
+    """
+    Replace ``remove`` bytes at ``at`` with ``blob`` in a ZIP.
+
+    Offsets of local headers at or after the replaced bytes, and
+    of the central directory, move so zipfile still lists every
+    entry where it now is.
+    """
+    fields = list(_eocd_fields(data))
+    delta = len(blob) - remove
+    records = []
+    for record in _directory_records(data):
+        record = bytearray(record)
+        (offset,) = struct.unpack_from("<L", record, 42)
+        if offset >= at + remove:
+            struct.pack_into("<L", record, 42, offset + delta)
+        records.append(bytes(record))
+    start = fields[6]
+    fields[6] += delta
+    return (
+        data[:at]
+        + blob
+        + data[at + remove : start]
+        + b"".join(records)
+        + struct.pack(_EOCD, *fields)
+    )
+
+
+def _without_descriptor_signatures(data: bytes) -> bytes:
+    """Drop the optional signature from every data descriptor."""
+    for info in sorted(_infos(data), key=lambda i: -i.header_offset):
+        end = _data_end(data, info)
+        assert data[end : end + 4] == b"PK\x07\x08"
+        data = _splice(data, end, b"", remove=4)
+    return data
+
+
+def _second_entry_offset(data: bytes) -> int:
+    """Return the local-header offset of the second listed entry."""
+    return _infos(data)[1].header_offset
+
+
+def _local_entry(name: str, content: bytes) -> bytes:
+    """Return one local header and its data, without a directory."""
+    data = _build([(name, content)])
+    return data[: _eocd_fields(data)[6]]
+
+
+def _shifted(data: bytes, shift: int) -> bytes:
+    """Move every declared offset of a ZIP by ``shift`` bytes."""
+    return _with_directory(data, _directory_records(data), shift)
+
+
+def _archive_in_comment(outer: bytes, inner: bytes) -> bytes:
+    """Hide ``inner`` in the comment of a comment-free ``outer``."""
+    return (
+        outer[:-2]
+        + struct.pack("<H", len(inner))
+        + _shifted(inner, len(outer))
+    )
+
+
+def _with_compress_size(data: bytes, compress_size: int) -> bytes:
+    """Declare ``compress_size`` in the first central record only."""
+    buf = bytearray(data)
+    struct.pack_into("<L", buf, buf.find(b"PK\x01\x02") + 20, compress_size)
+    return bytes(buf)
+
+
+def _with_header_past_end(data: bytes) -> bytes:
+    """
+    Point the second record past the end of the file.
+
+    The first entry's compressed size grows, in its local header
+    and its record, so its data ends where the second record's
+    local header is said to start.
+    """
+    first, second = _directory_records(data)
+    first, second = bytearray(first), bytearray(second)
+    struct.pack_into("<L", second, 42, 1 << 20)
+    name_len = struct.unpack_from("<H", first, 28)[0]
+    compress_size = (1 << 20) - 30 - name_len
+    struct.pack_into("<L", first, 20, compress_size)
+    data = _patch_first_local(data, 18, "<L", compress_size)
+    return _with_directory(data, [bytes(first), bytes(second)], 0)
+
+
+def _patch_descriptor(data: bytes, value: int) -> bytes:
+    """Overwrite the CRC-32 in the first entry's data descriptor."""
+    buf = bytearray(data)
+    struct.pack_into("<L", buf, _data_end(data, _infos(data)[0]) + 4, value)
+    return bytes(buf)
+
+
+def _without_first_descriptor(data: bytes) -> bytes:
+    """Remove the first entry's data descriptor entirely."""
+    return _splice(data, _data_end(data, _infos(data)[0]), b"", remove=16)
+
+
+def _clear_local_descriptor_flag(data: bytes) -> bytes:
+    """Clear flag bit 3 in the first local header only."""
+    buf = bytearray(data)
+    buf[6] &= ~0x08
+    return bytes(buf)
+
+
+def _patch_first_local(data: bytes, offset: int, fmt: str, value) -> bytes:
+    """Overwrite one field of the first local header only."""
+    buf = bytearray(data)
+    struct.pack_into(fmt, buf, offset, value)
+    return bytes(buf)
+
+
+def _clear_local_utf8_flag(data: bytes) -> bytes:
+    """Clear the UTF-8 name flag (bit 11) in the first local header."""
+    (flags,) = struct.unpack_from("<H", data, 6)
+    return _patch_first_local(data, 6, "<H", flags & ~0x800)
+
+
+def _understated_local_sizes() -> bytes:
+    """
+    Hide an entry in stored data behind zeroed local sizes.
+
+    The central directory lists the stored entry at its real size,
+    while its local header declares no data, so a reader trusting
+    the local header finds the hidden entry inside that data.
+    """
+    data = bytearray(_build_stored([("ok.gpx", _local_entry(*_EVIL[0]))]))
+    struct.pack_into("<3L", data, 14, 0, 0, 0)
+    return bytes(data)
+
+
+def _build_stored(entries: list[tuple[str, bytes]]) -> bytes:
+    """Build a stored comment-free ZIP from name/content pairs."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for name, content in entries:
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _raw_deflate(content: bytes, mode: int = zlib.Z_FINISH) -> bytes:
+    """Deflate ``content`` without a zlib header, as ZIP stores it."""
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    return compressor.compress(content) + compressor.flush(mode)
+
+
+def _hand_built_descriptor_zip(compressed: bytes, content: bytes) -> bytes:
+    """
+    Build a one-entry deflated ZIP with a data descriptor by hand.
+
+    ``compressed`` is the entry's compressed data; the descriptor
+    and central directory declare its length together with the
+    CRC-32 and length of ``content``.
+    """
+    name = b"ok.gpx"
+    values = (zlib.crc32(content), len(compressed), len(content))
+    local = (
+        struct.pack(
+            "<4s2B4HL2L2H",
+            b"PK\x03\x04",
+            20,
+            0,
+            0x08,
+            zipfile.ZIP_DEFLATED,
+            0,
+            0x21,
+            0,
+            0,
+            0,
+            len(name),
+            0,
+        )
+        + name
+    )
+    descriptor = struct.pack("<4s3L", b"PK\x07\x08", *values)
+    central = (
+        struct.pack(
+            "<4s4B4HL2L5H2L",
+            b"PK\x01\x02",
+            20,
+            3,
+            20,
+            0,
+            0x08,
+            zipfile.ZIP_DEFLATED,
+            0,
+            0x21,
+            *values,
+            len(name),
+            0,
+            0,
+            0,
+            0,
+            0o100644 << 16,
+            0,
+        )
+        + name
+    )
+    offset = len(local) + len(compressed) + len(descriptor)
+    eocd = struct.pack(
+        _EOCD, b"PK\x05\x06", 0, 0, 1, 1, len(central), offset, 0
+    )
+    return local + compressed + descriptor + central + eocd
+
+
+def _deflate_ending_early() -> bytes:
+    """
+    Hide an entry after the end of a descriptor entry's deflate data.
+
+    The deflate stream ends early and is followed, inside the
+    declared compressed size, by a forged descriptor and a hidden
+    local entry that a streaming reader resumes at.
+    """
+    content = b"<gpx></gpx>"
+    compressed = _raw_deflate(content)
+    forged = struct.pack(
+        "<4s3L",
+        b"PK\x07\x08",
+        zlib.crc32(content),
+        len(compressed),
+        len(content),
+    )
+    return _hand_built_descriptor_zip(
+        compressed + forged + _local_entry(*_EVIL[0]), content
+    )
+
+
+def _empty_stored_descriptor_zip() -> bytes:
+    """
+    Stream an empty stored entry between deflated ones.
+
+    Every entry carries a signed data descriptor, as bsdtar and
+    streamed Info-ZIP archives store empty files.
+    """
+    stream = _Unseekable()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content, method in (
+            ("a.gpx", _GPX, zipfile.ZIP_DEFLATED),
+            ("empty.txt", b"", zipfile.ZIP_STORED),
+            ("b.gpx", _GPX, zipfile.ZIP_DEFLATED),
+        ):
+            info = zipfile.ZipInfo(name)
+            info.compress_type = method
+            with zf.open(info, "w") as entry:
+                entry.write(content)
+    data = bytes(stream.data)
+    empty = _infos(data)[1]
+    assert empty.flag_bits & 0x08
+    assert empty.compress_type == zipfile.ZIP_STORED
+    assert data[_data_end(data, empty) :].startswith(b"PK\x07\x08")
+    return data
+
+
+def _with_empty_entry_crc(data: bytes, crc: int) -> bytes:
+    """Declare ``crc`` for the empty entry in its record and descriptor."""
+    empty = _infos(data)[1]
+    buf = bytearray(data)
+    struct.pack_into("<L", buf, _data_end(data, empty) + 4, crc)
+    central = buf.find(b"PK\x01\x02")
+    central = buf.find(b"PK\x01\x02", central + 4)
+    struct.pack_into("<L", buf, central + 16, crc)
+    return bytes(buf)
+
+
+_GPX = b"".join(b"<trkpt n='%d'/>" % i for i in range(5000))
+_STORED_AB = _stored_zip(["a.txt", "b.txt"])
+_DESCRIPTOR_ZIP = _descriptor_zip()
+
+_LAYOUT_VALID = [
+    pytest.param(_STORED_AB, id="stored"),
+    pytest.param(_deflated_zip(), id="deflated"),
+    pytest.param(_zip_with_entries(3, b"hello"), id="comment"),
+    pytest.param(_zip_with_directories(), id="directories"),
+    pytest.param(_zip_with_entries(0), id="empty-archive"),
+    pytest.param(_DESCRIPTOR_ZIP, id="descriptors"),
+    pytest.param(_descriptor_zip(force_zip64=True), id="descriptors-zip64"),
+    pytest.param(
+        _without_descriptor_signatures(_DESCRIPTOR_ZIP),
+        id="descriptors-unsigned",
+    ),
+    pytest.param(
+        _without_descriptor_signatures(_descriptor_zip(force_zip64=True)),
+        id="descriptors-zip64-unsigned",
+    ),
+    pytest.param(_forced_zip64_zip(), id="zip64-local-extra"),
+    pytest.param(_ZIP64_3, id="zip64-end-records"),
+    pytest.param(
+        _as_zip64(_zip_with_entries(3), 3, 0xFFFF, b"\x00" * 8),
+        id="zip64-extensible",
+    ),
+    pytest.param(
+        _with_directory(
+            _zip_with_entries(3),
+            _directory_records(_zip_with_entries(3))[::-1],
+            0,
+        ),
+        id="directory-out-of-order",
+    ),
+    pytest.param(_build([("é.txt", b"x")]), id="utf8-name"),
+    pytest.param(
+        _stored_zip(["aa.txt"]).replace(b"aa.txt", b"a\x82.txt"),
+        id="cp437-name",
+    ),
+    pytest.param(
+        _descriptor_zip(entries=(("e/", b""), ("e/a.gpx", _GPX))),
+        id="descriptors-directory",
+    ),
+    pytest.param(
+        _hand_built_descriptor_zip(_raw_deflate(_GPX), _GPX),
+        id="descriptor-hand-built",
+    ),
+    pytest.param(
+        _empty_stored_descriptor_zip(), id="empty-stored-with-descriptor"
+    ),
+]
+
+_LAYOUT_INVALID = [
+    pytest.param(
+        _with_fake_eocd_in_comment(_build(_EVIL), 0),
+        id="fake-empty-eocd-in-comment",
+    ),
+    pytest.param(
+        _archive_in_comment(_build(_EVIL), _build(_BENIGN)),
+        id="archive-in-comment",
+    ),
+    pytest.param(_build(_EVIL) + _build(_BENIGN), id="concatenated"),
+    pytest.param(
+        _splice(
+            _STORED_AB,
+            _second_entry_offset(_STORED_AB),
+            _local_entry("payload.sh", b"!"),
+        ),
+        id="unlisted-entry",
+    ),
+    pytest.param(
+        _splice(_STORED_AB, _second_entry_offset(_STORED_AB), b"\x00" * 16),
+        id="gap-between-entries",
+    ),
+    pytest.param(_STORED_AB + b"junk", id="trailing-bytes"),
+    pytest.param(
+        _zip_with_entries(3, b"hello") + b"junk",
+        id="trailing-after-comment",
+    ),
+    pytest.param(b"PK\x03\x04" + b"\x00" * 12 + _STORED_AB, id="prepended"),
+    pytest.param(
+        _splice(_STORED_AB, 0, b"PK\x03\x04" + b"\x00" * 12),
+        id="prepended-offsets-adjusted",
+    ),
+    pytest.param(_STUB + _ZIP64_3, id="zip64-prepended"),
+    pytest.param(
+        _with_directory(
+            _STORED_AB,
+            [_directory_records(_STORED_AB)[0]] * 2,
+            0,
+        ),
+        id="shared-local-header",
+    ),
+    pytest.param(_shifted(_STORED_AB, 4), id="declared-offsets-shifted"),
+    pytest.param(_with_compress_size(_STORED_AB, 2), id="size-past-data"),
+    pytest.param(_with_header_past_end(_STORED_AB), id="header-past-end"),
+    pytest.param(
+        _patch_descriptor(_DESCRIPTOR_ZIP, 0), id="descriptor-wrong-crc"
+    ),
+    pytest.param(
+        _without_first_descriptor(_DESCRIPTOR_ZIP), id="descriptor-missing"
+    ),
+    pytest.param(
+        _clear_local_descriptor_flag(_DESCRIPTOR_ZIP),
+        id="descriptor-flag-mismatch",
+    ),
+    pytest.param(_understated_local_sizes(), id="local-sizes-understated"),
+    pytest.param(
+        _patch_first_local(_STORED_AB, 14, "<L", 0), id="local-crc-differs"
+    ),
+    pytest.param(
+        _patch_first_local(_deflated_zip(), 8, "<H", zipfile.ZIP_STORED),
+        id="local-method-differs",
+    ),
+    pytest.param(
+        _patch_first_local(_STORED_AB, 30, "<B", ord("z")),
+        id="local-name-differs",
+    ),
+    pytest.param(
+        _clear_local_utf8_flag(_build([("é.txt", b"x")])),
+        id="local-utf8-flag-differs",
+    ),
+    pytest.param(
+        _patch_first_local(_forced_zip64_zip(), 47, "<Q", 1),
+        id="local-zip64-size-differs",
+    ),
+    pytest.param(
+        _patch_first_local(_forced_zip64_zip(), 35, "<H", 0x9999),
+        id="local-zip64-extra-missing",
+    ),
+    pytest.param(
+        _descriptor_zip(compression=zipfile.ZIP_STORED),
+        id="stored-with-descriptor",
+    ),
+    pytest.param(
+        _without_descriptor_signatures(_empty_stored_descriptor_zip()),
+        id="empty-stored-unsigned-descriptor",
+    ),
+    pytest.param(
+        _with_empty_entry_crc(_empty_stored_descriptor_zip(), 1),
+        id="empty-stored-nonzero-crc",
+    ),
+    pytest.param(
+        _descriptor_zip(compression=zipfile.ZIP_BZIP2),
+        id="bzip2-with-descriptor",
+    ),
+    pytest.param(
+        _descriptor_zip(compression=zipfile.ZIP_LZMA),
+        id="lzma-with-descriptor",
+    ),
+    pytest.param(_deflate_ending_early(), id="deflate-ends-early"),
+    pytest.param(
+        _hand_built_descriptor_zip(
+            _raw_deflate(_GPX, zlib.Z_SYNC_FLUSH), _GPX
+        ),
+        id="deflate-unterminated",
+    ),
+    pytest.param(
+        _hand_built_descriptor_zip(b"\xff" * 16, b"x" * 16),
+        id="deflate-corrupt",
+    ),
+    pytest.param(
+        _hand_built_descriptor_zip(_raw_deflate(_GPX), _GPX[:-1]),
+        id="deflate-longer-than-declared",
+    ),
+    pytest.param(
+        _hand_built_descriptor_zip(_raw_deflate(_GPX), _GPX + b"x"),
+        id="deflate-shorter-than-declared",
+    ),
+]
+
+
+class TestZipLayout:
+    """Tests that listed entries must cover the whole ZIP file."""
+
+    @pytest.mark.parametrize("data", _LAYOUT_VALID)
+    def test_exact_layout_accepted(self, data):
+        """An archive made only of its listed entries passes."""
+        validator = CompressionSecurityValidator(FileSecurityConfig())
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    @pytest.mark.parametrize("data", _LAYOUT_INVALID)
+    def test_unlisted_bytes_rejected(self, data):
+        """Bytes no listed entry or end record accounts for fail."""
+        assert _zipfile_entry_count(data) is not None
+        validator = CompressionSecurityValidator(FileSecurityConfig())
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    @pytest.mark.parametrize("chunk_size", [1, 7, 1024, 65536])
+    def test_descriptor_inflated_in_any_chunk_size(self, chunk_size):
+        """Descriptor entries pass whatever the read chunk size."""
+        data = _descriptor_zip(entries=(("a.gpx", _GPX), ("b.gpx", _GPX)))
+        validator = _limits_validator(chunk_size=chunk_size)
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    def test_zip64_descriptor_for_large_size_accepted(self):
+        """A size above 4 GiB matches only an 8-byte descriptor."""
+        entry = zipfile.ZipInfo("big.bin")
+        entry.CRC, entry.compress_size, entry.file_size = 7, 10, 1 << 32
+        descriptor = struct.pack("<L2Q", 7, 10, 1 << 32)
+
+        assert compression_validator._descriptor_matches(
+            io.BytesIO(descriptor), 0, len(descriptor), entry, False
+        )
+
+    def test_truncated_descriptor_for_large_size_rejected(self):
+        """A 4-byte descriptor cannot stand for a size above 4 GiB."""
+        entry = zipfile.ZipInfo("big.bin")
+        entry.CRC, entry.compress_size, entry.file_size = 7, 10, 1 << 32
+        descriptor = struct.pack("<3L", 7, 10, 0)
+
+        assert not compression_validator._descriptor_matches(
+            io.BytesIO(descriptor), 0, len(descriptor), entry, False
+        )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(
+                _with_fake_eocd_in_comment(_build(_EVIL), 0),
+                id="fake-empty-eocd-in-comment",
+            ),
+            pytest.param(
+                _archive_in_comment(_build(_EVIL), _build(_BENIGN)),
+                id="archive-in-comment",
+            ),
+            pytest.param(_build(_EVIL) + _build(_BENIGN), id="concatenated"),
+        ],
+    )
+    async def test_hidden_archive_rejected_end_to_end(
+        self, mock_upload_file, data
+    ):
+        """FileValidator rejects an archive hiding other entries."""
+        validator = FileValidator()
+        upload = mock_upload_file(filename="track.zip", content=data)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            await validator.validate_zip_file(upload)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    async def test_descriptor_archive_accepted_end_to_end(
+        self, mock_upload_file
+    ):
+        """FileValidator accepts a streamed archive with descriptors."""
+        validator = FileValidator()
+        upload = mock_upload_file(
+            filename="track.zip", content=_DESCRIPTOR_ZIP
+        )
+
+        await validator.validate_zip_file(upload)

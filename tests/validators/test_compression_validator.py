@@ -2,6 +2,7 @@
 
 import io
 import struct
+import types
 import zipfile
 
 import pytest
@@ -1300,3 +1301,173 @@ class TestCompressionResourceLimits:
         assert "_verify_entries_decompress" in {
             entry.name for entry in exc_info.traceback
         }
+
+
+def _with_declared_sizes(
+    data: bytes, compress_size: int, file_size: int
+) -> bytes:
+    """Rewrite the sizes declared by every central-directory record."""
+    buf = bytearray(data)
+    pos = buf.find(b"PK\x01\x02")
+    while pos != -1:
+        struct.pack_into("<LL", buf, pos + 20, compress_size, file_size)
+        pos = buf.find(b"PK\x01\x02", pos + 4)
+    return bytes(buf)
+
+
+def _stored_zip(names: list[str]) -> bytes:
+    """Build a stored ZIP with one one-byte entry per name."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for name in names:
+            zf.writestr(name, b"x")
+    return buf.getvalue()
+
+
+def _limits_validator(**limits) -> CompressionSecurityValidator:
+    """Return a validator with the given limit overrides."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(**limits)
+    return CompressionSecurityValidator(config)
+
+
+class TestCompressionLimitBoundaries:
+    """Tests that each limit accepts its value and rejects the next."""
+
+    def test_entry_ratio_at_limit_accepted(self):
+        """A declared 1000:100 entry is exactly 10:1 and passes."""
+        data = _with_declared_sizes(_stored_zip(["a.bin"]), 100, 1000)
+        validator = _limits_validator(max_compression_ratio=10)
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), 10_000)
+
+    def test_entry_ratio_over_limit_rejected(self):
+        """A declared 1001:100 entry is above 10:1 and is rejected."""
+        data = _with_declared_sizes(_stored_zip(["a.bin"]), 100, 1001)
+        validator = _limits_validator(max_compression_ratio=10)
+
+        with pytest.raises(ZipBombError) as exc_info:
+            validator.validate_zip_compression_ratio(io.BytesIO(data), 10_000)
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert "for 'a.bin'" in str(exc_info.value)
+
+    def test_overall_ratio_at_limit_accepted(self):
+        """1000 bytes over a 100-byte archive is exactly 10:1."""
+        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1000, 1000)
+        validator = _limits_validator(max_compression_ratio=10)
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), 100)
+
+    def test_overall_ratio_over_limit_rejected(self):
+        """1000 bytes over a 99-byte archive is above 10:1."""
+        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1000, 1000)
+        validator = _limits_validator(max_compression_ratio=10)
+
+        with pytest.raises(ZipBombError) as exc_info:
+            validator.validate_zip_compression_ratio(io.BytesIO(data), 99)
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert "Overall" in str(exc_info.value)
+
+    def test_individual_size_at_limit_accepted(self):
+        """An entry declaring exactly the individual limit passes."""
+        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1000, 1000)
+        validator = _limits_validator(max_individual_file_size=1000)
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), 1000)
+
+    def test_individual_size_over_limit_rejected(self):
+        """An entry declaring one byte over the limit is rejected."""
+        data = _with_declared_sizes(_stored_zip(["a.bin"]), 1001, 1001)
+        validator = _limits_validator(max_individual_file_size=1000)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(io.BytesIO(data), 1001)
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+
+    def test_total_uncompressed_at_limit_accepted(self):
+        """Two 500-byte entries total exactly the 1000-byte limit."""
+        data = _with_declared_sizes(_stored_zip(["a.bin", "b.bin"]), 500, 500)
+        validator = _limits_validator(
+            max_uncompressed_size=1000, max_individual_file_size=600
+        )
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), 1000)
+
+    def test_total_uncompressed_over_limit_rejected(self):
+        """Entries totalling 1001 bytes exceed a 1000-byte limit."""
+        data = _stored_zip(["a.bin", "b.bin"])
+        first = _with_declared_sizes(data, 500, 500)
+        second = bytearray(first)
+        # Raise only the second record's declared sizes to 501
+        pos = second.rfind(b"PK\x01\x02")
+        struct.pack_into("<LL", second, pos + 20, 501, 501)
+        validator = _limits_validator(
+            max_uncompressed_size=1000, max_individual_file_size=600
+        )
+
+        with pytest.raises(ZipBombError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(bytes(second)), 1001
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
+        assert exc_info.value.uncompressed_size == 1001
+
+    def test_recursive_entry_limit_at_limit_accepted(self):
+        """An archive with exactly the recursive entry limit passes."""
+        data = _zip_with_entries(3)
+        validator = _limits_validator(max_total_entries_recursive=3)
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    def test_recursive_entry_limit_over_limit_rejected(self):
+        """One entry over the recursive entry limit is rejected."""
+        data = _zip_with_entries(4)
+        validator = _limits_validator(max_total_entries_recursive=3)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
+    @staticmethod
+    def _clock(monkeypatch, elapsed: float) -> None:
+        """Make the second clock reading ``elapsed`` seconds late."""
+        readings = iter([100.0, 100.0 + elapsed])
+        monkeypatch.setattr(
+            compression_validator,
+            "time",
+            types.SimpleNamespace(
+                monotonic=lambda: next(readings, 100.0 + elapsed)
+            ),
+        )
+
+    def test_analysis_timeout_at_limit_accepted(self, monkeypatch):
+        """An entry reached exactly at the timeout is still analysed."""
+        data = _zip_with_entries(1)
+        validator = _limits_validator(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.0)
+
+        validator.validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    def test_analysis_timeout_over_limit_rejected(self, monkeypatch):
+        """An entry reached after the timeout aborts the analysis."""
+        data = _zip_with_entries(1)
+        validator = _limits_validator(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.5)
+
+        with pytest.raises(ZipBombError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert "timeout" in str(exc_info.value).lower()

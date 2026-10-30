@@ -344,3 +344,38 @@ class TestCheckResourceLimits:
         assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
         # Raised by the check after the nested block, not at exit
         assert progress == []
+
+
+class TestResourceMonitorLimitBoundaries:
+    """Tests that a limit accepts its value and rejects the next."""
+
+    def test_time_at_limit_accepted(self):
+        """Elapsed time equal to the limit passes."""
+        monitor = ResourceMonitor(max_time_seconds=5.0, max_memory_mb=1)
+
+        monitor._raise_if_time_exceeded(5.0)
+
+    def test_time_over_limit_rejected(self):
+        """Elapsed time just above the limit raises."""
+        monitor = ResourceMonitor(max_time_seconds=5.0, max_memory_mb=1)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            monitor._raise_if_time_exceeded(5.01)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_memory_at_limit_accepted(self):
+        """Growth equal to the limit passes."""
+        monitor = ResourceMonitor(max_time_seconds=5.0, max_memory_mb=1)
+
+        monitor._raise_if_memory_exceeded(1024 * 1024)
+
+    def test_memory_over_limit_rejected(self):
+        """Growth one byte over the limit raises."""
+        monitor = ResourceMonitor(max_time_seconds=5.0, max_memory_mb=1)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            monitor._raise_if_memory_exceeded(1024 * 1024 + 1)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+        assert exc_info.value.memory_bytes == 1024 * 1024 + 1

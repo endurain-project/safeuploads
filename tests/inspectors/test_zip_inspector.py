@@ -3,6 +3,7 @@
 import gzip
 import io
 import struct
+import types
 import zipfile
 
 import pytest
@@ -14,6 +15,7 @@ from safeuploads.exceptions import (
     ResourceLimitError,
     ZipContentError,
 )
+from safeuploads.inspectors import zip_inspector
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
 
 
@@ -1583,3 +1585,203 @@ class TestZipInspectorResourceLimits:
         assert "inspect_nested_archives" in {
             entry.name for entry in exc_info.traceback
         }
+
+
+def _limits_inspector(**limits) -> ZipContentInspector:
+    """Return an inspector with the given limit overrides."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(scan_zip_content=False, **limits)
+    return ZipContentInspector(config)
+
+
+class TestZipInspectorLimitBoundaries:
+    """Tests that each limit accepts its value and rejects the next."""
+
+    @staticmethod
+    def _inspect(inspector: ZipContentInspector, names: list[str]) -> None:
+        data = _build_zip(dict.fromkeys(names, b"x"))
+        inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_filename_length_at_limit_accepted(self):
+        """A 10-character basename passes a limit of 10."""
+        self._inspect(
+            _limits_inspector(max_filename_length=10), ["a" * 6 + ".txt"]
+        )
+
+    def test_filename_length_over_limit_rejected(self):
+        """An 11-character basename is rejected at a limit of 10."""
+        inspector = _limits_inspector(max_filename_length=10)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a" * 7 + ".txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.threats == [
+            "Filename too long: 'aaaaaaa.txt' (11 chars)"
+        ]
+
+    def test_path_length_at_limit_accepted(self):
+        """A 20-character path passes a limit of 20."""
+        self._inspect(
+            _limits_inspector(max_path_length=20), ["dir/" + "a" * 12 + ".txt"]
+        )
+
+    def test_path_length_over_limit_rejected(self):
+        """A 21-character path is rejected at a limit of 20."""
+        inspector = _limits_inspector(max_path_length=20)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["dir/" + "a" * 13 + ".txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert len(exc_info.value.threats) == 1
+        assert exc_info.value.threats[0].startswith("Path too long")
+
+    def test_directory_depth_at_limit_accepted(self):
+        """Two separators pass a depth limit of 2."""
+        self._inspect(_limits_inspector(max_zip_depth=2), ["a/b/c.txt"])
+
+    def test_directory_depth_over_limit_rejected(self):
+        """Three separators are rejected at a depth limit of 2."""
+        inspector = _limits_inspector(max_zip_depth=2)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a/b/c/d.txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.threats == [
+            "Excessive directory depth: 3 (max: 2)"
+        ]
+
+    def test_same_type_count_at_limit_accepted(self):
+        """Three .txt files pass a limit of 3."""
+        self._inspect(
+            _limits_inspector(max_number_files_same_type=3),
+            ["a.txt", "b.txt", "c.txt"],
+        )
+
+    def test_same_type_count_over_limit_rejected(self):
+        """Four .txt files are rejected at a limit of 3."""
+        inspector = _limits_inspector(max_number_files_same_type=3)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a.txt", "b.txt", "c.txt", "d.txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.threats == [
+            "Excessive number of .txt files: 4 (max: 3)"
+        ]
+
+    def test_nested_depth_at_limit_accepted(self):
+        """Nesting at depth 2 passes a depth limit of 2."""
+        inspector = _limits_inspector(max_zip_depth=2)
+        data = _build_zip({"a.txt": b"x"})
+
+        inspector.inspect_nested_archives(io.BytesIO(data), depth=2)
+
+    def test_nested_depth_over_limit_rejected(self):
+        """Nesting at depth 3 is rejected at a depth limit of 2."""
+        inspector = _limits_inspector(max_zip_depth=2)
+        data = _build_zip({"a.txt": b"x"})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(data), depth=3)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_RECURSIVE_STRUCTURE
+
+    def test_nested_entry_total_at_limit_accepted(self):
+        """Three entries pass a recursive entry limit of 3."""
+        inspector = _limits_inspector(max_total_entries_recursive=3)
+        data = _build_zip({f"f{i}.txt": b"x" for i in range(3)})
+
+        inspector.inspect_nested_archives(io.BytesIO(data))
+
+    def test_nested_entry_total_over_limit_rejected(self):
+        """Four entries are rejected at a recursive entry limit of 3."""
+        inspector = _limits_inspector(max_total_entries_recursive=3)
+        data = _build_zip({f"f{i}.txt": b"x" for i in range(4)})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
+    def test_nested_archive_at_size_limit_is_inspected(self):
+        """An inner ZIP of exactly the size limit is recursed into."""
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(4)})
+        outer = _build_zip({"inner.zip": inner})
+        inspector = _limits_inspector(
+            max_individual_file_size=len(inner),
+            max_total_entries_recursive=3,
+        )
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(outer))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
+    def test_nested_archive_over_size_limit_not_opened(self):
+        """
+        An inner ZIP one byte over the size limit is not opened.
+
+        Its entries therefore do not count toward the recursive
+        total. Pins the current boundary of the size guard only.
+        """
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(4)})
+        outer = _build_zip({"inner.zip": inner})
+        inspector = _limits_inspector(
+            max_individual_file_size=len(inner) - 1,
+            max_total_entries_recursive=3,
+        )
+
+        inspector.inspect_nested_archives(io.BytesIO(outer))
+
+    @staticmethod
+    def _clock(monkeypatch, elapsed: float) -> None:
+        """Make the second clock reading ``elapsed`` seconds late."""
+        readings = iter([100.0, 100.0 + elapsed])
+        monkeypatch.setattr(
+            zip_inspector,
+            "time",
+            types.SimpleNamespace(
+                monotonic=lambda: next(readings, 100.0 + elapsed)
+            ),
+        )
+
+    def test_content_timeout_at_limit_accepted(self, monkeypatch):
+        """An entry reached exactly at the timeout is still inspected."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.0)
+
+        self._inspect(inspector, ["a.txt"])
+
+    def test_content_timeout_over_limit_rejected(self, monkeypatch):
+        """An entry reached after the timeout aborts the inspection."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.5)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a.txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
+
+    def test_nested_timeout_at_limit_accepted(self, monkeypatch):
+        """A nested entry reached exactly at the timeout is inspected."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.0)
+
+        inspector.inspect_nested_archives(
+            io.BytesIO(_build_zip({"a.txt": b"x"}))
+        )
+
+    def test_nested_timeout_over_limit_rejected(self, monkeypatch):
+        """A nested entry reached after the timeout aborts recursion."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.5)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(
+                io.BytesIO(_build_zip({"a.txt": b"x"}))
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT

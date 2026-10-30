@@ -1126,6 +1126,79 @@ class TestStreamToTempFile:
             )
 
 
+class TestFileSizeLimitBoundaries:
+    """Tests that the size limit accepts its value and rejects the next."""
+
+    @pytest.mark.asyncio
+    async def test_declared_size_at_limit_accepted(self, mock_upload_file):
+        """A declared size equal to the limit is not rejected up front."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x" * 1024)
+
+        _, file_size = await validator._validate_file_size(file, 1024)
+
+        assert file_size == 1024
+
+    @pytest.mark.asyncio
+    async def test_declared_size_over_limit_rejected(self, mock_upload_file):
+        """A declared size above the limit is rejected before reading."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x", size=1025)
+
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._validate_file_size(file, 1024)
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+        assert exc_info.value.size == 1025
+
+    @pytest.mark.asyncio
+    async def test_streamed_size_at_limit_accepted(self, mock_upload_file):
+        """A counted size equal to the limit passes without a declared one."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x" * 1024)
+        file.size = None
+
+        _, file_size = await validator._validate_file_size(file, 1024)
+
+        assert file_size == 1024
+
+    @pytest.mark.asyncio
+    async def test_streamed_size_over_limit_rejected(self, mock_upload_file):
+        """A counted size one byte over the limit is rejected."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x" * 1025)
+        file.size = None
+
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._validate_file_size(file, 1024)
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+        assert exc_info.value.size == 1025
+
+    @pytest.mark.asyncio
+    async def test_spooled_stream_at_limit_accepted(self, mock_upload_file):
+        """Streaming exactly the limit to a temp file passes."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"x" * 1024)
+
+        temp, total = await validator._stream_to_temp_file(file, 1024)
+        temp.close()
+
+        assert total == 1024
+
+    @pytest.mark.asyncio
+    async def test_spooled_stream_over_limit_rejected(self, mock_upload_file):
+        """Streaming one byte over the limit to a temp file is rejected."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"x" * 1025)
+
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._stream_to_temp_file(file, 1024)
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+        assert exc_info.value.size == 1025
+
+
 class TestResourceMonitorIntegration:
     """Test resource monitoring in validate methods."""
 

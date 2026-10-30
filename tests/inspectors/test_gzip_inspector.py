@@ -295,3 +295,54 @@ class TestGzipResourceLimits:
         assert "inspect_gzip_content" in {
             entry.name for entry in exc_info.traceback
         }
+
+
+class TestGzipLimitBoundaries:
+    """Tests that each limit accepts its value and rejects the next."""
+
+    @staticmethod
+    def _inspector(**limits) -> GzipContentInspector:
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(**limits)
+        return GzipContentInspector(config)
+
+    def test_uncompressed_size_at_limit_accepted(self):
+        """Output of exactly the size limit passes."""
+        data = gzip.compress(b"A" * 1024)
+        inspector = self._inspector(
+            max_uncompressed_size=1024, max_compression_ratio=1000
+        )
+
+        inspector.inspect_gzip_content(io.BytesIO(data), len(data))
+
+    def test_uncompressed_size_over_limit_rejected(self):
+        """Output one byte over the size limit is rejected."""
+        data = gzip.compress(b"A" * 1025)
+        inspector = self._inspector(
+            max_uncompressed_size=1024, max_compression_ratio=1000
+        )
+
+        with pytest.raises(ZipBombError) as exc_info:
+            inspector.inspect_gzip_content(io.BytesIO(data), len(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
+        assert exc_info.value.uncompressed_size == 1025
+
+    def test_ratio_at_limit_accepted(self):
+        """1000 bytes from 100 compressed bytes is exactly 10:1."""
+        data = gzip.compress(b"A" * 1000)
+        inspector = self._inspector(max_compression_ratio=10)
+
+        inspector.inspect_gzip_content(io.BytesIO(data), 100)
+
+    def test_ratio_over_limit_rejected(self):
+        """1000 bytes from 99 compressed bytes is above 10:1."""
+        data = gzip.compress(b"A" * 1000)
+        inspector = self._inspector(max_compression_ratio=10)
+
+        with pytest.raises(ZipBombError) as exc_info:
+            inspector.inspect_gzip_content(io.BytesIO(data), 99)
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )

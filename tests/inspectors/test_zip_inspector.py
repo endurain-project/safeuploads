@@ -1,6 +1,8 @@
 """Tests for ZipContentInspector."""
 
+import gzip
 import io
+import struct
 import zipfile
 
 import pytest
@@ -379,7 +381,7 @@ class TestZipContentInspector:
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("data.bin", elf_content)
+            zf.writestr("data.dat", elf_content)
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
@@ -431,7 +433,7 @@ class TestZipContentInspector:
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("file.bin", pe_content)
+            zf.writestr("file.dat", pe_content)
 
         # Should not raise when content scanning disabled
         inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
@@ -449,7 +451,7 @@ class TestZipContentInspector:
         with zipfile.ZipFile(
             zip_buffer, "w", compression=zipfile.ZIP_STORED
         ) as zf:
-            zf.writestr("large.bin", large_content)
+            zf.writestr("large.dat", large_content)
 
         # Should detect executable signature regardless of size
         with pytest.raises(ZipContentError):
@@ -678,7 +680,7 @@ class TestZipContentInspector:
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             # Pure binary content with no ASCII patterns
             # Use invalid UTF-8 sequences
-            zf.writestr("data.bin", b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8")
+            zf.writestr("data.dat", b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8")
 
         # Should handle decode errors gracefully without raising
         # The decode error is caught and logged but doesn't cause failure
@@ -935,7 +937,7 @@ class TestZipInspectorStructureGaps:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
         assert "Script content" in str(exc_info.value)
 
-    def test_entry_content_read_exception_ignored(self, monkeypatch):
+    def test_entry_content_read_exception_is_threat(self, monkeypatch):
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
             scan_zip_content=True,
@@ -951,8 +953,11 @@ class TestZipInspectorStructureGaps:
             raise RuntimeError("Cannot open entry")
 
         monkeypatch.setattr(zipfile.ZipFile, "open", _mock_open)
-        # Exception caught internally — should not raise
-        inspector.inspect_zip_content(io.BytesIO(zip_data))
+        # An unreadable entry is never scanned, so it is rejected
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(zip_data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Entry content could not be inspected" in str(exc_info.value)
 
     def test_null_byte_in_entry_filename_detected(
         self,
@@ -963,11 +968,11 @@ class TestZipInspectorStructureGaps:
         )
         inspector = ZipContentInspector(config)
 
-        # ZipInfo truncates at null on construction, so
-        # set filename directly after creating the object.
+        # ZipInfo truncates filename at null on construction; the raw
+        # name is kept in orig_filename, so set it directly.
         # scan_zip_content=False means zip_file=None is safe.
         bad_info = zipfile.ZipInfo("safe.txt")
-        bad_info.filename = "test\x00evil.txt"
+        bad_info.orig_filename = "test\x00evil.txt"
         threats = inspector._inspect_zip_entry(bad_info, None)
         assert any("Null byte" in t for t in threats)
 
@@ -1225,3 +1230,284 @@ class TestZipInspectorNestedArchives:
         monkeypatch.setattr(zipfile.ZipFile, "__init__", _failing_init)
         # RuntimeError is caught (lines 695-696) and logged
         inspector.inspect_nested_archives(io.BytesIO(zip_bytes))
+
+
+def _build_zip(entries: dict[str, bytes]) -> bytes:
+    """
+    Build an in-memory ZIP_STORED archive.
+
+    Args:
+        entries: Mapping of entry name to content.
+
+    Returns:
+        Raw archive bytes.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _patch_headers(
+    data: bytes, local: tuple[int, bytes], central: tuple[int, bytes]
+) -> bytes:
+    """
+    Overwrite bytes in the first local and central header.
+
+    Args:
+        data: Single-entry archive bytes.
+        local: Offset from the local header start and the new bytes.
+        central: Offset from the central header start and the new bytes.
+
+    Returns:
+        Patched archive bytes.
+    """
+    out = bytearray(data)
+    lpos = data.find(b"PK\x03\x04")
+    cpos = data.find(b"PK\x01\x02")
+    out[lpos + local[0] : lpos + local[0] + len(local[1])] = local[1]
+    out[cpos + central[0] : cpos + central[0] + len(central[1])] = central[1]
+    return bytes(out)
+
+
+def _assert_threat(data: bytes, config, message: str) -> None:
+    """
+    Assert the inspector rejects the archive with the given message.
+
+    Args:
+        data: Archive bytes.
+        config: Security configuration.
+        message: Substring expected in the error message.
+    """
+    inspector = ZipContentInspector(config)
+    with pytest.raises(ZipContentError) as exc_info:
+        inspector.inspect_zip_content(io.BytesIO(data))
+    assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+    assert message in str(exc_info.value)
+
+
+class TestUnreadableEntriesFailClosed:
+    """Entries whose content cannot be read are rejected."""
+
+    def test_valid_archives_accepted(self, default_config):
+        """Unpatched control archives are accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.txt": b"hello world"}))
+        )
+
+    def test_encrypted_entry_rejected(self, default_config):
+        """Encrypted entry (flag bit 0) cannot be scanned."""
+        data = _build_zip({"a.txt": b"\x7fELF" + b"\x00" * 64})
+        patched = _patch_headers(data, (6, b"\x01\x00"), (8, b"\x01\x00"))
+        with (
+            pytest.raises(RuntimeError),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched, default_config, "Entry content could not be inspected"
+        )
+
+    def test_bad_crc_entry_rejected(self, default_config):
+        """Short stored entry with a corrupt CRC is rejected."""
+        data = _build_zip({"a.txt": b"hello world"})
+        bad = struct.pack("<I", 0xDEADBEEF)
+        patched = _patch_headers(data, (14, bad), (16, bad))
+        with (
+            pytest.raises(zipfile.BadZipFile),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched, default_config, "Entry content could not be inspected"
+        )
+
+    def test_name_mismatch_entry_rejected(self, default_config):
+        """Local header name differing from central name is rejected."""
+        data = _build_zip({"aaaaaa/x.sh": b"hello world"})
+        patched = _patch_headers(
+            data, (30, b"../../.x.sh"), (46, b"aaaaaa/x.sh")
+        )
+        with (
+            pytest.raises(zipfile.BadZipFile),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched,
+            default_config,
+            "Entry content could not be inspected: 'aaaaaa/x.sh'",
+        )
+
+    def test_unsupported_method_entry_rejected(self, default_config):
+        """Entry with unsupported compression method 9 is rejected."""
+        data = _build_zip({"a.txt": b"hello world"})
+        patched = _patch_headers(data, (8, b"\x09\x00"), (10, b"\x09\x00"))
+        with (
+            pytest.raises(NotImplementedError),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched, default_config, "Entry content could not be inspected"
+        )
+
+
+class TestNestedArchiveSignatures:
+    """Nested archives are detected by magic bytes, not only by name."""
+
+    @pytest.mark.parametrize("name", ["inner.dat", "report.docx", "inner.jar"])
+    def test_inner_zip_under_any_name_rejected(self, default_config, name):
+        """A real ZIP is rejected regardless of its entry name."""
+        data = _build_zip({name: _build_zip({"a.txt": b"x"})})
+        _assert_threat(data, default_config, "Nested archive detected")
+
+    def test_gzip_content_rejected(self, default_config):
+        """Gzip bytes under a neutral name are rejected."""
+        data = _build_zip({"data.dat": gzip.compress(b"x")})
+        _assert_threat(data, default_config, "Nested archive detected")
+
+    @pytest.mark.parametrize(
+        "magic",
+        [b"BZh9", b"\xfd7zXZ\x00", b"7z\xbc\xaf\x27\x1c", b"Rar!\x1a\x07"],
+    )
+    def test_other_formats_rejected(self, default_config, magic):
+        """Bzip2, xz, 7z and RAR signatures are rejected."""
+        data = _build_zip({"data.dat": magic + b"\x00" * 16})
+        _assert_threat(data, default_config, "Nested archive detected")
+
+    def test_pk_prefix_without_signature_accepted(self, default_config):
+        """Content starting with PK but not a signature is accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.dat": b"PKxx hello"}))
+        )
+
+    def test_plain_text_accepted(self, default_config):
+        """Plain text content is accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.txt": b"just text"}))
+        )
+
+    def test_name_flagged_entry_not_duplicated(self, default_config):
+        """An entry already flagged by name gets a single message."""
+        inspector = ZipContentInspector(default_config)
+        data = _build_zip({"inner.zip": _build_zip({"a.txt": b"x"})})
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            threats = inspector._inspect_zip_entry(zf.infolist()[0], zf)
+        assert threats.count("Nested archive detected: 'inner.zip'") == 1
+
+    def test_allowed_nested_archives_skip_content_check(self):
+        """allow_nested_archives=True disables the signature threat."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        inspector = ZipContentInspector(config)
+        data = _build_zip({"inner.dat": _build_zip({"a.txt": b"x"})})
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            threats = inspector._inspect_zip_entry(zf.infolist()[0], zf)
+        assert not any("Nested archive detected" in t for t in threats)
+
+    @pytest.mark.parametrize("name", ["inner.zip ", "inner.zip."])
+    def test_trailing_dot_or_space_name_rejected(self, default_config, name):
+        """Trailing dots and spaces do not hide a nested archive name."""
+        data = _build_zip({name: b"hello"})
+        _assert_threat(data, default_config, "Nested archive detected")
+
+
+class TestDangerousEntryExtensions:
+    """Entry extensions are checked against the threat categories."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "run.bat",
+            "RUN.BAT",
+            "run.bat.",
+            "run.bat ",
+            "a.ps1",
+            "x.php",
+            "lib.dll",
+            "settings.ini",
+            "data.bin",
+            "dir/sub/script.sh",
+        ],
+    )
+    def test_dangerous_extension_rejected(self, default_config, name):
+        """Executable, script and system extensions are rejected."""
+        _assert_threat(
+            _build_zip({name: b"hello"}),
+            default_config,
+            "Dangerous file type detected",
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "track.gpx",
+            "notes.txt",
+            "data.csv",
+            "photo.jpg",
+            "activity.fit",
+        ],
+    )
+    def test_benign_extension_accepted(self, default_config, name):
+        """Ordinary data extensions are accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(io.BytesIO(_build_zip({name: b"hello"})))
+
+    def test_directory_entry_accepted(self, default_config):
+        """A directory entry has no extension and is accepted."""
+        inspector = ZipContentInspector(default_config)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("tools.exe/", b"")
+        inspector.inspect_zip_content(io.BytesIO(buf.getvalue()))
+
+    def test_checked_without_content_scan(self):
+        """The extension check does not depend on scan_zip_content."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(scan_zip_content=False)
+        _assert_threat(
+            _build_zip({"run.bat": b"hello"}),
+            config,
+            "Dangerous file type detected",
+        )
+
+
+class TestNullByteInEntryName:
+    """NUL bytes in raw entry names are detected."""
+
+    @pytest.mark.parametrize(
+        ("template", "offset", "expected"),
+        [
+            ("evil.shQQQQ.txt", 7, "evil.sh\x00QQQ.txt"),
+            ("ok.txtQ/../../../etc/x", 6, "ok.txt\x00/../../../etc/x"),
+        ],
+    )
+    def test_null_byte_rejected(
+        self, default_config, template, offset, expected
+    ):
+        """A NUL in the raw name is rejected without echoing it."""
+        data = _build_zip({template: b"hello"})
+        patched = _patch_headers(
+            data, (30 + offset, b"\x00"), (46 + offset, b"\x00")
+        )
+        with zipfile.ZipFile(io.BytesIO(patched)) as zf:
+            assert zf.infolist()[0].orig_filename == expected
+            assert "\x00" not in zf.infolist()[0].filename
+        inspector = ZipContentInspector(default_config)
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(patched))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Null byte in filename" in str(exc_info.value)
+        assert "\x00" not in str(exc_info.value)
+
+    def test_clean_name_accepted(self, default_config):
+        """The unpatched name is accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"evil.shQQQQ.txt": b"hello"}))
+        )

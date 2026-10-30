@@ -418,6 +418,8 @@ class ZipThreatCategory(Enum):
 
     Attributes:
         NESTED_ARCHIVES: Archive format threats.
+        NESTED_ARCHIVE_SIGNATURES: Magic-byte prefixes of archive
+            formats (ZIP and ZIP-based, gzip, bzip2, xz, 7z, RAR).
         RECURSABLE_ARCHIVES: ZIP-family formats openable for
             recursion.
         EXECUTABLE_FILES: Executable content threats.
@@ -442,6 +444,18 @@ class ZipThreatCategory(Enum):
         ".tar.xz",
         ".tgz",
         ".tbz2",
+    }
+
+    # Magic-byte prefixes identifying archives regardless of name
+    NESTED_ARCHIVE_SIGNATURES = {
+        b"PK\x03\x04",
+        b"PK\x05\x06",
+        b"PK\x07\x08",
+        b"\x1f\x8b",
+        b"BZh",
+        b"\xfd7zXZ\x00",
+        b"7z\xbc\xaf\x27\x1c",
+        b"Rar!\x1a\x07",
     }
 
     # ZIP-family archives that can be recursively opened

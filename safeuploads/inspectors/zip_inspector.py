@@ -58,6 +58,14 @@ class ZipContentInspector(BaseInspector):
         self._nested_archive_exts: frozenset[str] = frozenset(
             ZipThreatCategory.NESTED_ARCHIVES.value
         )
+        self._nested_archive_signatures: tuple[bytes, ...] = tuple(
+            ZipThreatCategory.NESTED_ARCHIVE_SIGNATURES.value
+        )
+        self._dangerous_exts: frozenset[str] = frozenset(
+            ZipThreatCategory.EXECUTABLE_FILES.value
+            | ZipThreatCategory.SCRIPT_FILES.value
+            | ZipThreatCategory.SYSTEM_FILES.value
+        )
         self._binary_exts: frozenset[str] = frozenset(
             ext for cat in BinaryFileCategory for ext in cat.value
         )
@@ -199,6 +207,11 @@ class ZipContentInspector(BaseInspector):
         """
         Inspect single ZIP entry for security threats.
 
+        Checks the raw name for null bytes, then the name for traversal,
+        absolute paths, symlinks, length limits, suspicious patterns,
+        nested archive extensions and dangerous file extensions. The
+        content is inspected when ``scan_zip_content`` is enabled.
+
         Args:
             entry: ZIP entry metadata.
             zip_file: Parent ZIP archive.
@@ -209,8 +222,9 @@ class ZipContentInspector(BaseInspector):
         threats = []
         filename = entry.filename
 
-        # 1. Check for null bytes (truncation attacks)
-        if "\x00" in filename:
+        # 1. Check for null bytes (truncation attacks); zipfile
+        # truncates ``filename`` at the first NUL, so check the raw name
+        if "\x00" in entry.orig_filename:
             threats.append(f"Null byte in filename: '{filename}'")
 
         # 2. Check for directory traversal attacks
@@ -256,7 +270,11 @@ class ZipContentInspector(BaseInspector):
         ):
             threats.append(f"Nested archive detected: '{filename}'")
 
-        # 9. Check file content if enabled
+        # 9. Check for executable, script and system file extensions
+        if self._extension(filename) in self._dangerous_exts:
+            threats.append(f"Dangerous file type detected: '{filename}'")
+
+        # 10. Check file content if enabled
         # Only first 512 bytes are read, so no size gate needed
         if self.config.limits.scan_zip_content and not entry.is_dir():
             content_threats = self._inspect_entry_content(entry, zip_file)
@@ -395,20 +413,42 @@ class ZipContentInspector(BaseInspector):
         """
         Check if filename represents a nested archive.
 
+        Trailing dots and spaces are ignored, as Windows drops them on
+        extraction.
+
         Args:
             filename: Filename to check.
 
         Returns:
             True if nested archive detected.
         """
-        ext = os.path.splitext(filename)[1].lower()
-        return ext in self._nested_archive_exts
+        return self._extension(filename) in self._nested_archive_exts
+
+    @staticmethod
+    def _extension(filename: str) -> str:
+        """
+        Return the final extension as a Windows extractor sees it.
+
+        Trailing dots and spaces are stripped from the base name because
+        Windows drops them on extraction.
+
+        Args:
+            filename: Entry name to check.
+
+        Returns:
+            Lowercase extension including the dot, or an empty string.
+        """
+        base = os.path.basename(filename).rstrip(". ")
+        return os.path.splitext(base)[1].lower()
 
     def _inspect_entry_content(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
     ) -> list[str]:
         """
         Inspect ZIP entry content for malicious signatures.
+
+        An entry that cannot be opened or read is reported as a threat,
+        because its content was not scanned.
 
         Args:
             entry: ZIP entry to inspect.
@@ -434,6 +474,17 @@ class ZipContentInspector(BaseInspector):
                         f"Executable content detected in '{entry.filename}'"
                     )
 
+                if (
+                    not self.config.limits.allow_nested_archives
+                    and not self._is_nested_archive(entry.filename)
+                    and matches_signature_prefix(
+                        content_sample, self._nested_archive_signatures
+                    )
+                ):
+                    threats.append(
+                        f"Nested archive detected: '{entry.filename}'"
+                    )
+
                 ext = os.path.splitext(entry.filename)[1].lower()
                 if (
                     ext not in self._binary_exts
@@ -450,6 +501,9 @@ class ZipContentInspector(BaseInspector):
                 "Could not inspect content of '%s': %s",
                 entry.filename,
                 err,
+            )
+            threats.append(
+                f"Entry content could not be inspected: '{entry.filename}'"
             )
 
         return threats

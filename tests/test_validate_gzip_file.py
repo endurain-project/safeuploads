@@ -231,7 +231,7 @@ class TestValidateGzipFileResourceLimit:
         self, mock_upload_file
     ):
         config = FileSecurityConfig()
-        config.limits = SecurityLimits(max_validation_time_seconds=-1.0)
+        config.limits = SecurityLimits(max_validation_time_seconds=1e-9)
         validator = FileValidator(config=config)
         f = mock_upload_file("archive.gz", _VALID_GZIP)
         with pytest.raises(ResourceLimitError):

@@ -1,5 +1,7 @@
 """Tests for FileSecurityConfig and SecurityLimits."""
 
+from typing import Any
+
 import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
@@ -364,3 +366,183 @@ class TestConfigInstanceIsolation:
         assert isinstance(config.ALLOWED_ACTIVITY_EXTENSIONS, frozenset)
         with pytest.raises(AttributeError):
             config.ALLOWED_ACTIVITY_EXTENSIONS.add(".evil")
+
+
+def _errors_for(**overrides: Any) -> list[ConfigValidationError]:
+    """
+    Validate an instance whose limits carry the given overrides.
+
+    Args:
+        **overrides: SecurityLimits field values to override.
+
+    Returns:
+        Error-severity issues reported for the instance.
+    """
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(**overrides)
+    return [e for e in config.validate_instance() if e.severity == "error"]
+
+
+_LIMIT_CASES = [
+    # (field, smallest valid value, first invalid value, error_type)
+    ("max_activity_file_size", 1, 0, "invalid_size_limit"),
+    ("max_gzip_size", 1, 0, "invalid_size_limit"),
+    ("max_memory_buffer_size", 1, 0, "invalid_streaming_limit"),
+    ("chunk_size", 1, 0, "invalid_streaming_limit"),
+    ("max_validation_memory_mb", 1, 0, "invalid_streaming_limit"),
+    ("max_validation_time_seconds", 0.001, 0, "invalid_timeout"),
+    ("content_scan_max_size", 1, 0, "invalid_streaming_limit"),
+    ("max_zip_depth", 0, -1, "invalid_zip_depth"),
+    ("max_filename_length", 1, 0, "invalid_name_length"),
+    ("max_path_length", 1, 0, "invalid_path_length"),
+    ("max_number_files_same_type", 1, 0, "invalid_zip_entries"),
+    ("max_total_entries_recursive", 1, 0, "invalid_zip_entries"),
+]
+
+
+class TestLimitRangeValidation:
+    """Every numeric limit is range-checked at the boundary."""
+
+    @pytest.mark.parametrize(
+        ("field", "valid", "invalid", "kind"), _LIMIT_CASES
+    )
+    def test_smallest_valid_value_is_accepted(
+        self, field, valid, invalid, kind
+    ):
+        """The smallest valid value raises no error-severity issue."""
+        assert _errors_for(**{field: valid}) == []
+
+    @pytest.mark.parametrize(
+        ("field", "valid", "invalid", "kind"), _LIMIT_CASES
+    )
+    def test_first_invalid_value_is_rejected(
+        self, field, valid, invalid, kind
+    ):
+        """The first invalid value is reported with its error_type."""
+        errors = _errors_for(**{field: invalid})
+
+        assert [e.error_type for e in errors] == [kind]
+        assert field in errors[0].message
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf")])
+    @pytest.mark.parametrize(
+        "field", ["max_validation_time_seconds", "zip_analysis_timeout"]
+    )
+    def test_non_finite_timeout_is_rejected(self, field, value):
+        """NaN and infinity never count as a usable timeout."""
+        errors = _errors_for(**{field: value})
+
+        assert [e.error_type for e in errors] == ["invalid_timeout"]
+
+
+class TestLimitTypeValidation:
+    """Wrongly typed limits are reported without raising."""
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("chunk_size", "64"),
+            ("chunk_size", True),
+            ("chunk_size", 64.0),
+            ("max_image_size", None),
+            ("max_validation_time_seconds", "30"),
+            ("max_validation_time_seconds", True),
+            ("zip_analysis_timeout", False),
+            ("allow_symlinks", 1),
+            ("enable_audit_logging", "yes"),
+        ],
+    )
+    def test_wrong_type_is_reported(self, field, value):
+        """A wrong-typed field yields an invalid_limit_type error."""
+        errors = _errors_for(**{field: value})
+
+        assert [e.error_type for e in errors] == ["invalid_limit_type"]
+        assert field in errors[0].message
+
+    def test_int_accepted_for_float_field(self):
+        """Integer seconds are valid for timeout fields."""
+        assert _errors_for(max_validation_time_seconds=30) == []
+
+    def test_several_wrong_types_all_reported(self):
+        """Each wrong-typed field produces its own error."""
+        errors = _errors_for(chunk_size="64", max_zip_size=True)
+
+        assert len(errors) == 2
+        assert {e.error_type for e in errors} == {"invalid_limit_type"}
+
+    def test_default_config_reports_no_issues(self):
+        """The default configuration reports nothing at all."""
+        assert FileSecurityConfig().validate_instance() == []
+
+
+_EXTENSION_SETS = [
+    "ALLOWED_IMAGE_EXTENSIONS",
+    "ALLOWED_ZIP_EXTENSIONS",
+    "ALLOWED_ACTIVITY_EXTENSIONS",
+    "ALLOWED_GZIP_EXTENSIONS",
+    "BLOCKED_EXTENSIONS",
+    "COMPOUND_BLOCKED_EXTENSIONS",
+]
+
+
+def _issue_types(**overrides: Any) -> list[str]:
+    """
+    Validate a FileSecurityConfig subclass with class overrides.
+
+    Args:
+        **overrides: Class attributes to override.
+
+    Returns:
+        error_type of every issue reported.
+    """
+    config_cls = type("Cfg", (FileSecurityConfig,), overrides)
+    return [e.error_type for e in config_cls().validate_instance()]
+
+
+class TestAllowListValidation:
+    """Activity and gzip allow-lists get the image/ZIP checks."""
+
+    @pytest.mark.parametrize(
+        "name", ["ALLOWED_ACTIVITY_EXTENSIONS", "ALLOWED_GZIP_EXTENSIONS"]
+    )
+    def test_empty_extension_set_rejected(self, name):
+        """An empty extension allow-list is an error."""
+        assert _issue_types(**{name: frozenset()}) == ["empty_extension_set"]
+
+    @pytest.mark.parametrize(
+        "name", ["ALLOWED_ACTIVITY_EXTENSIONS", "ALLOWED_GZIP_EXTENSIONS"]
+    )
+    def test_extension_without_dot_rejected(self, name):
+        """An extension without a leading dot is an error."""
+        assert _issue_types(**{name: frozenset({"gpx"})}) == [
+            "invalid_extension_format"
+        ]
+
+    @pytest.mark.parametrize(
+        "name", ["ALLOWED_ACTIVITY_EXTENSIONS", "ALLOWED_GZIP_EXTENSIONS"]
+    )
+    def test_blocked_extension_conflict_rejected(self, name):
+        """An allowed extension that is also blocked is an error."""
+        assert _issue_types(**{name: frozenset({".exe"})}) == [
+            "extension_conflict"
+        ]
+
+    @pytest.mark.parametrize(
+        "name", ["ALLOWED_ACTIVITY_MIMES", "ALLOWED_GZIP_MIMES"]
+    )
+    def test_empty_mime_set_rejected(self, name):
+        """An empty MIME allow-list is an error."""
+        assert _issue_types(**{name: frozenset()}) == ["empty_mime_set"]
+
+    @pytest.mark.parametrize("name", _EXTENSION_SETS)
+    def test_uppercase_extension_rejected(self, name):
+        """Filenames are lowercased, so an uppercase entry is dead."""
+        value = frozenset(getattr(FileSecurityConfig, name) | {".ABC"})
+
+        assert _issue_types(**{name: value}) == ["uppercase_extension"]
+
+    @pytest.mark.parametrize("name", _EXTENSION_SETS)
+    def test_default_extension_sets_are_lowercase(self, name):
+        """No built-in extension entry contains uppercase."""
+        for ext in getattr(FileSecurityConfig, name):
+            assert ext == ext.lower()

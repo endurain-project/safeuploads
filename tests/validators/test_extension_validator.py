@@ -205,3 +205,19 @@ class TestExtensionSecurityValidator:
         # Should be allowed - no dangerous extensions
         validator.validate_extensions("my.document.v2.txt")
         validator.validate_extensions("file.2024.10.27.log")
+
+
+class TestCompoundExtensionCase:
+    """Compound extensions match whatever the filename case."""
+
+    @pytest.mark.parametrize("filename", ["a.tar.Z", "a.tar.z", "a.TAR.Z"])
+    def test_tar_z_rejected(self, default_config, filename):
+        """The .tar.z compressed archive is blocked in any case."""
+        validator = ExtensionSecurityValidator(default_config)
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_extensions(filename)
+
+        error = exc_info.value
+        assert error.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
+        assert error.extension == ".tar.z"

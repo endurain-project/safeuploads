@@ -14,6 +14,7 @@ from safeuploads.exceptions import (
     ExtensionSecurityError,
     FilenameSecurityError,
     FileProcessingError,
+    FileSecurityConfigurationError,
     FileSignatureError,
     FileSizeError,
     MimeTypeError,
@@ -63,17 +64,57 @@ class TestFileValidatorInitialization:
         assert validator.magic_mime is not None
 
     def test_invalid_custom_config_logs_issue(self, caplog):
-        """Invalid custom config is validated and logged at init."""
+        """Error-severity issues are logged before construction fails."""
         import logging
 
         bad_config = FileSecurityConfig()
         bad_config.limits = SecurityLimits(max_image_size=-1)
 
-        with caplog.at_level(
-            logging.ERROR, logger="safeuploads.file_validator"
+        with (
+            caplog.at_level(
+                logging.ERROR, logger="safeuploads.file_validator"
+            ),
+            pytest.raises(FileSecurityConfigurationError),
         ):
             FileValidator(config=bad_config)
         assert "configuration" in caplog.text.lower()
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("chunk_size", -1),
+            ("max_memory_buffer_size", 0),
+            ("max_image_size", 0),
+            ("chunk_size", "64"),
+        ],
+    )
+    def test_error_severity_config_rejected(self, field, value):
+        """An invalid limit stops construction with its errors."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(**{field: value})
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+
+        errors = exc_info.value.errors
+        assert errors
+        assert {e.severity for e in errors} == {"error"}
+        assert any(field in e.message for e in errors)
+
+    def test_warning_only_config_constructs(self, caplog):
+        """Warnings are logged but never block construction."""
+        import logging
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_size=150 * 1024 * 1024)
+
+        with caplog.at_level(
+            logging.WARNING, logger="safeuploads.file_validator"
+        ):
+            validator = FileValidator(config=config)
+
+        assert validator.config is config
+        assert "max_image_size" in caplog.text
 
 
 class TestSanitizeFilename:

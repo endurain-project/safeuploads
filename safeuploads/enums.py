@@ -241,7 +241,7 @@ class CompoundExtensionCategory(Enum):
         ".tar.bz2",
         ".tar.lz",
         ".tar.lzma",
-        ".tar.Z",
+        ".tar.z",
         ".tgz",
         ".tbz2",
     }

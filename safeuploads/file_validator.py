@@ -37,6 +37,7 @@ from .exceptions import (
     ExtensionSecurityError,
     FilenameSecurityError,
     FileProcessingError,
+    FileSecurityConfigurationError,
     FileSignatureError,
     FileSizeError,
     FileValidationError,
@@ -90,6 +91,10 @@ class FileValidator:
                 inspection off the event loop. Defaults to the
                 asyncio default thread pool.
 
+        Raises:
+            FileSecurityConfigurationError: If the configuration
+                has any error-severity issue.
+
         Attributes:
             config: Active security configuration.
             unicode_validator: Validator for Unicode-related checks.
@@ -103,10 +108,11 @@ class FileValidator:
         self.config = config or FileSecurityConfig()
         self._executor = executor
 
-        # Validate the actual (possibly custom) config in use;
-        # log any issues by severity without raising so
-        # construction still succeeds. A valid config logs nothing.
-        for issue in self.config.validate_instance(strict=False):
+        # Validate the actual (possibly custom) config in use and
+        # log every issue by severity. Warnings never block
+        # construction; any error-severity issue does.
+        issues = self.config.validate_instance()
+        for issue in issues:
             log = logger.error if issue.severity == "error" else logger.warning
             log(
                 "Configuration %s: %s. %s",
@@ -114,6 +120,9 @@ class FileValidator:
                 issue.message,
                 issue.recommendation,
             )
+        config_errors = [i for i in issues if i.severity == "error"]
+        if config_errors:
+            raise FileSecurityConfigurationError(config_errors)
 
         # Initialize specialized validators
         self.unicode_validator = UnicodeSecurityValidator(self.config)

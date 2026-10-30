@@ -2,7 +2,8 @@
 
 import itertools
 import logging
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass, fields, replace
 from typing import Any, ClassVar
 
 from .enums import (
@@ -491,8 +492,17 @@ class FileSecurityConfig:
         """
         errors: list[ConfigValidationError] = []
 
-        # Validate file size limits
-        errors.extend(cls._validate_file_size_limits(limits))
+        # Validate limit types first so the range checks below
+        # never compare a wrongly typed value.
+        type_errors = cls._validate_limit_types(limits)
+        errors.extend(type_errors)
+
+        if not type_errors:
+            # Validate file size limits
+            errors.extend(cls._validate_file_size_limits(limits))
+
+            # Validate streaming and resource limits
+            errors.extend(cls._validate_streaming_limits(limits))
 
         # Validate MIME type configurations
         errors.extend(cls._validate_mime_configurations())
@@ -500,14 +510,62 @@ class FileSecurityConfig:
         # Validate file extension configurations
         errors.extend(cls._validate_extension_configurations())
 
-        # Validate ZIP compression settings
-        errors.extend(cls._validate_compression_settings(limits))
+        if not type_errors:
+            # Validate ZIP compression settings
+            errors.extend(cls._validate_compression_settings(limits))
 
         # Validate enum consistency
         errors.extend(cls._validate_enum_consistency())
 
         # Validate cross-configuration dependencies
         errors.extend(cls._validate_cross_dependencies())
+
+        return errors
+
+    @staticmethod
+    def _validate_limit_types(
+        limits: SecurityLimits,
+    ) -> list[ConfigValidationError]:
+        """
+        Validate that every limit holds a value of its declared type.
+
+        Integer fields must be ``int`` (not ``bool``), float
+        fields accept ``int`` or ``float`` (not ``bool``) and
+        boolean fields must be ``bool``.
+
+        Args:
+            limits: Security limits to validate.
+
+        Returns:
+            List of detected configuration issues.
+        """
+        errors = []
+
+        for limit in fields(SecurityLimits):
+            value = getattr(limits, limit.name)
+            if limit.type is bool:
+                valid = isinstance(value, bool)
+                expected = "a bool"
+            elif limit.type is float:
+                valid = isinstance(value, int | float) and not isinstance(
+                    value, bool
+                )
+                expected = "an int or float"
+            else:
+                valid = isinstance(value, int) and not isinstance(value, bool)
+                expected = "an int"
+            if not valid:
+                errors.append(
+                    _config_error(
+                        "invalid_limit_type",
+                        (
+                            f"{limit.name} must be {expected},"
+                            f" got {type(value).__name__}"
+                        ),
+                        "limits",
+                        f"Set {limit.name} to {expected} value",
+                    )
+                )
 
         return errors
 
@@ -605,6 +663,30 @@ class FileSecurityConfig:
                 )
             )
 
+        # Check activity and gzip size limits
+        if limits.max_activity_file_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_size_limit",
+                    "max_activity_file_size must be greater than 0",
+                    "file_sizes",
+                    (
+                        "Set max_activity_file_size to a positive"
+                        " value (e.g., 50MB)"
+                    ),
+                )
+            )
+
+        if limits.max_gzip_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_size_limit",
+                    "max_gzip_size must be greater than 0",
+                    "file_sizes",
+                    "Set max_gzip_size to a positive value (e.g., 500MB)",
+                )
+            )
+
         # Validate sanitized filename length
         if limits.max_sanitized_name_length <= 0:
             errors.append(
@@ -613,6 +695,60 @@ class FileSecurityConfig:
                     "max_sanitized_name_length must be greater than 0",
                     "file_sizes",
                     "Set max_sanitized_name_length to a positive value",
+                )
+            )
+
+        return errors
+
+    @staticmethod
+    def _validate_streaming_limits(
+        limits: SecurityLimits,
+    ) -> list[ConfigValidationError]:
+        """
+        Validate streaming, resource and content scan limits.
+
+        A non-positive buffer or chunk size would disable the
+        bounded reads (``read(-1)`` reads everything and a
+        spooled buffer of 0 never spills to disk), so each is
+        required to be positive.
+
+        Args:
+            limits: Security limits to validate.
+
+        Returns:
+            List of detected configuration issues.
+        """
+        errors = []
+
+        for name in (
+            "max_memory_buffer_size",
+            "chunk_size",
+            "max_validation_memory_mb",
+            "content_scan_max_size",
+        ):
+            if getattr(limits, name) <= 0:
+                errors.append(
+                    _config_error(
+                        "invalid_streaming_limit",
+                        f"{name} must be greater than 0",
+                        "streaming",
+                        f"Set {name} to a positive value",
+                    )
+                )
+
+        if (
+            not math.isfinite(limits.max_validation_time_seconds)
+            or limits.max_validation_time_seconds <= 0
+        ):
+            errors.append(
+                _config_error(
+                    "invalid_timeout",
+                    (
+                        "max_validation_time_seconds must be a finite"
+                        " value greater than 0"
+                    ),
+                    "streaming",
+                    "Set a reasonable overall validation timeout",
                 )
             )
 
@@ -660,19 +796,29 @@ class FileSecurityConfig:
                     )
                 )
 
-        # Check ZIP MIME types
-        if not cls.ALLOWED_ZIP_MIMES:
-            errors.append(
-                _config_error(
-                    "empty_mime_set",
-                    "ALLOWED_ZIP_MIMES cannot be empty",
-                    "mime_types",
-                    "Add at least one allowed ZIP MIME type",
+        # Check ZIP, activity and gzip MIME types
+        for mime_set_name, mime_set, label in [
+            ("ALLOWED_ZIP_MIMES", cls.ALLOWED_ZIP_MIMES, "ZIP"),
+            ("ALLOWED_ACTIVITY_MIMES", cls.ALLOWED_ACTIVITY_MIMES, "activity"),
+            ("ALLOWED_GZIP_MIMES", cls.ALLOWED_GZIP_MIMES, "gzip"),
+        ]:
+            if not mime_set:
+                errors.append(
+                    _config_error(
+                        "empty_mime_set",
+                        f"{mime_set_name} cannot be empty",
+                        "mime_types",
+                        f"Add at least one allowed {label} MIME type",
+                    )
                 )
-            )
 
         # Check for duplicate MIME types
-        all_mimes = list(cls.ALLOWED_IMAGE_MIMES) + list(cls.ALLOWED_ZIP_MIMES)
+        all_mimes = (
+            list(cls.ALLOWED_IMAGE_MIMES)
+            + list(cls.ALLOWED_ZIP_MIMES)
+            + list(cls.ALLOWED_ACTIVITY_MIMES)
+            + list(cls.ALLOWED_GZIP_MIMES)
+        )
         duplicates = {mime for mime in all_mimes if all_mimes.count(mime) > 1}
         if duplicates:
             errors.append(
@@ -697,11 +843,27 @@ class FileSecurityConfig:
         """
         errors = []
 
+        allowed_sets = [
+            (
+                "ALLOWED_IMAGE_EXTENSIONS",
+                cls.ALLOWED_IMAGE_EXTENSIONS,
+                "Image",
+            ),
+            ("ALLOWED_ZIP_EXTENSIONS", cls.ALLOWED_ZIP_EXTENSIONS, "ZIP"),
+            (
+                "ALLOWED_ACTIVITY_EXTENSIONS",
+                cls.ALLOWED_ACTIVITY_EXTENSIONS,
+                "Activity",
+            ),
+            (
+                "ALLOWED_GZIP_EXTENSIONS",
+                cls.ALLOWED_GZIP_EXTENSIONS,
+                "Gzip",
+            ),
+        ]
+
         # Check extension format
-        for ext_set_name, ext_set in [
-            ("ALLOWED_IMAGE_EXTENSIONS", cls.ALLOWED_IMAGE_EXTENSIONS),
-            ("ALLOWED_ZIP_EXTENSIONS", cls.ALLOWED_ZIP_EXTENSIONS),
-        ]:
+        for ext_set_name, ext_set, _label in allowed_sets:
             if not ext_set:
                 errors.append(
                     _config_error(
@@ -739,45 +901,49 @@ class FileSecurityConfig:
             )
 
         # Check for overlap between allowed and blocked extensions
-        image_blocked = cls.ALLOWED_IMAGE_EXTENSIONS.intersection(
-            cls.BLOCKED_EXTENSIONS
-        )
-        if image_blocked:
-            errors.append(
-                _config_error(
-                    "extension_conflict",
-                    (
-                        f"Image extensions {image_blocked}"
-                        " are both allowed and blocked"
-                    ),
-                    "extensions",
-                    (
-                        "Remove conflicts between"
-                        " allowed and blocked"
-                        " extensions"
-                    ),
+        for _ext_set_name, ext_set, label in allowed_sets:
+            blocked = ext_set.intersection(cls.BLOCKED_EXTENSIONS)
+            if blocked:
+                errors.append(
+                    _config_error(
+                        "extension_conflict",
+                        (
+                            f"{label} extensions {blocked}"
+                            " are both allowed and blocked"
+                        ),
+                        "extensions",
+                        (
+                            "Remove conflicts between"
+                            " allowed and blocked"
+                            " extensions"
+                        ),
+                    )
                 )
-            )
 
-        zip_blocked = cls.ALLOWED_ZIP_EXTENSIONS.intersection(
-            cls.BLOCKED_EXTENSIONS
-        )
-        if zip_blocked:
-            errors.append(
-                _config_error(
-                    "extension_conflict",
-                    (
-                        f"ZIP extensions {zip_blocked}"
-                        " are both allowed and blocked"
-                    ),
-                    "extensions",
-                    (
-                        "Remove conflicts between"
-                        " allowed and blocked"
-                        " extensions"
-                    ),
-                )
-            )
+        # Filenames are lowercased before matching, so an entry
+        # with uppercase characters can never match.
+        for ext_set_name, ext_set in [
+            *((name, ext_set) for name, ext_set, _label in allowed_sets),
+            ("BLOCKED_EXTENSIONS", cls.BLOCKED_EXTENSIONS),
+            (
+                "COMPOUND_BLOCKED_EXTENSIONS",
+                cls.COMPOUND_BLOCKED_EXTENSIONS,
+            ),
+        ]:
+            for ext in ext_set:
+                if ext != ext.lower():
+                    errors.append(
+                        _config_error(
+                            "uppercase_extension",
+                            (
+                                f"Extension '{ext}' in {ext_set_name}"
+                                " contains uppercase characters and"
+                                " can never match"
+                            ),
+                            "extensions",
+                            "Use lowercase extensions only",
+                        )
+                    )
 
         # Check compound extension consistency
         compound_overlap = cls.BLOCKED_EXTENSIONS.intersection(
@@ -939,12 +1105,45 @@ class FileSecurityConfig:
                 )
             )
 
+        # Validate ZIP content inspection limits
+        if limits.max_zip_depth < 0:
+            errors.append(
+                _config_error(
+                    "invalid_zip_depth",
+                    "max_zip_depth must be 0 or greater",
+                    "compression",
+                    "Set max_zip_depth to 0 (root files only) or more",
+                )
+            )
+
+        for name, error_type in [
+            ("max_filename_length", "invalid_name_length"),
+            ("max_path_length", "invalid_path_length"),
+            ("max_number_files_same_type", "invalid_zip_entries"),
+            ("max_total_entries_recursive", "invalid_zip_entries"),
+        ]:
+            if getattr(limits, name) <= 0:
+                errors.append(
+                    _config_error(
+                        error_type,
+                        f"{name} must be greater than 0",
+                        "compression",
+                        f"Set {name} to a positive value",
+                    )
+                )
+
         # Validate timeout settings
-        if limits.zip_analysis_timeout <= 0:
+        if (
+            not math.isfinite(limits.zip_analysis_timeout)
+            or limits.zip_analysis_timeout <= 0
+        ):
             errors.append(
                 _config_error(
                     "invalid_timeout",
-                    "zip_analysis_timeout must be greater than 0",
+                    (
+                        "zip_analysis_timeout must be a finite value"
+                        " greater than 0"
+                    ),
                     "compression",
                     "Set a reasonable timeout for ZIP analysis",
                 )

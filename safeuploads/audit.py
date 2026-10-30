@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -137,6 +138,44 @@ class AuditEvent:
 
 _audit_logger = logging.getLogger("safeuploads.audit")
 
+_MAX_FIELD_LENGTH = 1024
+_TRUNCATION_SUFFIX = "...[truncated]"
+
+
+def _sanitize_field(value: str) -> str:
+    """
+    Make an attacker-controlled value safe to write to a log.
+
+    Protects against log injection (a newline or other control
+    character that forges a second record or hides text from a
+    reader, including bidi overrides) and against unbounded
+    record size. Control, format, surrogate, private-use,
+    unassigned and line/paragraph separator characters are
+    replaced with their ``repr()``-style escape; ordinary
+    letters, including non-ASCII ones, are kept. The result is
+    at most ``_MAX_FIELD_LENGTH`` characters and ends with
+    ``_TRUNCATION_SUFFIX`` when it was cut.
+
+    Args:
+        value: Raw filename, result or details text.
+
+    Returns:
+        The escaped, length-bounded text.
+    """
+    escaped = "".join(
+        (
+            repr(char)[1:-1]
+            if unicodedata.category(char) in ("Zl", "Zp")
+            or unicodedata.category(char).startswith("C")
+            else char
+        )
+        for char in value
+    )
+    if len(escaped) <= _MAX_FIELD_LENGTH:
+        return escaped
+    keep = _MAX_FIELD_LENGTH - len(_TRUNCATION_SUFFIX)
+    return escaped[:keep] + _TRUNCATION_SUFFIX
+
 
 class SecurityAuditLogger:
     """
@@ -170,12 +209,16 @@ class SecurityAuditLogger:
         if not self.enabled:
             return
 
+        filename = _sanitize_field(event.filename)
+        result = _sanitize_field(event.result)
+        details = _sanitize_field(event.details)
+
         extra = {
             "audit_event_type": event.event_type.value,
             "audit_correlation_id": event.correlation_id,
-            "audit_filename": event.filename,
-            "audit_result": event.result,
-            "audit_details": event.details,
+            "audit_filename": filename,
+            "audit_result": result,
+            "audit_details": details,
             "audit_duration_ms": event.duration_ms,
             "audit_source_ip": event.source_ip or "",
         }
@@ -193,8 +236,8 @@ class SecurityAuditLogger:
             "[%s] %s file=%s result=%s",
             event.correlation_id[:12],
             event.event_type.value,
-            event.filename,
-            event.result,
+            filename,
+            result,
             extra=extra,
         )
 

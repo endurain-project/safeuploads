@@ -108,7 +108,7 @@ class UnicodeSecurityValidator(BaseValidator):
         # Check if normalization changed the filename significantly
         if normalized_filename != filename:
             logger.info(
-                "Unicode normalization applied: '%s' -> '%s'",
+                "Unicode normalization applied: %r -> %r",
                 filename,
                 normalized_filename,
             )

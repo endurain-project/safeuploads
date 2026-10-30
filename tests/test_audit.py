@@ -12,12 +12,14 @@ from safeuploads.audit import (
     reset_correlation_id,
     set_correlation_id,
 )
+from safeuploads.config import FileSecurityConfig
 from safeuploads.exceptions import (
     CompressionSecurityError,
     FileSizeError,
     ZipBombError,
     ZipContentError,
 )
+from safeuploads.file_validator import FileValidator
 
 
 class TestCorrelationId:
@@ -470,3 +472,98 @@ class TestLogExtraCorrelationId:
         extra = log_extra()
         assert extra["correlation_id"] == "cid-abc"
         reset_correlation_id()
+
+
+_FORGED = (
+    "a.jpg\nsafeuploads.audit: [forged] validation_success"
+    " file=evil.exe result=passed"
+)
+
+
+def _log_one(caplog, **fields) -> logging.LogRecord:
+    """
+    Emit one audit event and return the single captured record.
+
+    Args:
+        caplog: pytest log capture fixture.
+        **fields: ``AuditEvent`` fields to override.
+
+    Returns:
+        The only record captured on ``safeuploads.audit``.
+    """
+    audit = SecurityAuditLogger(enabled=True)
+    event = AuditEvent(
+        event_type=AuditEventType.VALIDATION_FAILURE,
+        correlation_id="cid-1234567890abcdef",
+        **fields,
+    )
+    with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+        audit.log_event(event)
+    assert len(caplog.records) == 1
+    return caplog.records[0]
+
+
+class TestAuditLogInjection:
+    """Attacker-controlled audit fields cannot forge or flood records."""
+
+    @pytest.mark.parametrize("field", ["filename", "result", "details"])
+    def test_newline_does_not_forge_record(self, caplog, field):
+        """A newline in any field stays one escaped log record."""
+        record = _log_one(caplog, **{field: _FORGED})
+        assert "\n" not in record.getMessage()
+        value = getattr(record, f"audit_{field}")
+        assert "\n" not in value
+        assert value.startswith("a.jpg\\nsafeuploads.audit: [forged]")
+
+    def test_legitimate_filename_unchanged(self, caplog):
+        """Ordinary non-ASCII letters are kept as-is."""
+        record = _log_one(caplog, filename="résumé_日本.jpg")
+        assert "file=résumé_日本.jpg" in record.getMessage()
+        assert record.audit_filename == "résumé_日本.jpg"
+
+    def test_control_and_format_chars_escaped(self, caplog):
+        """Tabs, ESC, bidi overrides and tag chars are escaped."""
+        name = "a\t\r\x1b\u202e\U000e0041\u2028.jpg"
+        record = _log_one(caplog, filename=name)
+        assert record.audit_filename == (
+            "a\\t\\r\\x1b\\u202e\\U000e0041\\u2028.jpg"
+        )
+        assert "\u202e" not in record.getMessage()
+
+    def test_length_boundary(self, caplog):
+        """1,024 characters pass; 1,025 are truncated and marked."""
+        exact = "a" * 1024
+        record = _log_one(caplog, filename=exact)
+        assert record.audit_filename == exact
+
+        caplog.clear()
+        record = _log_one(caplog, filename="a" * 1025)
+        assert len(record.audit_filename) == 1024
+        assert record.audit_filename.endswith("...[truncated]")
+
+    def test_details_are_bounded(self, caplog):
+        """Oversized threat details cannot flood the record."""
+        record = _log_one(caplog, details="x" * 1_000_000)
+        assert len(record.audit_details) == 1024
+
+
+class TestAuditLogInjectionEndToEnd:
+    """A hostile upload filename cannot forge an audit line."""
+
+    async def test_forged_filename_cannot_forge_audit_line(
+        self, caplog, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Every audit record is one line; no forged line appears."""
+        cfg = FileSecurityConfig()
+        cfg.limits.enable_audit_logging = True
+        validator = FileValidator(cfg)
+        file = mock_upload_file(_FORGED + ".jpg", valid_jpeg_bytes)
+
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            await validator.validate_image_file(file)
+
+        records = [r for r in caplog.records if r.name == "safeuploads.audit"]
+        assert len(records) == 2  # start + success
+        for record in records:
+            assert "\n" not in record.getMessage()
+        assert "\nsafeuploads.audit: [forged]" not in caplog.text

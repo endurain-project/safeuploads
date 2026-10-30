@@ -257,7 +257,7 @@ class FileValidator:
             return
         if allow_octet_stream and detected_mime == "application/octet-stream":
             logger.debug(
-                "Accepting application/octet-stream for '%s'"
+                "Accepting application/octet-stream for %r"
                 " on a valid signature",
                 filename,
             )
@@ -471,7 +471,7 @@ class FileValidator:
             raise
         except Exception as err:
             logger.exception(
-                "Unexpected error during filename validation: %s", err
+                "Unexpected error during filename validation: %r", err
             )
             raise FileProcessingError(
                 "Filename validation failed due to internal error",
@@ -757,7 +757,7 @@ class FileValidator:
         cid = set_correlation_id()
         filename = file.filename or "unknown"
         self._audit.start(filename, cid)
-        logger.debug("Starting %s file validation: %s", file_type, filename)
+        logger.debug("Starting %s file validation: %r", file_type, filename)
         t0 = time.monotonic()
         try:
             await body(file)
@@ -785,7 +785,7 @@ class FileValidator:
                 "internal_error",
             )
             logger.exception(
-                "Error during %s file validation: %s", file_type, err
+                "Error during %s file validation: %r", file_type, err
             )
             raise FileProcessingError(
                 "File validation failed due to internal error",
@@ -876,7 +876,7 @@ class FileValidator:
                 )
 
             logger.debug(
-                "Image file validation passed: %s (%s, %s bytes)",
+                "Image file validation passed: %r (%s, %s bytes)",
                 filename,
                 detected_mime,
                 file_size,
@@ -992,7 +992,7 @@ class FileValidator:
             self._raise_on_content_threats(sample, filename, "zip")
 
         logger.debug(
-            "ZIP file validation passed: %s (%s, %s bytes)",
+            "ZIP file validation passed: %r (%s, %s bytes)",
             filename,
             detected_mime,
             file_size,
@@ -1105,7 +1105,7 @@ class FileValidator:
             self.xml_validator.validate_xml_safety(temp_file)
 
         logger.debug(
-            "Activity file validation passed: %s (%s, %s bytes)",
+            "Activity file validation passed: %r (%s, %s bytes)",
             filename,
             detected_mime,
             file_size,
@@ -1207,7 +1207,7 @@ class FileValidator:
         self.gzip_inspector.inspect_gzip_content(temp_file, file_size)
 
         logger.debug(
-            "Gzip file validation passed: %s (%s, %s bytes)",
+            "Gzip file validation passed: %r (%s, %s bytes)",
             filename,
             detected_mime,
             file_size,

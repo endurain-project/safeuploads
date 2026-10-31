@@ -378,9 +378,9 @@ class FileSecurityConfig:
             category: The dangerous extension category.
 
         Returns:
-            Copy of extensions in the specified category.
+            Mutable copy of extensions in the specified category.
         """
-        return category.value.copy()
+        return set(category.value)
 
     @classmethod
     def get_compound_extensions_by_category(
@@ -393,9 +393,9 @@ class FileSecurityConfig:
             category: The compound extension category.
 
         Returns:
-            Copy of compound extensions in the specified category.
+            Mutable copy of compound extensions in the specified category.
         """
-        return category.value.copy()
+        return set(category.value)
 
     @classmethod
     def get_unicode_chars_by_category(
@@ -408,9 +408,9 @@ class FileSecurityConfig:
             category: The Unicode attack category.
 
         Returns:
-            Copy of code points in the specified category.
+            Mutable copy of code points in the specified category.
         """
-        return category.value.copy()
+        return set(category.value)
 
     @classmethod
     def is_extension_in_category(

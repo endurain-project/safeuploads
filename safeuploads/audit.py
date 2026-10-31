@@ -63,6 +63,22 @@ def reset_correlation_id() -> None:
     correlation_id_var.set(None)
 
 
+def bind_correlation_id() -> tuple[str, contextvars.Token[str | None]]:
+    """
+    Bind a correlation ID for one operation, keeping a caller's ID.
+
+    Reuses the ID already set in the current context so host logs
+    and audit records share it; generates one otherwise.
+
+    Returns:
+        Tuple of the bound ID and the token that
+        ``correlation_id_var.reset`` uses to restore the previous
+        value.
+    """
+    cid = correlation_id_var.get() or uuid.uuid4().hex
+    return cid, correlation_id_var.set(cid)
+
+
 def log_extra(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:

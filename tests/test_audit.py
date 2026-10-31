@@ -1,5 +1,6 @@
 """Tests for audit logging module."""
 
+import asyncio
 import logging
 
 import pytest
@@ -571,3 +572,85 @@ class TestAuditLogInjectionEndToEnd:
         for record in records:
             assert "\n" not in record.getMessage()
         assert "\nsafeuploads.audit: [forged]" not in caplog.text
+
+
+class TestCorrelationIdPreservedByValidation:
+    """Validation keeps a host-set correlation ID."""
+
+    @staticmethod
+    def _validator():
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.file_validator import FileValidator
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        return FileValidator(config=config)
+
+    @pytest.mark.asyncio
+    async def test_host_id_is_used_and_restored(
+        self, mock_upload_file, valid_jpeg_bytes, caplog
+    ):
+        """Audit records carry the host ID and it survives."""
+        set_correlation_id("host-123")
+        try:
+            file = mock_upload_file(
+                filename="photo.jpg", content=valid_jpeg_bytes
+            )
+            with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+                await self._validator().validate_image_file(file)
+            records = [
+                r for r in caplog.records if r.name == "safeuploads.audit"
+            ]
+            assert len(records) == 2
+            assert {r.audit_correlation_id for r in records} == {"host-123"}
+            assert get_correlation_id() == "host-123"
+        finally:
+            reset_correlation_id()
+
+    @pytest.mark.asyncio
+    async def test_fresh_id_during_and_none_after(
+        self, mock_upload_file, valid_jpeg_bytes, caplog
+    ):
+        """Without a host ID a fresh one is used, then cleared."""
+        reset_correlation_id()
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            await self._validator().validate_image_file(file)
+        records = [r for r in caplog.records if r.name == "safeuploads.audit"]
+        assert len({r.audit_correlation_id for r in records}) == 1
+        assert records[0].audit_correlation_id
+        assert get_correlation_id() is None
+
+    @pytest.mark.asyncio
+    async def test_id_restored_after_failed_validation(self, mock_upload_file):
+        """A rejected upload still restores the host ID."""
+        from safeuploads.exceptions import FileValidationError
+
+        set_correlation_id("host-err")
+        try:
+            file = mock_upload_file(filename="photo.jpg", content=b"")
+            with pytest.raises(FileValidationError):
+                await self._validator().validate_image_file(file)
+            assert get_correlation_id() == "host-err"
+        finally:
+            reset_correlation_id()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_validations_restore_their_own_ids(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Gathered tasks each keep and restore their own ID."""
+        validator = self._validator()
+
+        async def _run(cid: str | None) -> str | None:
+            if cid is not None:
+                set_correlation_id(cid)
+            file = mock_upload_file(
+                filename="photo.jpg", content=valid_jpeg_bytes
+            )
+            await validator.validate_image_file(file)
+            return get_correlation_id()
+
+        results = await asyncio.gather(_run("a"), _run("b"), _run(None))
+        assert results == ["a", "b", None]
+        assert get_correlation_id() is None

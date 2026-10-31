@@ -28,8 +28,8 @@ else:
 
 from .audit import (
     SecurityAuditLogger,
-    reset_correlation_id,
-    set_correlation_id,
+    bind_correlation_id,
+    correlation_id_var,
 )
 from .config import FileSecurityConfig
 from .exceptions import (
@@ -767,7 +767,7 @@ class FileValidator:
             FileProcessingError: Propagated as-is or wrapping an
                 unexpected internal error.
         """
-        cid = set_correlation_id()
+        cid, cid_token = bind_correlation_id()
         filename = file.filename or "unknown"
         self._audit.start(filename, cid)
         logger.debug("Starting %s file validation: %r", file_type, filename)
@@ -805,7 +805,7 @@ class FileValidator:
                 original_error=err,
             ) from err
         finally:
-            reset_correlation_id()
+            correlation_id_var.reset(cid_token)
 
     async def validate_image_file(self, file: UploadFile) -> None:
         """

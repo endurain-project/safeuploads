@@ -1,14 +1,12 @@
 """Fuzz tests for filename sanitization."""
 
-import contextlib
+import unicodedata
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from safeuploads.exceptions import (
-    FileValidationError,
-)
+from safeuploads.exceptions import FileValidationError
 from safeuploads.file_validator import FileValidator
 
 # Strategy: arbitrary Unicode text including control chars
@@ -29,11 +27,19 @@ class TestFuzzFilenameSanitization:
     def test_sanitize_never_crashes(self, filename):
         """Sanitization must not raise unhandled exceptions."""
         validator = FileValidator()
-        with contextlib.suppress(
-            ValueError,
-            FileValidationError,
+        try:
+            result = validator._sanitize_filename(filename)
+        except FileValidationError:
+            return
+        assert result
+        assert result.strip()
+        assert not any(unicodedata.category(c) in ("Cc", "Cf") for c in result)
+        for form in (
+            result,
+            validator.unicode_validator.compatibility_form(result),
         ):
-            validator._sanitize_filename(filename)
+            validator.windows_validator.validate_windows_reserved_names(form)
+            validator.extension_validator.validate_extensions(form)
 
     @given(filename=_unicode_text)
     @settings(max_examples=500, deadline=2000)
@@ -42,7 +48,7 @@ class TestFuzzFilenameSanitization:
         validator = FileValidator()
         try:
             result = validator._sanitize_filename(filename)
-        except (ValueError, FileValidationError):
+        except FileValidationError:
             return
         assert "/" not in result
         assert "\\" not in result
@@ -56,7 +62,7 @@ class TestFuzzFilenameSanitization:
         validator = FileValidator()
         try:
             result = validator._sanitize_filename(filename)
-        except (ValueError, FileValidationError):
+        except FileValidationError:
             return
         assert "\x00" not in result
 
@@ -67,7 +73,7 @@ class TestFuzzFilenameSanitization:
         validator = FileValidator()
         try:
             result = validator._sanitize_filename(filename)
-        except (ValueError, FileValidationError):
+        except FileValidationError:
             return
         for ch in result:
             assert ord(ch) >= 32
@@ -90,7 +96,7 @@ class TestFuzzFilenameSanitization:
         filename = name + ext
         try:
             result = validator._sanitize_filename(filename)
-        except (ValueError, FileValidationError):
+        except FileValidationError:
             return
         assert result.endswith(ext)
 
@@ -102,7 +108,7 @@ class TestFuzzFilenameSanitization:
         filename = "a" * length + ".txt"
         try:
             result = validator._sanitize_filename(filename)
-        except (ValueError, FileValidationError):
+        except FileValidationError:
             return
         # Name part capped at 100 + extension
         assert len(result) <= 104

@@ -1,6 +1,5 @@
 """Fuzz tests for ZIP validation."""
 
-import contextlib
 import io
 import zipfile
 
@@ -9,16 +8,12 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from safeuploads.config import FileSecurityConfig
-from safeuploads.exceptions import (
-    CompressionSecurityError,
-    FileProcessingError,
-    ZipBombError,
-    ZipContentError,
-)
+from safeuploads.file_validator import FileValidator
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
 from safeuploads.validators.compression_validator import (
     CompressionSecurityValidator,
 )
+from tests.fuzz.helpers import MockFile, accepted, accepted_async
 
 # Strategy: random filenames for ZIP entries
 _entry_name = st.text(
@@ -32,6 +27,20 @@ _entry_name = st.text(
 
 # Strategy: random binary content
 _content = st.binary(min_size=0, max_size=1024)
+
+
+def _assert_entries_safe(config, data):
+    """Check an accepted archive opens and its names obey the limits."""
+    limits = config.limits
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        infos = zf.infolist()
+    for info in infos:
+        name = info.filename
+        assert "\x00" not in info.orig_filename
+        assert ".." not in name.replace("\\", "/").split("/")
+        assert not name.startswith(("/", "\\"))
+        assert len(name) <= limits.max_path_length
+        assert len(name.rsplit("/", 1)[-1]) <= limits.max_filename_length
 
 
 @pytest.mark.fuzz
@@ -60,11 +69,9 @@ class TestFuzzZipInspector:
         except Exception:
             return  # Invalid ZIP construction
 
-        with contextlib.suppress(
-            ZipContentError,
-            FileProcessingError,
-        ):
-            inspector.inspect_zip_content(io.BytesIO(buf.getvalue()))
+        data = buf.getvalue()
+        if accepted(inspector.inspect_zip_content, io.BytesIO(data)):
+            _assert_entries_safe(config, data)
 
     @given(data=st.binary(min_size=4, max_size=200))
     @settings(max_examples=200, deadline=3000)
@@ -73,11 +80,33 @@ class TestFuzzZipInspector:
         config = FileSecurityConfig()
         inspector = ZipContentInspector(config)
 
-        with contextlib.suppress(
-            ZipContentError,
-            FileProcessingError,
+        # Non-ZIP bytes are a known bug (see
+        # TestKnownBugs.test_inspector_maps_non_zip_to_validation_error)
+        if accepted(
+            inspector.inspect_zip_content,
+            io.BytesIO(data),
+            known_causes=(zipfile.BadZipFile,),
         ):
-            inspector.inspect_zip_content(io.BytesIO(data))
+            _assert_entries_safe(config, data)
+
+
+@pytest.mark.fuzz
+class TestFuzzZipPipeline:
+    """Property tests for the full ZIP validation pipeline."""
+
+    @given(tail=st.binary(min_size=0, max_size=300))
+    @settings(max_examples=200, deadline=5000)
+    @pytest.mark.asyncio
+    async def test_zip_signature_with_random_tail(self, tail):
+        """Corrupt data behind a ZIP signature is rejected cleanly."""
+        data = b"PK\x03\x04" + tail
+        validator = FileValidator()
+        file = MockFile("fuzz.zip", data)
+        if await accepted_async(validator.validate_zip_file(file)):
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                assert len(zf.infolist()) <= (
+                    validator.config.limits.max_zip_entries
+                )
 
 
 @pytest.mark.fuzz
@@ -106,11 +135,40 @@ class TestFuzzCompressionValidator:
                 )
 
         zip_bytes = buf.getvalue()
-        with contextlib.suppress(
-            ZipBombError,
-            CompressionSecurityError,
-            FileProcessingError,
+        if accepted(
+            validator.validate_zip_compression_ratio,
+            io.BytesIO(zip_bytes),
+            len(zip_bytes),
         ):
-            validator.validate_zip_compression_ratio(
-                io.BytesIO(zip_bytes), len(zip_bytes)
+            limits = config.limits
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                infos = zf.infolist()
+            assert len(infos) <= limits.max_zip_entries
+            assert (
+                sum(i.file_size for i in infos) <= limits.max_uncompressed_size
             )
+            for info in infos:
+                assert info.file_size <= limits.max_individual_file_size
+                if info.compress_size > 0:
+                    ratio = info.file_size / info.compress_size
+                    assert ratio <= limits.max_compression_ratio
+
+
+@pytest.mark.fuzz
+class TestKnownBugs:
+    """Regression tests pinning bugs found by fuzzing."""
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "ZipContentInspector.inspect_zip_content maps"
+            " zipfile.BadZipFile to a plain FileProcessingError"
+            " (PROCESSING_ERROR) instead of a FileValidationError"
+        ),
+    )
+    def test_inspector_maps_non_zip_to_validation_error(self):
+        """Corrupt ZIP data must be rejected as a validation error."""
+        inspector = ZipContentInspector(FileSecurityConfig())
+        assert not accepted(
+            inspector.inspect_zip_content, io.BytesIO(b"\x00\x00\x00\x00")
+        )

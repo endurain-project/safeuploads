@@ -164,6 +164,19 @@ class TestSecurityAuditLogger:
         assert "threat_detected" in record.message
         assert record.levelno == logging.WARNING
 
+    def test_enabled_logs_resource_limit(self, caplog):
+        """Test enabled logger logs resource limit event."""
+        audit = SecurityAuditLogger(enabled=True)
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            audit.resource_limit("big.zip", "cid-rl", 12.5, "time limit")
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.audit_event_type == "resource_limit"
+        assert record.audit_filename == "big.zip"
+        assert record.audit_result == "time limit"
+        assert record.audit_duration_ms == 12.5
+        assert record.levelno == logging.WARNING
+
     def test_log_event_with_full_audit_event(self, caplog):
         """Test log_event with direct AuditEvent."""
         audit = SecurityAuditLogger(enabled=True)
@@ -250,6 +263,45 @@ class TestAuditIntegration:
         assert len(audit_records) == 2
         assert "validation_start" in audit_records[0].message
         assert "validation_failure" in audit_records[1].message
+
+    @pytest.mark.asyncio
+    async def test_resource_limit_emits_single_resource_limit_event(
+        self, mock_upload_file, valid_jpeg_bytes, fake_clock, caplog
+    ):
+        """Test a time limit emits start+resource_limit, no failure."""
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.exceptions import ResourceLimitError
+        from safeuploads.file_validator import FileValidator
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        validator = FileValidator(config=config)
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
+        fake_clock.step = 1000.0
+        fake_clock.advancing = True
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        audit_records = [
+            r for r in caplog.records if r.name == "safeuploads.audit"
+        ]
+        assert [r.audit_event_type for r in audit_records] == [
+            "validation_start",
+            "resource_limit",
+        ]
+        limit_record = audit_records[1]
+        assert limit_record.audit_filename == "photo.jpg"
+        assert limit_record.audit_result == str(exc_info.value)
+        assert limit_record.levelno == logging.WARNING
+        assert (
+            limit_record.audit_correlation_id
+            == audit_records[0].audit_correlation_id
+        )
 
     @pytest.mark.asyncio
     async def test_zip_validation_produces_audit_events(

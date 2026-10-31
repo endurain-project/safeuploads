@@ -1483,7 +1483,7 @@ class TestResourceLimitsEnforcedDuringWork:
             "check_resource_limits",
             "validate_zip_compression_ratio",
         } <= _raised_in(exc_info)
-        assert "validation_failure" in caplog.text
+        assert "resource_limit" in caplog.text
 
     async def test_zip_memory_over_budget_raises_inside_loop(
         self, mock_upload_file, fake_clock, monkeypatch
@@ -1550,7 +1550,7 @@ class TestResourceLimitsEnforcedDuringWork:
         assert type(exc_info.value) is ResourceLimitError
         assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
         assert "inspect_gzip_content" in _raised_in(exc_info)
-        assert "validation_failure" in caplog.text
+        assert "resource_limit" in caplog.text
 
     async def test_activity_within_budget_passes(
         self, mock_upload_file, fake_clock, monkeypatch
@@ -1583,7 +1583,7 @@ class TestResourceLimitsEnforcedDuringWork:
         assert type(exc_info.value) is ResourceLimitError
         assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
         assert "validate_xml_safety" in _raised_in(exc_info)
-        assert "validation_failure" in caplog.text
+        assert "resource_limit" in caplog.text
 
     async def test_image_within_budget_passes(
         self, mock_upload_file, valid_jpeg_bytes, fake_clock
@@ -1616,7 +1616,7 @@ class TestResourceLimitsEnforcedDuringWork:
         assert type(exc_info.value) is ResourceLimitError
         assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
         assert "_validate_file_size" in _raised_in(exc_info)
-        assert "validation_failure" in caplog.text
+        assert "resource_limit" in caplog.text
 
 
 class TestDetectMimeTypeMagicException:

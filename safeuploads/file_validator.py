@@ -830,9 +830,9 @@ class FileValidator:
         Run a validation body with audit logging and error mapping.
 
         Wraps a format-specific validation callback with
-        correlation-ID setup, audit start/success/failure
-        events, resource-error propagation, and internal-error
-        wrapping.
+        correlation-ID setup, an audit start event and one
+        terminal success, failure or resource-limit event, and
+        internal-error wrapping.
 
         Args:
             file: Uploaded file being validated.
@@ -855,9 +855,17 @@ class FileValidator:
             await body(file)
             ms = (time.monotonic() - t0) * 1000
             self._audit.success(file.filename or filename, cid, ms)
+        except ResourceLimitError as exc:
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.resource_limit(
+                file.filename or filename,
+                cid,
+                ms,
+                str(exc),
+            )
+            raise
         except (
             FileValidationError,
-            ResourceLimitError,
             FileProcessingError,
         ) as exc:
             ms = (time.monotonic() - t0) * 1000

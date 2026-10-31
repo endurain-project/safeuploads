@@ -354,3 +354,29 @@ class SecurityAuditLogger:
                 details=threat_description,
             )
         )
+
+    def resource_limit(
+        self,
+        filename: str,
+        correlation_id: str,
+        duration_ms: float,
+        error: str,
+    ) -> None:
+        """
+        Log a resource limit event.
+
+        Args:
+            filename: Name of the file being validated.
+            correlation_id: Unique operation identifier.
+            duration_ms: Validation duration in milliseconds.
+            error: Short description of the exceeded limit.
+        """
+        self.log_event(
+            AuditEvent(
+                event_type=AuditEventType.RESOURCE_LIMIT,
+                correlation_id=correlation_id,
+                filename=filename,
+                result=error,
+                duration_ms=duration_ms,
+            )
+        )

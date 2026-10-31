@@ -28,7 +28,9 @@ jobs:
         # before the commit-range check below can run.
         if: github.event.action != 'synchronize'
         # The PR title is untrusted data: passed through an environment variable
-        # (never interpolated into the shell) to the trusted base-ref checker.
+        # (never interpolated into the shell) to the checker, which runs from the
+        # PR's own checkout. The job has read-only permissions
+        # (`contents: read`).
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |

@@ -169,8 +169,8 @@ class TestValidateActivityFileMimeErrors:
     ):
         validator = FileValidator()
         monkeypatch.setattr(
-            validator,
-            "_detect_mime_type",
+            validator.mime_validator,
+            "detect",
             lambda content, filename: "application/pdf",
         )
         f = mock_upload_file("track.gpx", _GPX_CONTENT)

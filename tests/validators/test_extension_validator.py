@@ -2,7 +2,11 @@
 
 import pytest
 
-from safeuploads.exceptions import ErrorCode, ExtensionSecurityError
+from safeuploads.exceptions import (
+    ErrorCode,
+    ExtensionSecurityError,
+    FilenameSecurityError,
+)
 from safeuploads.validators.extension_validator import (
     ExtensionSecurityValidator,
 )
@@ -274,3 +278,74 @@ class TestAddedBlockedExtensions:
     def test_default_config_still_valid(self, default_config):
         """The default configuration reports no errors."""
         assert default_config.validate_instance() == []
+
+
+class TestValidateAllowed:
+    """Test allow-list extension validation."""
+
+    @pytest.mark.parametrize("filename", ["photo.jpg", "image.png", "A.JPG"])
+    def test_allowed_image_extension_passes(self, default_config, filename):
+        """Allowed image extensions pass, case-insensitively."""
+        validator = ExtensionSecurityValidator(default_config)
+        validator.validate_allowed(
+            filename, default_config.ALLOWED_IMAGE_EXTENSIONS
+        )
+
+    def test_allowed_zip_extension_passes(self, default_config):
+        """Allowed ZIP extension passes."""
+        validator = ExtensionSecurityValidator(default_config)
+        validator.validate_allowed(
+            "archive.zip", default_config.ALLOWED_ZIP_EXTENSIONS
+        )
+
+    @pytest.mark.parametrize(
+        ("filename", "allowed"),
+        [
+            ("document.pdf", "ALLOWED_IMAGE_EXTENSIONS"),
+            ("archive.rar", "ALLOWED_ZIP_EXTENSIONS"),
+            ("malware.exe", "ALLOWED_IMAGE_EXTENSIONS"),
+        ],
+    )
+    def test_extension_not_allowed(self, default_config, filename, allowed):
+        """Extensions outside the allow-list are rejected."""
+        validator = ExtensionSecurityValidator(default_config)
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_allowed(
+                filename, getattr(default_config, allowed)
+            )
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
+        assert exc_info.value.filename == filename
+
+    def test_not_allowed_message_lists_sorted(self, default_config):
+        """The allowed extensions appear in sorted order."""
+        validator = ExtensionSecurityValidator(default_config)
+        allowed = frozenset({".png", ".gif", ".jpg"})
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_allowed("document.pdf", allowed)
+        assert str(exc_info.value).endswith("Allowed: .gif, .jpg, .png")
+
+    def test_missing_extension_reports_missing_code(self, default_config):
+        """A file with no extension reports EXTENSION_MISSING."""
+        validator = ExtensionSecurityValidator(default_config)
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_allowed(
+                "noext", default_config.ALLOWED_IMAGE_EXTENSIONS
+            )
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MISSING
+
+    def test_blocked_extension_in_allow_list_is_rejected(self, default_config):
+        """A blocked extension is rejected even when allow-listed."""
+        validator = ExtensionSecurityValidator(default_config)
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_allowed("run.exe", frozenset({".exe"}))
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    @pytest.mark.parametrize("filename", [None, ""])
+    def test_empty_filename_rejected(self, default_config, filename):
+        """A missing filename reports FILENAME_EMPTY."""
+        validator = ExtensionSecurityValidator(default_config)
+        with pytest.raises(FilenameSecurityError) as exc_info:
+            validator.validate_allowed(
+                filename, default_config.ALLOWED_IMAGE_EXTENSIONS
+            )
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY

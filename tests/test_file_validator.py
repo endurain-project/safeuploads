@@ -378,94 +378,6 @@ class TestValidateFilename:
         assert file.filename == "file__.txt"  # Dangerous chars replaced
 
 
-class TestValidateFileExtension:
-    """Test file extension validation."""
-
-    @pytest.mark.asyncio
-    async def test_validate_image_extension_allowed(self, mock_upload_file):
-        """Test that allowed image extensions pass."""
-        validator = FileValidator()
-
-        # Should not raise - .gif is not in default allowed extensions
-        file1 = mock_upload_file(filename="photo.jpg", content=b"test")
-        validator._validate_file_extension(
-            file1, validator.config.ALLOWED_IMAGE_EXTENSIONS
-        )
-
-        file2 = mock_upload_file(filename="image.png", content=b"test")
-        validator._validate_file_extension(
-            file2, validator.config.ALLOWED_IMAGE_EXTENSIONS
-        )
-
-    @pytest.mark.asyncio
-    async def test_validate_zip_extension_allowed(self, mock_upload_file):
-        """Test that allowed ZIP extension passes."""
-        validator = FileValidator()
-
-        # Should not raise
-        file = mock_upload_file(filename="archive.zip", content=b"test")
-        validator._validate_file_extension(
-            file, validator.config.ALLOWED_ZIP_EXTENSIONS
-        )
-
-    @pytest.mark.asyncio
-    async def test_validate_image_extension_not_allowed(
-        self, mock_upload_file
-    ):
-        """Test that non-image extensions are rejected for images."""
-        validator = FileValidator()
-
-        file = mock_upload_file(filename="document.pdf", content=b"test")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_IMAGE_EXTENSIONS
-            )
-
-        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
-
-    def test_extension_not_allowed_message_lists_sorted(
-        self, mock_upload_file
-    ):
-        """Test that the allowed extensions appear in sorted order."""
-        validator = FileValidator()
-        allowed = frozenset({".png", ".gif", ".jpg"})
-
-        file = mock_upload_file(filename="document.pdf", content=b"test")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            validator._validate_file_extension(file, allowed)
-
-        assert str(exc_info.value).endswith("Allowed: .gif, .jpg, .png")
-
-    @pytest.mark.asyncio
-    async def test_validate_zip_extension_not_allowed(self, mock_upload_file):
-        """Test that non-ZIP extensions are rejected for ZIPs."""
-        validator = FileValidator()
-
-        file = mock_upload_file(filename="archive.rar", content=b"test")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_ZIP_EXTENSIONS
-            )
-
-        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
-
-    @pytest.mark.asyncio
-    async def test_validate_dangerous_extension_blocked(
-        self, mock_upload_file
-    ):
-        """Test that dangerous extensions are always blocked."""
-        validator = FileValidator()
-
-        file = mock_upload_file(filename="malware.exe", content=b"test")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            # Extension not in allowed list, so will
-            # raise EXTENSION_NOT_ALLOWED first
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_IMAGE_EXTENSIONS
-            )
-        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
-
-
 class TestValidateFileSize:
     """Test file size validation."""
 
@@ -529,125 +441,6 @@ class TestValidateFileSize:
         # Rejection is based on the real counted bytes, not the
         # tiny declared size.
         assert exc_info.value.size > 1 * 1024 * 1024
-
-
-class TestDetectMimeType:
-    """Test MIME type detection."""
-
-    def test_detect_mime_with_magic_available(self, valid_jpeg_bytes):
-        """Test MIME detection when python-magic is available."""
-        validator = FileValidator()
-
-        mime_type = validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
-
-        assert mime_type == "image/jpeg"
-
-    def test_detect_mime_magic_unavailable_rejects(self):
-        """Test detection fails closed when libmagic is unavailable."""
-        validator = FileValidator()
-        validator.magic_available = False
-
-        with pytest.raises(MimeTypeError) as exc_info:
-            validator._detect_mime_type(b"fake content", "document.pdf")
-
-        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
-        assert exc_info.value.filename == "document.pdf"
-
-    def test_detect_mime_empty_result_rejects(self, monkeypatch):
-        """Test an empty magic result is rejected, not guessed."""
-        validator = FileValidator()
-        monkeypatch.setattr(
-            validator.magic_mime, "from_buffer", lambda _content: ""
-        )
-
-        with pytest.raises(MimeTypeError) as exc_info:
-            validator._detect_mime_type(b"fake", "photo.jpg")
-
-        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
-
-
-class TestValidateFileSignature:
-    """Test file signature validation."""
-
-    def test_validate_jpeg_signature(self, valid_jpeg_bytes):
-        """Test JPEG signature validation."""
-        validator = FileValidator()
-
-        # Should not raise
-        validator._validate_file_signature(
-            valid_jpeg_bytes, expected_type="image"
-        )
-
-    def test_validate_png_signature(self, valid_png_bytes):
-        """Test PNG signature validation."""
-        validator = FileValidator()
-
-        # Should not raise
-        validator._validate_file_signature(
-            valid_png_bytes, expected_type="image"
-        )
-
-    def test_validate_gif_signature(self):
-        """Test GIF signature validation - GIF not in allowed signatures."""
-        validator = FileValidator()
-        gif_bytes = b"GIF89a" + b"\x00" * 100
-
-        # GIF signature is not in the allowed image signatures (only JPEG, PNG)
-        with pytest.raises(FileSignatureError) as exc_info:
-            validator._validate_file_signature(
-                gif_bytes, expected_type="image"
-            )
-        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
-
-    def test_validate_zip_signature(self, create_zip_file):
-        """Test ZIP signature validation."""
-        validator = FileValidator()
-        zip_bytes = create_zip_file(files={"test.txt": b"content"})
-
-        # Should not raise
-        validator._validate_file_signature(zip_bytes, expected_type="zip")
-
-    def test_validate_invalid_image_signature(self):
-        """Test that invalid image signature is rejected."""
-        validator = FileValidator()
-        invalid_bytes = b"This is not an image"
-
-        with pytest.raises(
-            FileSignatureError,
-            match="File content does not match expected image",
-        ):
-            validator._validate_file_signature(
-                invalid_bytes, expected_type="image"
-            )
-
-    def test_validate_invalid_zip_signature(self):
-        """Test that invalid ZIP signature is rejected."""
-        validator = FileValidator()
-        invalid_bytes = b"This is not a ZIP"
-
-        with pytest.raises(
-            FileSignatureError,
-            match="File content does not match expected zip",
-        ):
-            validator._validate_file_signature(
-                invalid_bytes, expected_type="zip"
-            )
-
-    def test_validate_activity_signature_leading_whitespace(self):
-        """Leading whitespace before <?xml is tolerated."""
-        validator = FileValidator()
-        content = b"\n  <?xml version='1.0'?><gpx></gpx>"
-
-        # Should not raise
-        validator._validate_file_signature(content, "activity")
-
-    def test_validate_activity_signature_bom_then_whitespace(self):
-        """A UTF-8 BOM followed by whitespace before <?xml passes."""
-        validator = FileValidator()
-        content = b"\xef\xbb\xbf\n<?xml version='1.0'?><gpx></gpx>"
-
-        # Should not raise
-        validator._validate_file_signature(content, "activity")
 
 
 class TestValidateImageFile:
@@ -950,12 +743,12 @@ def _break_magic_init(monkeypatch) -> None:
     Args:
         monkeypatch: pytest monkeypatch fixture.
     """
-    import safeuploads.file_validator as _fv
+    import safeuploads.validators.mime_validator as _mv
 
     def _fail(**_):
         raise Exception("python-magic unavailable")
 
-    monkeypatch.setattr(_fv.magic, "Magic", _fail)
+    monkeypatch.setattr(_mv.magic, "Magic", _fail)
 
 
 class TestFileValidatorMagicUnavailable:
@@ -968,10 +761,10 @@ class TestFileValidatorMagicUnavailable:
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        import safeuploads.file_validator as _fv
+        import safeuploads.validators.mime_validator as _mv
 
         monkeypatch.setattr(
-            _fv.magic,
+            _mv.magic,
             "Magic",
             lambda **_: (_ for _ in ()).throw(
                 Exception("python-magic unavailable")
@@ -995,23 +788,6 @@ class TestFileValidatorMagicUnavailable:
             r.levelno == logging.ERROR and "rejected" in r.getMessage()
             for r in caplog.records
         )
-
-    async def test_magic_unavailable_detect_rejects(
-        self, monkeypatch, valid_jpeg_bytes
-    ):
-        """
-        Test detection rejects instead of guessing from the filename.
-
-        Args:
-            monkeypatch: pytest monkeypatch fixture.
-            valid_jpeg_bytes: Valid JPEG bytes fixture.
-        """
-        _break_magic_init(monkeypatch)
-        validator = FileValidator()
-        assert validator.magic_available is False
-        with pytest.raises(MimeTypeError) as exc_info:
-            validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
-        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
 
 
 class TestValidateFilenameExceptionWrapping:
@@ -1645,35 +1421,6 @@ class TestResourceLimitsEnforcedDuringWork:
         assert "resource_limit" in caplog.text
 
 
-class TestDetectMimeTypeMagicException:
-    """Tests for _detect_mime_type when magic raises."""
-
-    def test_magic_from_buffer_exception_rejects(
-        self, monkeypatch, valid_jpeg_bytes
-    ):
-        """
-        Test detection rejects when magic.from_buffer raises.
-
-        Args:
-            monkeypatch: pytest monkeypatch fixture.
-            valid_jpeg_bytes: Valid JPEG bytes fixture.
-        """
-        validator = FileValidator()
-        assert validator.magic_available is True
-
-        def _explode(_content):
-            raise RuntimeError("secret internal detail")
-
-        monkeypatch.setattr(validator.magic_mime, "from_buffer", _explode)
-
-        with pytest.raises(MimeTypeError) as exc_info:
-            validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
-
-        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
-        assert "secret internal detail" not in str(exc_info.value)
-        assert isinstance(exc_info.value.__cause__, RuntimeError)
-
-
 class TestMimeDetectionFailureEndToEnd:
     """MIME detection failure rejects every upload type."""
 
@@ -1734,104 +1481,8 @@ class TestMimeDetectionFailureEndToEnd:
         await validator.validate_image_file(file)
 
 
-class TestValidateFileSignatureEdgeCases:
-    """Tests for _validate_file_signature edge cases."""
-
-    def test_signature_too_small_file(self):
-        """
-        Test that files smaller than 4 bytes are rejected.
-
-        Returns:
-            None
-        """
-        validator = FileValidator()
-
-        with pytest.raises(FileSignatureError, match="too small"):
-            validator._validate_file_signature(b"\xff\xd8", "image")
-
-    def test_signature_one_byte_file(self):
-        """
-        Test that single byte files are rejected.
-
-        Returns:
-            None
-        """
-        validator = FileValidator()
-
-        with pytest.raises(FileSignatureError) as exc_info:
-            validator._validate_file_signature(b"X", "zip")
-        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISSING
-
-    def test_signature_empty_content(self):
-        """
-        Test that empty content is rejected.
-
-        Returns:
-            None
-        """
-        validator = FileValidator()
-
-        with pytest.raises(FileSignatureError) as exc_info:
-            validator._validate_file_signature(b"", "image")
-        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISSING
-
-
-class TestEnforceMimeAndWiredErrorCodes:
-    """Tests for the shared MIME helper and wired error codes."""
-
-    def test_enforce_mime_allows_permitted_type(self):
-        """Permitted MIME types pass without raising."""
-        validator = FileValidator()
-        validator._enforce_mime(
-            "application/zip",
-            validator.config.ALLOWED_ZIP_MIMES,
-            "a.zip",
-        )
-
-    def test_enforce_mime_allows_octet_stream_when_enabled(self):
-        """octet-stream is accepted only when explicitly allowed."""
-        validator = FileValidator()
-        validator._enforce_mime(
-            "application/octet-stream",
-            validator.config.ALLOWED_ZIP_MIMES,
-            "a.zip",
-            allow_octet_stream=True,
-        )
-
-    def test_enforce_mime_rejects_octet_stream_by_default(self):
-        """octet-stream is rejected when not explicitly allowed."""
-        validator = FileValidator()
-        with pytest.raises(MimeTypeError) as exc_info:
-            validator._enforce_mime(
-                "application/octet-stream",
-                validator.config.ALLOWED_ZIP_MIMES,
-                "a.zip",
-            )
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_INVALID
-
-    def test_enforce_mime_wires_mismatch_error_code(self):
-        """A disallowed MIME type raises with the supplied code."""
-        validator = FileValidator()
-        with pytest.raises(MimeTypeError) as exc_info:
-            validator._enforce_mime(
-                "text/plain",
-                validator.config.ALLOWED_ZIP_MIMES,
-                "a.zip",
-                error_code=ErrorCode.MIME_TYPE_MISMATCH,
-            )
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
-
-    def test_validate_extension_missing_reports_missing_code(
-        self, mock_upload_file
-    ):
-        """A file with no extension reports EXTENSION_MISSING."""
-        validator = FileValidator()
-        file = mock_upload_file(filename="noext", content=b"data")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_IMAGE_EXTENSIONS
-            )
-        assert exc_info.value.error_code == ErrorCode.EXTENSION_MISSING
+class TestWiredErrorCodes:
+    """Tests for error codes kept by the orchestration helpers."""
 
     @pytest.mark.asyncio
     async def test_empty_file_reports_empty_code(self, mock_upload_file):
@@ -1861,13 +1512,6 @@ class TestEnforceMimeAndWiredErrorCodes:
             with pytest.raises(FileSignatureError) as exc_info:
                 validator._read_header_and_detect(temp_file, "a.gz", "gzip")
         assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
-
-    def test_signature_too_small_reports_missing_code(self):
-        """A too-small header reports FILE_SIGNATURE_MISSING."""
-        validator = FileValidator()
-        with pytest.raises(FileSignatureError) as exc_info:
-            validator._validate_file_signature(b"\xff\xd8", "image")
-        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISSING
 
 
 class TestSanitizeFilenameEdgeCases:
@@ -2525,13 +2169,13 @@ class TestImageMimeDetectionOffLoop:
         """libmagic is called from a thread other than the loop."""
         validator = FileValidator()
         threads: list[int] = []
-        real = validator._detect_mime_type
+        real = validator.mime_validator.detect
 
         def _recording(content, filename):
             threads.append(threading.get_ident())
             return real(content, filename)
 
-        monkeypatch.setattr(validator, "_detect_mime_type", _recording)
+        monkeypatch.setattr(validator.mime_validator, "detect", _recording)
         file = mock_upload_file(filename="p.jpg", content=valid_jpeg_bytes)
         await validator.validate_image_file(file)
         assert threads

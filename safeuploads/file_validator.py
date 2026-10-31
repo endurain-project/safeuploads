@@ -4,9 +4,7 @@ import asyncio
 import contextvars
 import logging
 import os
-import secrets
 import tempfile
-import threading
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor
@@ -35,14 +33,12 @@ from .config import FileSecurityConfig
 from .exceptions import (
     ContentThreatError,
     ErrorCode,
-    ExtensionSecurityError,
     FilenameSecurityError,
     FileProcessingError,
     FileSecurityConfigurationError,
     FileSignatureError,
     FileSizeError,
     FileValidationError,
-    MimeTypeError,
     ResourceLimitError,
 )
 from .inspectors import ZipContentInspector
@@ -52,7 +48,10 @@ from .utils import ResourceMonitor, bytes_to_mb, check_resource_limits
 from .validators import (
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
+    FilenameSecurityValidator,
+    FileSignatureValidator,
     FitSecurityValidator,
+    MimeTypeValidator,
     UnicodeSecurityValidator,
     WindowsSecurityValidator,
 )
@@ -74,7 +73,10 @@ class FileValidator:
         windows_validator: Validator enforcing Windows-specific constraints.
         compression_validator: Validator handling compressed file limits.
         zip_inspector: Inspector for ZIP archive contents.
-        magic_mime: MIME type detector based on python-magic.
+        filename_validator: Validator for path and length rules.
+        signature_validator: Validator for file header signatures.
+        mime_validator: Validator for content MIME detection.
+        magic_mime: MIME type detector of the MIME validator.
         magic_available: Whether python-magic was successfully initialized.
     """
 
@@ -104,7 +106,10 @@ class FileValidator:
             windows_validator: Validator enforcing Windows constraints.
             compression_validator: Validator for compressed file limits.
             zip_inspector: Inspector for ZIP archive contents.
-            magic_mime: MIME type detector based on python-magic.
+            filename_validator: Validator for path and length rules.
+            signature_validator: Validator for file header signatures.
+            mime_validator: Validator for content MIME detection.
+            magic_mime: MIME type detector of the MIME validator.
             magic_available: Whether python-magic initialized successfully.
         """
         self.config = config or FileSecurityConfig()
@@ -136,29 +141,32 @@ class FileValidator:
         self.fit_validator = FitSecurityValidator(self.config)
         self.gzip_inspector = GzipContentInspector(self.config)
         self.content_inspector = ContentSecurityInspector(self.config)
+        self.filename_validator = FilenameSecurityValidator(self.config)
+        self.signature_validator = FileSignatureValidator(self.config)
+        self.mime_validator = MimeTypeValidator(self.config)
 
         # Initialize audit logger
         self._audit = SecurityAuditLogger(
             enabled=self.config.limits.enable_audit_logging
         )
 
-        # Serialize access to the shared python-magic instance;
-        # libmagic cookies are not thread-safe and validation may
-        # run in worker threads via asyncio.to_thread.
-        self._magic_lock = threading.Lock()
+    @property
+    def magic_mime(self) -> magic.Magic:
+        """MIME type detector owned by the MIME validator."""
+        return self.mime_validator.magic_mime
 
-        # Initialize python-magic for content-based detection
-        try:
-            self.magic_mime = magic.Magic(mime=True)
-            self.magic_available = True
-            logger.debug("File content detection (python-magic) initialized")
-        except Exception as err:
-            self.magic_available = False
-            logger.error(
-                "python-magic not available for content detection;"
-                " uploads will be rejected: %s",
-                err,
-            )
+    @magic_mime.setter
+    def magic_mime(self, detector: magic.Magic) -> None:
+        self.mime_validator.magic_mime = detector
+
+    @property
+    def magic_available(self) -> bool:
+        """Whether python-magic initialized successfully."""
+        return self.mime_validator.magic_available
+
+    @magic_available.setter
+    def magic_available(self, available: bool) -> None:
+        self.mime_validator.magic_available = available
 
     def _submit(
         self, func: Callable[..., _T], *args: object
@@ -252,170 +260,6 @@ class FileValidator:
         finally:
             self._close_when_idle(temp_file, worker)
 
-    def _detect_mime_type(self, file_content: bytes, filename: str) -> str:
-        """
-        Determine MIME type for file content using libmagic.
-
-        Detection never falls back to the filename: the extension
-        is already allow-listed, so a guess from it would let the
-        MIME check pass for any content.
-
-        Args:
-            file_content: Raw bytes of the file to inspect.
-            filename: Filename used for error context.
-
-        Returns:
-            Detected MIME type.
-
-        Raises:
-            MimeTypeError: If libmagic is unavailable, raises, or
-                returns an empty result
-                (``ErrorCode.MIME_DETECTION_FAILED``).
-        """
-        if not self.magic_available:
-            raise MimeTypeError(
-                "File type could not be determined",
-                filename=filename,
-                error_code=ErrorCode.MIME_DETECTION_FAILED,
-            )
-
-        # Guarded by a lock because libmagic is not thread-safe and
-        # detection may run concurrently in worker threads.
-        try:
-            with self._magic_lock:
-                detected_mime = self.magic_mime.from_buffer(file_content)
-        except Exception as err:
-            logger.error("Magic MIME detection failed: %s", err)
-            raise MimeTypeError(
-                "File type could not be determined",
-                filename=filename,
-                error_code=ErrorCode.MIME_DETECTION_FAILED,
-            ) from err
-
-        if not detected_mime:
-            raise MimeTypeError(
-                "File type could not be determined",
-                filename=filename,
-                error_code=ErrorCode.MIME_DETECTION_FAILED,
-            )
-
-        return detected_mime
-
-    def _enforce_mime(
-        self,
-        detected_mime: str,
-        allowed_mimes: frozenset[str],
-        filename: str,
-        *,
-        allow_octet_stream: bool = False,
-        error_code: str | None = None,
-    ) -> None:
-        """
-        Raise if a detected MIME type is not permitted.
-
-        Args:
-            detected_mime: MIME type reported for the content.
-            allowed_mimes: Permitted MIME types for the category.
-            filename: Sanitized filename for error context.
-            allow_octet_stream: Accept ``application/octet-stream``
-                when a valid magic signature already passed.
-            error_code: Optional error code for the raised error.
-
-        Raises:
-            MimeTypeError: If the MIME type is not allowed.
-        """
-        if detected_mime in allowed_mimes:
-            return
-        if allow_octet_stream and detected_mime == "application/octet-stream":
-            logger.debug(
-                "Accepting application/octet-stream for %r"
-                " on a valid signature",
-                filename,
-            )
-            return
-        raise MimeTypeError(
-            "Invalid file type."
-            f" Detected: {detected_mime}."
-            f" Allowed: {', '.join(sorted(allowed_mimes))}",
-            filename=filename,
-            detected_mime=detected_mime,
-            allowed_mimes=list(allowed_mimes),
-            error_code=error_code,
-        )
-
-    def _validate_file_signature(
-        self, file_content: bytes, expected_type: str
-    ) -> None:
-        """
-        Verify file content begins with known signature for expected type.
-
-        Args:
-            file_content: Raw bytes of the uploaded file.
-            expected_type: Logical file category ("image" or "zip").
-
-        Raises:
-            FileSignatureError: File header doesn't match expected type
-                signatures.
-        """
-        if len(file_content) < 4:
-            raise FileSignatureError(
-                f"File too small to verify {expected_type} signature",
-                expected_type=expected_type,
-                error_code=ErrorCode.FILE_SIGNATURE_MISSING,
-            )
-
-        # Common file signatures
-        signatures = {
-            "image": [
-                b"\xff\xd8\xff",  # JPEG
-                b"\x89PNG\r\n\x1a\n",  # PNG
-            ],
-            "zip": [
-                b"PK\x03\x04",  # ZIP file
-                b"PK\x05\x06",  # Empty ZIP
-                b"PK\x07\x08",  # ZIP with spanning
-            ],
-            "gzip": [
-                b"\x1f\x8b",  # gzip magic number
-            ],
-            "activity": [
-                b"<?xml",  # XML header (GPX/TCX)
-                b"\xef\xbb\xbf<?xml",  # XML with BOM
-            ],
-        }
-
-        expected_signatures = signatures.get(expected_type, [])
-
-        for signature in expected_signatures:
-            if file_content.startswith(signature):
-                logger.debug(
-                    "File signature matched for type '%s'", expected_type
-                )
-                return  # Signature matched
-
-        # FIT files: ".FIT" at bytes 8-11
-        if (
-            expected_type == "fit"
-            and len(file_content) >= 12
-            and file_content[8:12] == b".FIT"
-        ):
-            return
-
-        # Activity XML files may carry a UTF-8 BOM and/or leading
-        # whitespace before the XML declaration; tolerate both.
-        if expected_type == "activity":
-            head = file_content
-            if head.startswith(b"\xef\xbb\xbf"):
-                head = head[3:]
-            if head.lstrip().startswith(b"<?xml"):
-                return
-
-        # No matching signature found
-        raise FileSignatureError(
-            f"File content does not match expected {expected_type} format",
-            expected_type=expected_type,
-        )
-
     def _sanitize_filename(self, filename: str) -> str:
         """
         Sanitize user-provided filename to prevent security risks.
@@ -447,14 +291,11 @@ class FileValidator:
         # from basename (e.g. a fullwidth solidus)
         self.unicode_validator.compatibility_form(filename)
 
-        # Remove path components to prevent directory traversal
-        filename = os.path.basename(filename)
-
-        # Remove dangerous characters that could be used
-        # for path traversal or command injection
-        dangerous_chars = '<>:"/\\|?*'
-        for char in dangerous_chars:
-            filename = filename.replace(char, "_")
+        # Remove path components and dangerous characters that could
+        # be used for path traversal or command injection
+        filename = self.filename_validator.replace_dangerous_characters(
+            filename
+        )
 
         # Name checks run on the NFC name and on its NFKC form, so
         # compatibility characters (fullwidth letters, superscript
@@ -471,21 +312,9 @@ class FileValidator:
 
         check_name(filename)
 
-        # Limit filename length (preserve extension)
-        name_part, ext_part = os.path.splitext(filename)
-        max_name_len = self.config.limits.max_sanitized_name_length
-        if len(name_part) > max_name_len:
-            logger.debug(
-                "Truncating sanitized name from %d to %d chars",
-                len(name_part),
-                max_name_len,
-            )
-            name_part = name_part[:max_name_len]
-            filename = name_part + ext_part
-
-        # Ensure we don't end up with just an extension or empty name
-        if not name_part or name_part.strip() == "":
-            filename = f"file_{secrets.token_hex(8)}{ext_part}"
+        # Limit filename length (preserve extension) and avoid an
+        # empty name
+        filename = self.filename_validator.limit_length(filename)
 
         # Final checks on the returned name: truncation can expose a
         # blocked extension or a reserved name that the earlier checks
@@ -540,58 +369,6 @@ class FileValidator:
                 "Filename validation failed due to internal error",
                 original_error=err,
             ) from err
-
-    def _validate_file_extension(
-        self, file: UploadFile, allowed_extensions: frozenset[str]
-    ) -> None:
-        """
-        Validate extension of uploaded file against allowed and blocked lists.
-
-        Args:
-            file: File whose extension will be validated.
-            allowed_extensions: Set of allowed file extensions.
-
-        Raises:
-            FilenameSecurityError: Filename is missing.
-            ExtensionSecurityError: Extension is not allowed or is blocked.
-        """
-        # Check file extension
-        if not file.filename:
-            raise FilenameSecurityError(
-                "Filename is required for extension validation",
-                error_code=ErrorCode.FILENAME_EMPTY,
-            )
-
-        _, ext = os.path.splitext(file.filename.lower())
-        if not ext:
-            raise ExtensionSecurityError(
-                "File has no extension",
-                filename=file.filename,
-                extension="",
-                error_code=ErrorCode.EXTENSION_MISSING,
-            )
-        if ext not in allowed_extensions:
-            raise ExtensionSecurityError(
-                (
-                    "Invalid file extension."
-                    " Allowed:"
-                    f" {', '.join(sorted(allowed_extensions))}"
-                ),
-                filename=file.filename,
-                extension=ext,
-                error_code=ErrorCode.EXTENSION_NOT_ALLOWED,
-            )
-
-        # Check for blocked extensions
-        if ext in self.config.BLOCKED_EXTENSIONS:
-            raise ExtensionSecurityError(
-                f"File extension {ext} is blocked for security reasons",
-                filename=file.filename,
-                extension=ext,
-                error_code=ErrorCode.EXTENSION_BLOCKED,
-            )
-
-        logger.debug("File extension '%s' accepted", ext)
 
     async def _validate_file_size(
         self, file: UploadFile, max_file_size: int
@@ -769,9 +546,9 @@ class FileValidator:
         """
         header = temp_file.read(8192)
         temp_file.seek(0)
-        detected_mime = self._detect_mime_type(header, filename)
+        detected_mime = self.mime_validator.detect(header, filename)
         try:
-            self._validate_file_signature(header, sig_type)
+            self.signature_validator.validate(header, sig_type)
         except FileSignatureError as err:
             raise FileSignatureError(
                 f"File content does not match expected {sig_type} format",
@@ -919,8 +696,8 @@ class FileValidator:
         self._validate_filename(file)
 
         # Validate file extension (raises exceptions on failure)
-        self._validate_file_extension(
-            file, self.config.ALLOWED_IMAGE_EXTENSIONS
+        self.extension_validator.validate_allowed(
+            file.filename, self.config.ALLOWED_IMAGE_EXTENSIONS
         )
 
         with ResourceMonitor(
@@ -936,10 +713,10 @@ class FileValidator:
             # Detect MIME type
             filename = file.filename or "unknown"
             detected_mime = await self._to_thread(
-                self._detect_mime_type, file_content, filename
+                self.mime_validator.detect, file_content, filename
             )
 
-            self._enforce_mime(
+            self.mime_validator.enforce(
                 detected_mime,
                 self.config.ALLOWED_IMAGE_MIMES,
                 filename,
@@ -947,7 +724,7 @@ class FileValidator:
             )
 
             # Validate file signature (raises exceptions on failure)
-            self._validate_file_signature(file_content, "image")
+            self.signature_validator.validate(file_content, "image")
 
             # Optional content analysis (offloaded — scans up to
             # content_scan_max_size bytes and is CPU-bound)
@@ -1011,7 +788,9 @@ class FileValidator:
         self._validate_filename(file)
 
         # Validate file extension (raises exceptions on failure)
-        self._validate_file_extension(file, self.config.ALLOWED_ZIP_EXTENSIONS)
+        self.extension_validator.validate_allowed(
+            file.filename, self.config.ALLOWED_ZIP_EXTENSIONS
+        )
 
         with ResourceMonitor(
             max_time_seconds=self.config.limits.max_validation_time_seconds,
@@ -1054,7 +833,7 @@ class FileValidator:
         )
 
         # Check MIME type, allow octet-stream if signature valid
-        self._enforce_mime(
+        self.mime_validator.enforce(
             detected_mime,
             self.config.ALLOWED_ZIP_MIMES,
             filename,
@@ -1118,8 +897,8 @@ class FileValidator:
             XmlSecurityError: If the XML is forbidden or malformed.
         """
         self._validate_filename(file)
-        self._validate_file_extension(
-            file,
+        self.extension_validator.validate_allowed(
+            file.filename,
             self.config.ALLOWED_ACTIVITY_EXTENSIONS,
         )
 
@@ -1172,7 +951,7 @@ class FileValidator:
 
         # MIME check — be lenient for FIT
         if not is_fit:
-            self._enforce_mime(
+            self.mime_validator.enforce(
                 detected_mime,
                 self.config.ALLOWED_ACTIVITY_MIMES,
                 filename,
@@ -1236,8 +1015,8 @@ class FileValidator:
             ZipBombError: If a decompression bomb is detected.
         """
         self._validate_filename(file)
-        self._validate_file_extension(
-            file,
+        self.extension_validator.validate_allowed(
+            file.filename,
             self.config.ALLOWED_GZIP_EXTENSIONS,
         )
 
@@ -1280,7 +1059,7 @@ class FileValidator:
         )
 
         # MIME check — allow octet-stream
-        self._enforce_mime(
+        self.mime_validator.enforce(
             detected_mime,
             self.config.ALLOWED_GZIP_MIMES,
             filename,

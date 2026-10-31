@@ -100,8 +100,8 @@ class TestValidateGzipFileMimeErrors:
     ):
         validator = FileValidator()
         monkeypatch.setattr(
-            validator,
-            "_detect_mime_type",
+            validator.mime_validator,
+            "detect",
             lambda content, filename: "text/plain",
         )
         f = mock_upload_file("archive.gz", _VALID_GZIP)
@@ -228,8 +228,8 @@ class TestValidateGzipFileOctetStream:
     ):
         validator = FileValidator()
         monkeypatch.setattr(
-            validator,
-            "_detect_mime_type",
+            validator.mime_validator,
+            "detect",
             lambda content, filename: "application/octet-stream",
         )
         f = mock_upload_file("archive.gz", _VALID_GZIP)

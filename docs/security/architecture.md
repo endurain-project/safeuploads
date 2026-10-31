@@ -21,6 +21,7 @@ safeuploads/
 │   ├── unicode_validator.py   # Unicode normalization & checks
 │   ├── extension_validator.py # Extension allow/block rules
 │   ├── windows_validator.py   # Windows reserved name checks
+│   ├── fit_validator.py       # FIT container structure checks
 │   ├── compression_validator.py # ZIP bomb detection
 │   └── xml_validator.py       # XXE-safe XML parsing
 └── inspectors/
@@ -42,10 +43,11 @@ safeuploads/
 | `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. The allowlist check is `FileValidator._validate_file_extension`. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
-| `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities. |
-| `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures. |
+| `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |
+| `FitSecurityValidator` | Checks the FIT container: headers, header CRC, data size, CRC-16 per section, and that the sections cover the file exactly. |
+| `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures. With `allow_nested_archives`, inspects every inner ZIP like the top level. |
 | `GzipContentInspector` | Streams gzip decompression, checking ratio and size progressively. |
-| `ContentSecurityInspector` | Scans raw bytes for malware signatures, web shells, and polyglot patterns. |
+| `ContentSecurityInspector` | Scans raw bytes for structurally verified executable headers, web shells, and polyglot patterns (image and activity uploads). |
 | `ResourceMonitor` | Context manager enforcing wall-clock time and peak-RSS memory limits at loop boundaries and on exit. |
 | `SecurityAuditLogger` | Emits structured audit events under `safeuploads.audit` with correlation IDs, escaping and length-capping attacker-controlled fields. |
 
@@ -179,23 +181,22 @@ UploadFile
 │    └── Recursive inspection │
 │        ├── Depth tracking   │
 │        ├── Hash tracking    │
-│        └── Entry count cap  │
+│        ├── Entry count cap  │
+│        └── Each inner ZIP:  │
+│            same checks as   │
+│            top level (steps │
+│            7 and 8), if     │
+│            nested allowed   │
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│ 9. Content Analysis         │
-│    (if enabled)             │
+│ 9. ResourceMonitor END      │
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│ 10. ResourceMonitor END     │
-└─────────────┬───────────────┘
-              │
-              ▼
-┌─────────────────────────────┐
-│ 11. Audit: VALIDATION_SUCCESS│
+│ 10. Audit: VALIDATION_SUCCESS│
 └──────────────────────────────┘
 ```
 
@@ -236,21 +237,32 @@ UploadFile (.gpx, .tcx, .fit)
                │
                ▼
 ┌──────────────────────────────┐
-│ 6. XML Security Validation   │
-│    (GPX/TCX only)            │
-│    ├── defusedxml parsing    │
-│    ├── DTD forbidden         │
-│    └── Entity expansion block│
+│ 6. Structure Validation      │
+│    ├── GPX/TCX: XML security │
+│    │   ├── defusedxml parse  │
+│    │   ├── DTD forbidden     │
+│    │   └── Entity expansion  │
+│    │       block             │
+│    └── FIT: container check  │
+│        ├── Header + CRCs     │
+│        └── Sections cover    │
+│            the file exactly  │
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│ 7. ResourceMonitor END       │
+│ 7. Content Analysis          │
+│    (if enabled)              │
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│ 8. Audit: VALIDATION_SUCCESS │
+│ 8. ResourceMonitor END       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 9. Audit: VALIDATION_SUCCESS │
 └──────────────────────────────┘
 ```
 
@@ -317,9 +329,11 @@ UploadFile (.gz)
 | Signature check | First 4-12 bytes depending on format | Minimal |
 | Compression validation | ZIP central directory, local headers and data descriptors | Metadata; entries with a data descriptor are inflated in `chunk_size` chunks |
 | ZIP content inspection | Per-entry read for binary/text scan | First 512 bytes per entry |
+| Nested ZIP inspection | Each inner ZIP streamed to a spooled temp file | `chunk_size` at a time; one spooled file (up to `max_memory_buffer_size`) per nesting level |
 | Gzip inspection | Chunked streaming decompression | `chunk_size` at a time |
 | XML validation | Chunked feed to `defusedxml`'s parser, no element tree built | `chunk_size` at a time |
-| Content analysis | Full file byte scan | Bounded by `content_scan_max_size` (50 MB) |
+| FIT validation | Chunked CRC-16 over each section | `chunk_size` at a time |
+| Content analysis | Byte scan of image and activity uploads (not ZIP) | Bounded by `content_scan_max_size` (50 MB); about twice the sample while matching |
 
 ---
 
@@ -337,15 +351,40 @@ Exception
     │   ├── FileSizeError
     │   ├── MimeTypeError
     │   ├── FileSignatureError
-    │   └── CompressionSecurityError
-    │       ├── ZipBombError
-    │       └── ZipContentError
+    │   ├── CompressionSecurityError
+    │   │   ├── ZipBombError
+    │   │   └── ZipContentError
+    │   ├── XmlSecurityError
+    │   └── ContentThreatError
     └── FileProcessingError
         └── ResourceLimitError
 ```
 
 All exceptions carry an `error_code` from `ErrorCode` for
-machine-readable classification.
+machine-readable classification. When none is passed, the
+default is:
+
+| Exception | Default `ErrorCode` |
+|---|---|
+| `FileSecurityError`, `FileProcessingError` | `PROCESSING_ERROR` |
+| `FileValidationError` | `VALIDATION_FAILED` |
+| `FilenameSecurityError` | `FILENAME_INVALID` |
+| `UnicodeSecurityError` | `UNICODE_DANGEROUS_CHARS` |
+| `ExtensionSecurityError` | `EXTENSION_BLOCKED` |
+| `WindowsReservedNameError` | `WINDOWS_RESERVED_NAME` |
+| `FileSizeError` | `FILE_TOO_LARGE` |
+| `MimeTypeError` | `MIME_TYPE_INVALID` |
+| `FileSignatureError` | `FILE_SIGNATURE_MISMATCH` |
+| `CompressionSecurityError` | `ZIP_INVALID_STRUCTURE` |
+| `ZipBombError` | `ZIP_BOMB_DETECTED` |
+| `ZipContentError` | `ZIP_CONTENT_THREAT` |
+| `XmlSecurityError` | `XML_MALFORMED` |
+| `ContentThreatError` | `CONTENT_THREAT_DETECTED` |
+| `ResourceLimitError` | `RESOURCE_LIMIT_EXCEEDED` |
+
+`FileProcessingError` covers internal errors and its subclass
+`ResourceLimitError` only; validation failures, including XML
+and content threats, are `FileValidationError` subclasses.
 
 ---
 
@@ -354,7 +393,7 @@ machine-readable classification.
 ```
 FileValidator.validate_*()  (_run_validation)
   │
-  ├── set_correlation_id()
+  ├── bind_correlation_id()    # reuses the host's ID, if set
   ├── audit.start()            # VALIDATION_START
   │
   ├── [validation pipeline]
@@ -367,7 +406,7 @@ FileValidator.validate_*()  (_run_validation)
   ├── On success: audit.success()   # VALIDATION_SUCCESS
   ├── On failure: audit.failure()   # VALIDATION_FAILURE
   │
-  └── reset_correlation_id()
+  └── restore the previous correlation ID
 ```
 
 `start`, `success`, `failure` and `threat` are methods of

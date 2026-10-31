@@ -17,7 +17,7 @@ Secure file upload validation for Python 3.13+ applications. Catches dangerous f
 - Extension validation with configurable allow/block lists
 - ZIP bomb detection, nested archive inspection, and recursive structure protection
 - MIME type verification with file signature validation
-- Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing
+- Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing and FIT structure validation
 - Gzip archive validation with decompression bomb detection
 - Streaming validation for memory-efficient large file processing
 - Resource monitoring (wall-clock time and memory limits)
@@ -94,6 +94,8 @@ from safeuploads.exceptions import (
     ExtensionSecurityError,   # Dangerous extension
     ZipBombError,             # Compression attack
 )
+# FileProcessingError (internal errors, ResourceLimitError) is not a
+# FileValidationError; catch it separately.
 
 try:
     await validator.validate_image_file(file)
@@ -116,7 +118,7 @@ except FileValidationError as err:
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
 - **Resource Monitoring**: wall-clock time and memory limits enforced via `ResourceMonitor` during the work
-- **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing
+- **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing and FIT structure checks
 - **Gzip Support**: Gzip archive validation with decompression bomb detection
 - **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
 - **Audit Logging**: Structured security event logging with correlation IDs via `contextvars`

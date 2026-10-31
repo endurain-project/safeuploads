@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `FitSecurityValidator` and `ErrorCode.FIT_INVALID_STRUCTURE`: `validate_activity_file` checks that a FIT upload is structurally valid (12 or 14 byte headers, header CRC when non-zero, data size, FIT CRC-16 per section, sections covering the file exactly).
+- `XmlSecurityError` and `ContentThreatError` (both `FileValidationError` subclasses) with the codes `XML_DTD_FORBIDDEN`, `XML_ENTITY_FORBIDDEN`, `XML_EXTERNAL_REFERENCE`, `XML_MALFORMED`, `CONTENT_THREAT_DETECTED` and `VALIDATION_FAILED`.
+- Every exception has a default `ErrorCode` when none is passed: `PROCESSING_ERROR` (`FileSecurityError`, `FileProcessingError`), `VALIDATION_FAILED` (`FileValidationError`), `FILENAME_INVALID`, `ZIP_INVALID_STRUCTURE` (`CompressionSecurityError`), `XML_MALFORMED`, `CONTENT_THREAT_DETECTED`, and the specific code of each other subclass.
+- `safeuploads.__version__`; `UploadFileProtocol`, `XmlSecurityError`, `ContentThreatError` and `FitSecurityValidator` are exported from the package root.
+- `XmlSecurityValidator.validate_xml_safety` and `validate` take a keyword-only `filename`; `FitSecurityValidator.validate` takes the same.
+- `find_embedded_signature` takes an optional `start` offset.
+
 ### Security
 
 - ZIP entries whose content cannot be opened or read (encrypted flag, unsupported compression method, CRC mismatch, local/central header name mismatch) are now rejected with `ZIP_CONTENT_THREAT`; they were accepted unscanned.
@@ -24,9 +33,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The ZIP entry count is bounded before `zipfile` parses the archive: the central-directory headers are counted, stopping at `max_zip_entries + 1`, so an archive with too many entries is rejected with `ZIP_TOO_MANY_ENTRIES` at bounded cost even if its end record under-reports the count.
 - GPX and TCX files are parsed in `chunk_size` chunks with a target that builds no element tree, so memory does not grow with the document. The DTD, entity and external-reference protections are unchanged.
 - ZIP archives whose listed entries do not fill the file exactly are rejected with `ZIP_INVALID_STRUCTURE`, so an extractor that walks local headers cannot see entries that validation never saw. This covers fake end records or archives hidden in the comment, concatenated archives, unlisted entries, prepended or trailing bytes, local headers that disagree with the central directory, and data-descriptor entries whose end a streaming reader cannot find (a deflate stream must end exactly at the declared size; stored entries with a descriptor must be empty).
+- With `allow_nested_archives=True`, every inner ZIP (found by a recursable extension or a ZIP signature) is streamed to a spooled temporary file in `chunk_size` chunks and gets the same checks as the top-level archive (entry count, layout, size and ratio, entry and structure checks). Inner archives larger than `max_individual_file_size` (`FILE_TOO_LARGE`), unreadable, corrupt (`ZIP_CORRUPT`) or uninspectable are rejected instead of skipped. Threats name the nesting path, and a nested ratio bomb raises `ZipBombError` with the path in the message. Memory is bounded by the nesting depth times `max_memory_buffer_size`.
+- Executable signatures in content analysis count only when the header structure verifies (PE `e_lfanew` pointing at `PE\0\0`, ELF class/byte order/version, Mach-O CPU and file type, universal Mach-O, Java class version, Shell Link CLSID), so random data in images and activity files no longer matches by chance. Web shell markers are `<?php`, `<script` and the `<%@ page` / `<%@ language` forms; a bare `<%` no longer counts in content analysis (the ZIP inspector still matches it in entry content). Patterns are matched on bytes without decoding. `MalwareSignatureCategory.PE_EXECUTABLE` no longer holds `b"PE\x00\x00"` and `WEBSHELL_PATTERNS` no longer holds `b"<%"`.
+- With `enable_content_analysis=True`, GPX, TCX and FIT uploads get content analysis; it was only applied to images and ZIP files.
+- Filenames containing characters of the Unicode categories Cc, Cf, Co, Cn, Cs, Zl or Zp (NUL, DEL, C1 controls, soft hyphen, bidi marks, zero-width joiner and the like) are rejected instead of stripped. The reserved-name and extension checks also run on the NFKC form of the name, which is not returned; a name whose NFKC form hides a path separator or `..` is rejected with `FILENAME_INVALID`.
+- Windows reserved names `com0`, `lpt0`, `conin$`, `conout$` and `clock$` are rejected, and reserved names are compared case-folded.
+- Blocked extensions added to `DangerousExtensionCategory`: `.vbe`, `.wsc`, `.php7`, `.php8`, `.phar`, `.phps`, `.pht`, `.shtml`, `.shtm` and `.stm`.
+- A correlation ID set by the host (`set_correlation_id`) is reused by validation and restored afterwards, instead of being replaced and cleared.
+- Image MIME detection and temp-file writes that spill to disk run in the worker thread, not on the event loop. Cancelling a validation closes its temp files after any running worker finishes and propagates `CancelledError`.
 
 ### Changed
 
+- **Breaking:** with `allow_nested_archives=True`, inner ZIP archives that were skipped (oversized, unreadable or corrupt) or inspected less strictly are now rejected, and that setting together with `scan_zip_content=False` fails at construction with `FileSecurityConfigurationError` (`nested_archives_require_scan`).
+- **Breaking:** FIT uploads that are not structurally valid are rejected with `FIT_INVALID_STRUCTURE`.
+- **Breaking:** filenames with control, format, private-use, unassigned, surrogate or line/paragraph separator characters are rejected, so names that were cleaned before (and emoji ZWJ sequences) now fail with `UnicodeSecurityError`; the reserved names and extensions listed under Security are also newly blocked.
+- **Breaking:** forbidden or malformed XML raises `XmlSecurityError` (a `FileValidationError`) and content analysis findings raise `ContentThreatError`, instead of `FileProcessingError`. `FileProcessingError` is now raised only for internal errors and as `ResourceLimitError`; hosts that caught it for these cases must catch `FileValidationError`.
+- **Breaking:** `ResourceLimitError` parameters after `message` are keyword-only.
+- **Breaking:** ZIP uploads are no longer byte-scanned as a whole by content analysis; the ZIP inspector scans the decompressed entries.
+- `FileSecurityConfigurationError` can be pickled.
 - **Breaking:** these checks reject uploads that 1.1.3 accepted under the default configuration (for example `.bin`, `.ini`, `.cfg` or `.docx` entries inside a ZIP).
 - **Breaking:** with `allow_nested_archives=True`, ZIP entries that start with the gzip magic but are not a readable gzip stream, or that contain a gzip stream inside the gzip stream, are rejected with `ZIP_CONTENT_THREAT`.
 - **Breaking:** `FileValidator(config)` raises `FileSecurityConfigurationError` when `validate_instance()` reports any error-severity issue; it only logged them before. New error-severity checks: type checks on every `SecurityLimits` field, positive values for the size, buffer, chunk, memory, scan, timeout, filename/path length and entry-count limits, `max_zip_depth >= 0`, allow-lists for activity and gzip files checked like image and ZIP, and uppercase extension entries. Warnings are still only logged.

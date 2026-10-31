@@ -32,6 +32,9 @@ that addresses it.
     - `max_image_size` — appropriate for expected upload sizes.
     - `max_zip_size` — set to the maximum acceptable ZIP size.
     - `max_activity_file_size` — set if accepting GPX/TCX/FIT.
+      FIT uploads must be structurally valid (headers, CRCs,
+      sections covering the file exactly) or are rejected with
+      `FIT_INVALID_STRUCTURE`.
     - `max_gzip_size` — set if accepting gzip files.
     - `max_compression_ratio` — default 100:1 is reasonable
       for most workloads; lower for stricter environments.
@@ -39,6 +42,11 @@ that addresses it.
       lower in latency-sensitive services.
     - `max_validation_memory_mb` — default 512 MB of peak-RSS
       growth; adjust based on container memory limits.
+- [ ] `allow_nested_archives` left `False` unless needed. When
+  enabled it requires `scan_zip_content=True` (the constructor
+  raises `FileSecurityConfigurationError` otherwise), and every
+  inner ZIP is inspected like the top level; one that is
+  oversized, corrupt or uninspectable is rejected.
 - [ ] Allowed extensions and MIME types reviewed and narrowed
   to only what your application accepts.
 - [ ] `FileSecurityConfigurationError` from the `FileValidator`
@@ -50,7 +58,9 @@ that addresses it.
 ## Content Analysis
 
 - [ ] `enable_content_analysis` set to `True` if accepting
-  files from untrusted users.
+  files from untrusted users. It covers image and activity
+  uploads; ZIP contents are scanned entry by entry by the ZIP
+  inspector.
 - [ ] `content_scan_max_size` set appropriately (default 50 MB).
 - [ ] Consider supplemental antivirus scanning (ClamAV or
   similar) for high-risk environments.
@@ -71,11 +81,12 @@ that addresses it.
 
 - [ ] Application catches specific exception types
   (`FileSizeError`, `ExtensionSecurityError`, etc.) and
-  returns user-appropriate messages.
+  returns user-appropriate messages. Malformed or forbidden XML
+  (`XmlSecurityError`) and content threats
+  (`ContentThreatError`) are `FileValidationError` subclasses.
 - [ ] `FileProcessingError` (including `ResourceLimitError`) is
   caught as well: it is not a `FileValidationError`, and it is
-  raised for malformed or forbidden XML (DTD, entities,
-  external references) and internal errors.
+  raised only for internal errors and exceeded resource limits.
 - [ ] Internal error details from exceptions are **not**
   forwarded to API responses.
 - [ ] `ErrorCode` values used for machine-readable API error

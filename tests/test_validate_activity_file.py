@@ -45,6 +45,27 @@ _TCX_CONTENT = (
     b"</TrainingCenterDatabase>"
 )
 
+# libmagic reports text/plain for this header (namespaced extension
+# element), although it is a valid GPX file.
+_OSMAND_GPX_CONTENT = (
+    b"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
+    b'<gpx version="1.1" creator="OsmAnd~ 5.4.10"'
+    b' xmlns="http://www.topografix.com/GPX/1/1"'
+    b' xmlns:osmand="https://osmand.net/docs/technical/'
+    b'osmand-file-formats/osmand-gpx"'
+    b' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+    b' xsi:schemaLocation="http://www.topografix.com/GPX/1/1'
+    b' http://www.topografix.com/GPX/1/1/gpx.xsd">\n'
+    b"  <metadata>\n"
+    b"    <name>ride</name>\n"
+    b"    <extensions>\n"
+    b"      <osmand:activity>road_cycling</osmand:activity>\n"
+    b"    </extensions>\n"
+    b"  </metadata>\n"
+    b'  <trk><trkseg><trkpt lat="0" lon="0"/></trkseg></trk>\n'
+    b"</gpx>\n"
+)
+
 _FIT_CONTENT = build_fit(header_size=14)
 
 _XXE_XML = (
@@ -80,6 +101,13 @@ class TestValidateActivityFileHappyPath:
     ):
         validator = FileValidator()
         f = mock_upload_file("activity.fit", _FIT_CONTENT)
+        await validator.validate_activity_file(f)
+
+    async def test_validate_activity_file_osmand_gpx_passes(
+        self, mock_upload_file
+    ):
+        validator = FileValidator()
+        f = mock_upload_file("track.gpx", _OSMAND_GPX_CONTENT)
         await validator.validate_activity_file(f)
 
 
@@ -177,6 +205,56 @@ class TestValidateActivityFileMimeErrors:
         with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_activity_file(f)
         assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+
+
+class TestValidateActivityFileTextPlain:
+    """libmagic reports text/plain for some valid XML."""
+
+    @staticmethod
+    def _as_text_plain(validator, monkeypatch):
+        monkeypatch.setattr(
+            validator.mime_validator,
+            "detect",
+            lambda content, filename: "text/plain",
+        )
+
+    async def test_non_xml_gpx_still_rejected(
+        self, mock_upload_file, monkeypatch
+    ):
+        validator = FileValidator()
+        self._as_text_plain(validator, monkeypatch)
+        f = mock_upload_file("track.gpx", b"This is not XML")
+        with pytest.raises(FileSignatureError):
+            await validator.validate_activity_file(f)
+
+    async def test_xxe_gpx_still_rejected(self, mock_upload_file, monkeypatch):
+        validator = FileValidator()
+        self._as_text_plain(validator, monkeypatch)
+        f = mock_upload_file("track.gpx", _XXE_XML)
+        with pytest.raises(XmlSecurityError) as exc_info:
+            await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
+
+    async def test_fake_fit_still_rejected(
+        self, mock_upload_file, monkeypatch
+    ):
+        validator = FileValidator()
+        self._as_text_plain(validator, monkeypatch)
+        fake = b"\x0e\x10" + b"\0" * 6 + b".FIT" + b"<?php evil ?>" * 10
+        f = mock_upload_file("a.fit", fake)
+        with pytest.raises(FileSignatureError) as exc_info:
+            await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FIT_INVALID_STRUCTURE
+
+    async def test_image_renamed_gpx_still_rejected(
+        self, mock_upload_file, monkeypatch
+    ):
+        validator = FileValidator()
+        self._as_text_plain(validator, monkeypatch)
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+        f = mock_upload_file("track.gpx", png)
+        with pytest.raises(FileSignatureError):
+            await validator.validate_activity_file(f)
 
 
 class TestValidateActivityFileSignatureErrors:

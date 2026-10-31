@@ -212,6 +212,9 @@ class FileSecurityConfig:
             "application/xml",
             "text/xml",
             "application/octet-stream",  # FIT files detected as binary
+            # libmagic cannot tell some valid GPX/TCX from plain text;
+            # the signature check and the XML parse decide.
+            "text/plain",
         }
     )
 

@@ -68,6 +68,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Breaking:** the category enums (`DangerousExtensionCategory`, `CompoundExtensionCategory`, `UnicodeAttackCategory`, `SuspiciousFilePattern`, `BinaryFileCategory` and the other enums with set values) hold `frozenset` values. The `FileSecurityConfig` getters return mutable `set` copies.
 - The `Allowed:` extension list in the extension error message is sorted.
 
+### Fixed
+
+- Valid GPX and TCX files that libmagic reports as `text/plain`, such as exports from OsmAnd~ with namespaced `<extensions>` elements, are no longer rejected with `MIME_TYPE_MISMATCH`: `text/plain` is in `ALLOWED_ACTIVITY_MIMES`. The `<?xml` signature check and the XXE-safe XML parse still reject content that is not well-formed XML. FIT, image, ZIP and gzip MIME sets are unchanged.
+
 ### Removed
 
 - **Breaking:** the `ErrorCode` members `FILENAME_TOO_LONG`, `UNICODE_SECURITY`, `FILE_SIZE_UNKNOWN`, `FILE_SIGNATURE_INVALID`, `IO_ERROR` and `MEMORY_ERROR`, which the library never raised.

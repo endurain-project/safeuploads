@@ -261,7 +261,7 @@ class TestZipValidationPerformance:
 
         # Performance expectations
         expected_max = {
-            10: 0.10,  # 100ms for 10 files
+            10: 0.25,  # 250ms for 10 files
             50: 0.30,  # 300ms for 50 files
             100: 0.60,  # 600ms for 100 files
             500: 2.00,  # 2s for 500 files

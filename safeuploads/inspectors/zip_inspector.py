@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import io
 import logging
 import os
+import tempfile
 import time
 import zipfile
 from typing import TYPE_CHECKING
@@ -18,6 +18,7 @@ from ..enums import (
     ZipThreatCategory,
 )
 from ..exceptions import (
+    CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
     ResourceLimitError,
@@ -28,6 +29,7 @@ from ..utils import (
     find_text_pattern,
     matches_signature_prefix,
 )
+from ..validators.compression_validator import CompressionSecurityValidator
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GZIP_MAGIC = b"\x1f\x8b"
+_ZIP_MAGIC = b"PK"
 
 
 class ZipContentInspector(BaseInspector):
@@ -90,10 +93,25 @@ class ZipContentInspector(BaseInspector):
         self._recursable_exts: frozenset[str] = frozenset(
             ZipThreatCategory.RECURSABLE_ARCHIVES.value
         )
+        # ZIP signatures among the archive signatures; content
+        # starting with one is recursed into under any name
+        self._zip_signatures: tuple[bytes, ...] = tuple(
+            sig
+            for sig in self._nested_archive_signatures
+            if sig.startswith(_ZIP_MAGIC)
+        )
+        self._zip_signature_size: int = max(map(len, self._zip_signatures))
+        # Nested archives get the same compression checks as the
+        # top-level archive
+        self._compression = CompressionSecurityValidator(config)
 
     def inspect_zip_content(self, file_obj: SeekableFile) -> None:
         """
         Inspect ZIP archive for potential security threats.
+
+        When ``allow_nested_archives`` is enabled, every nested ZIP
+        archive is then inspected as well (see
+        ``inspect_nested_archives``).
 
         Args:
             file_obj: Seekable file-like object containing ZIP data.
@@ -101,98 +119,18 @@ class ZipContentInspector(BaseInspector):
         Raises:
             ZipContentError: If security threats are detected in ZIP
                 content such as directory traversal, symlinks, nested
-                archives, or suspicious patterns.
+                archives, or suspicious patterns, or a nested archive
+                fails any check.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
             FileProcessingError: If ZIP structure is invalid or
                 unexpected error occurs during inspection.
         """
         try:
-            file_obj.seek(0)
-            threats_found = []
             logger.debug("Starting ZIP content inspection")
+            self._inspect_archive(file_obj, time.monotonic())
 
-            # Start analysis timer
-            start_time = time.monotonic()
-
-            with zipfile.ZipFile(file_obj, "r") as zip_file:
-                zip_entries = zip_file.infolist()
-
-                # Analyze each entry in the ZIP
-                for entry in zip_entries:
-                    check_resource_limits()
-
-                    # Check for timeout
-                    if (
-                        time.monotonic() - start_time
-                        > self.config.limits.zip_analysis_timeout
-                    ):
-                        logger.error(
-                            "ZIP content inspection timeout",
-                            extra=log_extra(
-                                {
-                                    "error_type": "zip_analysis_timeout",
-                                    "timeout": (
-                                        self.config.limits.zip_analysis_timeout
-                                    ),
-                                }
-                            ),
-                        )
-                        raise ZipContentError(
-                            message=(
-                                "ZIP content inspection"
-                                " timeout after"
-                                f" {self.config.limits.zip_analysis_timeout}s"
-                            ),
-                            threats=["Analysis timeout - potential zip bomb"],
-                            error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
-                        )
-
-                    # Inspect individual entry
-                    entry_threats = self._inspect_zip_entry(entry, zip_file)
-                    threats_found.extend(entry_threats)
-
-                # Check for ZIP structure threats
-                structure_threats = self._inspect_zip_structure(zip_entries)
-                threats_found.extend(structure_threats)
-
-                # Return results
-                if threats_found:
-                    logger.warning(
-                        "ZIP content threats detected",
-                        extra=log_extra(
-                            {
-                                "error_type": "zip_content_threat",
-                                "threats": threats_found,
-                                "threat_count": len(threats_found),
-                            }
-                        ),
-                    )
-                    cid = get_correlation_id()
-                    if cid:
-                        self._audit.threat(
-                            "",
-                            cid,
-                            "; ".join(threats_found),
-                        )
-                    raise ZipContentError(
-                        message=(
-                            "ZIP content threats"
-                            " detected:"
-                            f" {'; '.join(threats_found)}"
-                        ),
-                        threats=threats_found,
-                    )
-
-                logger.debug(
-                    "ZIP content inspection passed: %s entries analyzed",
-                    len(zip_entries),
-                )
-
-            # Recursive nested archive inspection
-            # when nested archives are allowed
             if self.config.limits.allow_nested_archives:
-                file_obj.seek(0)
                 self.inspect_nested_archives(file_obj)
 
         except (ZipContentError, ResourceLimitError):
@@ -216,6 +154,87 @@ class ZipContentInspector(BaseInspector):
                 "due to an internal error",
                 original_error=err,
             ) from err
+
+    def _inspect_archive(
+        self, file_obj: SeekableFile, start_time: float
+    ) -> None:
+        """
+        Inspect the entries and structure of one ZIP archive.
+
+        Nested archives are not opened here.
+
+        Args:
+            file_obj: Seekable file containing ZIP data.
+            start_time: Monotonic timestamp the analysis timeout
+                counts from.
+
+        Raises:
+            ZipContentError: If any entry or the structure is a
+                threat, or the analysis timeout is exceeded.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+            zipfile.BadZipFile: If the archive cannot be parsed.
+        """
+        file_obj.seek(0)
+        threats_found = []
+        timeout = self.config.limits.zip_analysis_timeout
+
+        with zipfile.ZipFile(file_obj, "r") as zip_file:
+            zip_entries = zip_file.infolist()
+
+            # Analyze each entry in the ZIP
+            for entry in zip_entries:
+                check_resource_limits()
+
+                # Check for timeout
+                if time.monotonic() - start_time > timeout:
+                    logger.error(
+                        "ZIP content inspection timeout",
+                        extra=log_extra(
+                            {
+                                "error_type": "zip_analysis_timeout",
+                                "timeout": timeout,
+                            }
+                        ),
+                    )
+                    raise ZipContentError(
+                        message=(
+                            f"ZIP content inspection timeout after {timeout}s"
+                        ),
+                        threats=["Analysis timeout - potential zip bomb"],
+                        error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
+                    )
+
+                # Inspect individual entry
+                threats_found.extend(self._inspect_zip_entry(entry, zip_file))
+
+            # Check for ZIP structure threats
+            threats_found.extend(self._inspect_zip_structure(zip_entries))
+
+        if threats_found:
+            summary = "; ".join(threats_found)
+            logger.warning(
+                "ZIP content threats detected",
+                extra=log_extra(
+                    {
+                        "error_type": "zip_content_threat",
+                        "threats": threats_found,
+                        "threat_count": len(threats_found),
+                    }
+                ),
+            )
+            cid = get_correlation_id()
+            if cid:
+                self._audit.threat("", cid, summary)
+            raise ZipContentError(
+                message=f"ZIP content threats detected: {summary}",
+                threats=threats_found,
+            )
+
+        logger.debug(
+            "ZIP content inspection passed: %s entries analyzed",
+            len(zip_entries),
+        )
 
     def _inspect_zip_entry(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
@@ -630,10 +649,18 @@ class ZipContentInspector(BaseInspector):
         """
         Recursively inspect nested archives.
 
-        Only called when ``allow_nested_archives`` is True.
-        Tracks depth, cumulative entry count, elapsed time,
-        and archive hashes to detect recursive/quine
-        structures.
+        Only called when ``allow_nested_archives`` is True. The
+        archive in ``file_obj`` is not itself checked here when
+        ``depth`` is 0; the caller checks it. Every nested ZIP
+        archive (an entry with a recursable archive extension or
+        starting with a ZIP signature) is streamed into a spooled
+        temporary file, checked like a top-level archive (the
+        compression checks of ``CompressionSecurityValidator`` and
+        the entry and structure checks of this inspector) and then
+        recursed into. Depth, cumulative entry count, elapsed time
+        and archive hashes are tracked across all levels to detect
+        recursive and quine structures. An inner archive that
+        cannot be read, parsed or fully inspected is rejected.
 
         Args:
             file_obj: Seekable file containing ZIP data.
@@ -646,131 +673,299 @@ class ZipContentInspector(BaseInspector):
 
         Raises:
             ZipContentError: If recursive structure, quine,
-                or complexity attack is detected.
+                or complexity attack is detected, a nested archive
+                fails a check, or an archive cannot be read or
+                parsed. Threats in a nested archive name its
+                nesting path.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
         """
-        if seen_hashes is None:
-            seen_hashes = set()
-        if entry_counter is None:
-            entry_counter = [0]
-        if start_time is None:
-            start_time = time.monotonic()
+        self._inspect_nested(
+            file_obj,
+            "",
+            depth,
+            set() if seen_hashes is None else seen_hashes,
+            [0] if entry_counter is None else entry_counter,
+            time.monotonic() if start_time is None else start_time,
+        )
 
-        max_depth = self.config.limits.max_zip_depth
-        timeout = self.config.limits.zip_analysis_timeout
-        max_entries = self.config.limits.max_total_entries_recursive
+    def _inspect_nested(
+        self,
+        file_obj: SeekableFile,
+        path: str,
+        depth: int,
+        seen_hashes: set[str],
+        entry_counter: list[int],
+        start_time: float,
+    ) -> None:
+        """
+        Check one archive level and recurse into its nested archives.
 
-        # Depth check
-        if depth > max_depth:
-            raise ZipContentError(
-                message=(
-                    f"Excessive nesting depth: {depth} (max {max_depth})"
-                ),
-                threats=[f"Nesting depth {depth} exceeds limit {max_depth}"],
-                error_code=(ErrorCode.ZIP_RECURSIVE_STRUCTURE),
-            )
+        Args:
+            file_obj: Seekable file containing ZIP data.
+            path: Nesting path of this archive, entry names joined
+                by ``/``; empty for the outermost archive.
+            depth: Nesting depth of this archive (0 = outermost).
+            seen_hashes: SHA-256 hashes of archives already seen.
+            entry_counter: Single-element list holding the
+                cumulative entry count across all levels.
+            start_time: Monotonic timestamp of the initial call.
 
-        # Quine / recursive check via hash
-        archive_hash = self._compute_archive_hash(file_obj)
-        if archive_hash in seen_hashes:
-            raise ZipContentError(
-                message=(
-                    "Recursive ZIP structure detected"
-                    " — archive contains itself"
-                ),
-                threats=["Quine/recursive ZIP detected"],
-                error_code=ErrorCode.ZIP_QUINE_DETECTED,
-            )
-        seen_hashes.add(archive_hash)
-
-        file_obj.seek(0)
-
+        Raises:
+            ZipContentError: If this archive or a nested one fails
+                a check or cannot be read or parsed.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+        """
+        limits = self.config.limits
+        location = f"nested archive '{path}'" if depth else "ZIP archive"
         try:
+            # Depth check
+            if depth > limits.max_zip_depth:
+                raise ZipContentError(
+                    message=(
+                        f"Excessive nesting depth: {depth}"
+                        f" (max {limits.max_zip_depth})"
+                    ),
+                    threats=[
+                        f"Nesting depth {depth} exceeds limit"
+                        f" {limits.max_zip_depth}"
+                    ],
+                    error_code=ErrorCode.ZIP_RECURSIVE_STRUCTURE,
+                )
+
+            # Quine / recursive check via hash
+            archive_hash = self._compute_archive_hash(file_obj)
+            if archive_hash in seen_hashes:
+                raise ZipContentError(
+                    message=(
+                        "Recursive ZIP structure detected"
+                        " — archive contains itself"
+                    ),
+                    threats=["Quine/recursive ZIP detected"],
+                    error_code=ErrorCode.ZIP_QUINE_DETECTED,
+                )
+            seen_hashes.add(archive_hash)
+
+            if depth:
+                self._check_nested_level(file_obj, path, start_time)
+
+            file_obj.seek(0)
             with zipfile.ZipFile(file_obj, "r") as zf:
-                entries = zf.infolist()
-                entry_counter[0] += len(entries)
-
-                # Complexity check
-                if entry_counter[0] > max_entries:
-                    raise ZipContentError(
-                        message=(
-                            "Total recursive entries"
-                            f" ({entry_counter[0]})"
-                            " exceeds limit"
-                            f" ({max_entries})"
-                        ),
-                        threats=[
-                            f"Complexity attack: {entry_counter[0]} entries"
-                        ],
-                        error_code=(ErrorCode.ZIP_COMPLEXITY_ATTACK),
-                    )
-
-                for entry in entries:
-                    check_resource_limits()
-
-                    # Timeout
-                    elapsed = time.monotonic() - start_time
-                    if elapsed > timeout:
-                        raise ZipContentError(
-                            message=(
-                                "Recursive inspection"
-                                " timeout after"
-                                f" {timeout}s"
-                            ),
-                            threats=["Recursive inspection timeout"],
-                            error_code=(ErrorCode.ZIP_ANALYSIS_TIMEOUT),
-                        )
-
-                    if entry.is_dir():
-                        continue
-
-                    ext = os.path.splitext(entry.filename)[1].lower()
-                    if ext not in self._recursable_exts:
-                        continue
-
-                    # Size guard for nested archive
-                    if (
-                        entry.file_size
-                        > self.config.limits.max_individual_file_size
-                    ):
-                        continue
-
-                    try:
-                        data = zf.read(entry.filename)
-                    except Exception:
-                        logger.warning(
-                            "Could not read nested archive '%s'",
-                            entry.filename,
-                        )
-                        continue
-
-                    nested_buf = io.BytesIO(data)
-                    if not zipfile.is_zipfile(nested_buf):
-                        continue
-
-                    # Recurse
-                    self.inspect_nested_archives(
-                        nested_buf,
-                        depth=depth + 1,
-                        seen_hashes=seen_hashes,
-                        entry_counter=entry_counter,
-                        start_time=start_time,
-                    )
+                self._recurse_entries(
+                    zf, path, depth, seen_hashes, entry_counter, start_time
+                )
 
         except (ZipContentError, ResourceLimitError):
             raise
-        except zipfile.BadZipFile:
-            # A corrupt archive at this nesting level is not itself a
-            # threat signal; log for traceability and stop descending
-            # this branch rather than failing the whole inspection.
-            logger.debug(
-                "Skipping corrupt nested archive at depth %d",
-                depth,
-            )
+        except zipfile.BadZipFile as err:
+            logger.warning("Corrupt %s at depth %d", location, depth)
+            raise ZipContentError(
+                message=f"Invalid or corrupted {location}",
+                threats=[f"Corrupt {location}"],
+                error_code=ErrorCode.ZIP_CORRUPT,
+            ) from err
         except Exception as err:
             logger.warning(
                 "Error during recursive inspection at depth %d: %s",
                 depth,
                 err,
             )
+            raise ZipContentError(
+                message=f"Could not inspect {location}",
+                threats=[f"Uninspectable {location}"],
+            ) from err
+
+    def _recurse_entries(
+        self,
+        zf: zipfile.ZipFile,
+        path: str,
+        depth: int,
+        seen_hashes: set[str],
+        entry_counter: list[int],
+        start_time: float,
+    ) -> None:
+        """
+        Count an archive's entries and recurse into nested archives.
+
+        Each nested archive is copied into a spooled temporary file
+        that is closed once its subtree has been inspected.
+
+        Args:
+            zf: Open archive at this level.
+            path: Nesting path of the archive; empty when outermost.
+            depth: Nesting depth of the archive.
+            seen_hashes: SHA-256 hashes of archives already seen.
+            entry_counter: Single-element list holding the
+                cumulative entry count across all levels.
+            start_time: Monotonic timestamp of the initial call.
+
+        Raises:
+            ZipContentError: If the cumulative entry count or the
+                analysis timeout is exceeded, or a nested archive
+                fails a check or cannot be read.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+        """
+        limits = self.config.limits
+        entries = zf.infolist()
+        entry_counter[0] += len(entries)
+
+        # Complexity check
+        if entry_counter[0] > limits.max_total_entries_recursive:
+            raise ZipContentError(
+                message=(
+                    f"Total recursive entries ({entry_counter[0]})"
+                    f" exceeds limit ({limits.max_total_entries_recursive})"
+                ),
+                threats=[f"Complexity attack: {entry_counter[0]} entries"],
+                error_code=ErrorCode.ZIP_COMPLEXITY_ATTACK,
+            )
+
+        for entry in entries:
+            check_resource_limits()
+
+            # Timeout
+            if time.monotonic() - start_time > limits.zip_analysis_timeout:
+                raise ZipContentError(
+                    message=(
+                        "Recursive inspection timeout after"
+                        f" {limits.zip_analysis_timeout}s"
+                    ),
+                    threats=["Recursive inspection timeout"],
+                    error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
+                )
+
+            if entry.is_dir():
+                continue
+
+            entry_path = f"{path}/{entry.filename}" if path else entry.filename
+            with tempfile.SpooledTemporaryFile(
+                max_size=limits.max_memory_buffer_size
+            ) as inner:
+                if self._copy_nested_archive(zf, entry, entry_path, inner):
+                    self._inspect_nested(
+                        inner,
+                        entry_path,
+                        depth + 1,
+                        seen_hashes,
+                        entry_counter,
+                        start_time,
+                    )
+
+    def _copy_nested_archive(
+        self,
+        zf: zipfile.ZipFile,
+        entry: zipfile.ZipInfo,
+        path: str,
+        dest: tempfile.SpooledTemporaryFile[bytes],
+    ) -> bool:
+        """
+        Copy an entry into ``dest`` if it is a nested ZIP archive.
+
+        An entry is a nested ZIP archive when its extension is a
+        recursable archive type or its content starts with a ZIP
+        signature. The entry is read through its ``ZipInfo`` in
+        ``chunk_size`` pieces, so duplicate names cannot select a
+        different entry and no more than one chunk is held in
+        memory beyond the spooled file.
+
+        Args:
+            zf: Archive holding the entry.
+            entry: Entry to copy.
+            path: Nesting path of the entry, for messages.
+            dest: Empty spooled file receiving the archive bytes;
+                left at offset 0 when the entry was copied.
+
+        Returns:
+            True if the entry is a nested ZIP archive and was
+            copied, False if it is not a ZIP archive.
+
+        Raises:
+            ZipContentError: If the entry cannot be read or its
+                content exceeds ``max_individual_file_size``.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+        """
+        limits = self.config.limits
+        try:
+            with zf.open(entry, "r") as stream:
+                chunk = stream.read(self._zip_signature_size)
+                if self._extension(
+                    entry.filename
+                ) not in self._recursable_exts and not (
+                    matches_signature_prefix(chunk, self._zip_signatures)
+                ):
+                    return False
+
+                size = 0
+                while chunk:
+                    check_resource_limits()
+                    size += len(chunk)
+                    if size > limits.max_individual_file_size:
+                        raise ZipContentError(
+                            message=(
+                                f"Nested archive too large: '{path}'"
+                                " exceeds the individual file size limit"
+                            ),
+                            threats=[f"Nested archive too large: '{path}'"],
+                            error_code=ErrorCode.FILE_TOO_LARGE,
+                        )
+                    dest.write(chunk)
+                    chunk = stream.read(limits.chunk_size)
+        except (ZipContentError, ResourceLimitError):
+            raise
+        except Exception as err:
+            logger.warning("Could not read nested entry '%s': %s", path, err)
+            raise ZipContentError(
+                message=f"Nested entry could not be read: '{path}'",
+                threats=[f"Nested entry could not be read: '{path}'"],
+            ) from err
+
+        dest.seek(0)
+        return True
+
+    def _check_nested_level(
+        self, file_obj: SeekableFile, path: str, start_time: float
+    ) -> None:
+        """
+        Run the top-level archive checks on a nested archive.
+
+        Applies the compression, size, entry-count and layout
+        checks of ``CompressionSecurityValidator`` and this
+        inspector's entry and structure checks. Failures are
+        raised as ``ZipContentError`` with the original error
+        code, and their threats are prefixed with ``path``.
+
+        Args:
+            file_obj: Seekable file containing the nested archive.
+            path: Nesting path of the archive.
+            start_time: Monotonic timestamp the analysis timeout
+                counts from.
+
+        Raises:
+            ZipContentError: If the nested archive fails a check.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+            FileProcessingError: If the compression check fails
+                unexpectedly.
+        """
+        try:
+            size = file_obj.seek(0, os.SEEK_END)
+            self._compression.validate_zip_compression_ratio(file_obj, size)
+            self._inspect_archive(file_obj, start_time)
+        except CompressionSecurityError as err:
+            threats = [
+                f"{path}: {threat}"
+                for threat in (
+                    err.threats
+                    if isinstance(err, ZipContentError)
+                    else [err.message]
+                )
+            ]
+            summary = "; ".join(threats)
+            raise ZipContentError(
+                message=f"Nested archive threats detected: {summary}",
+                threats=threats,
+                error_code=err.error_code,
+            ) from err

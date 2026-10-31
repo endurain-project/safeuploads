@@ -2428,3 +2428,61 @@ class TestImageMimeDetectionOffLoop:
         await validator.validate_image_file(file)
         assert threads
         assert threading.get_ident() not in threads
+
+
+def _nested_zip_validator() -> FileValidator:
+    """Return a validator that allows and inspects nested archives."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(allow_nested_archives=True)
+    return FileValidator(config=config)
+
+
+def _zip_with(
+    entries: dict[str, bytes], compression: int = zipfile.ZIP_STORED
+) -> bytes:
+    """Build a ZIP holding ``entries`` with the given compression."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+class TestNestedArchivesEndToEnd:
+    """validate_zip_file checks every nested archive level."""
+
+    async def test_clean_nested_archive_accepted(self, mock_upload_file):
+        """An upload with a clean inner archive is accepted."""
+        inner = _zip_with({"a.txt": b"hello"}, zipfile.ZIP_DEFLATED)
+        data = _zip_with({"inner.zip": inner, "b.txt": b"x"})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        await _nested_zip_validator().validate_zip_file(file)
+
+    async def test_inner_traversal_rejected(self, mock_upload_file):
+        """A traversal entry inside an inner archive is rejected."""
+        inner = _zip_with({"../evil.txt": b"x"})
+        data = _zip_with({"inner.zip": inner})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            await _nested_zip_validator().validate_zip_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "inner.zip: Directory traversal attack" in str(exc_info.value)
+
+    async def test_inner_ratio_bomb_rejected(self, mock_upload_file):
+        """An inner archive over the compression ratio is rejected."""
+        inner = _zip_with(
+            {"zeros.dat": b"\x00" * (2 * 1024 * 1024)}, zipfile.ZIP_DEFLATED
+        )
+        data = _zip_with({"inner.zip": inner})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            await _nested_zip_validator().validate_zip_file(file)
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert "inner.zip: Excessive compression ratio" in str(exc_info.value)

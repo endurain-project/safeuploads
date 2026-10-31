@@ -10,6 +10,7 @@ bombs.
 from .base import BaseValidator
 from .compression_validator import CompressionSecurityValidator
 from .extension_validator import ExtensionSecurityValidator
+from .fit_validator import FitSecurityValidator
 from .unicode_validator import UnicodeSecurityValidator
 from .windows_validator import WindowsSecurityValidator
 from .xml_validator import XmlSecurityValidator
@@ -18,6 +19,7 @@ __all__ = [
     "BaseValidator",
     "CompressionSecurityValidator",
     "ExtensionSecurityValidator",
+    "FitSecurityValidator",
     "UnicodeSecurityValidator",
     "WindowsSecurityValidator",
     "XmlSecurityValidator",

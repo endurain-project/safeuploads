@@ -52,6 +52,7 @@ from .utils import ResourceMonitor, bytes_to_mb, check_resource_limits
 from .validators import (
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
+    FitSecurityValidator,
     UnicodeSecurityValidator,
     WindowsSecurityValidator,
 )
@@ -132,6 +133,7 @@ class FileValidator:
         self.compression_validator = CompressionSecurityValidator(self.config)
         self.zip_inspector = ZipContentInspector(self.config)
         self.xml_validator = XmlSecurityValidator(self.config)
+        self.fit_validator = FitSecurityValidator(self.config)
         self.gzip_inspector = GzipContentInspector(self.config)
         self.content_inspector = ContentSecurityInspector(self.config)
 
@@ -1165,8 +1167,11 @@ class FileValidator:
 
         Raises:
             MimeTypeError: If the MIME type is not allowed.
-            FileSignatureError: If the signature mismatches.
+            FileSignatureError: If the signature mismatches or the
+                FIT structure is invalid.
             XmlSecurityError: If the XML is forbidden or malformed.
+            ContentThreatError: If optional content analysis finds
+                a threat.
         """
         _, ext = os.path.splitext(filename.lower())
         is_fit = ext == ".fit"
@@ -1185,11 +1190,21 @@ class FileValidator:
                 error_code=ErrorCode.MIME_TYPE_MISMATCH,
             )
 
-        # XXE-safe XML validation for GPX/TCX
-        if not is_fit:
+        if is_fit:
+            self.fit_validator.validate(temp_file, filename=filename)
+        else:
+            # XXE-safe XML validation for GPX/TCX
             self.xml_validator.validate_xml_safety(
                 temp_file, filename=filename
             )
+
+        # Optional content analysis
+        if self.config.limits.enable_content_analysis:
+            temp_file.seek(0)
+            scan_size = self.config.limits.content_scan_max_size
+            sample = temp_file.read(scan_size)
+            temp_file.seek(0)
+            self._raise_on_content_threats(sample, filename, "activity")
 
         logger.debug(
             "Activity file validation passed: %r (%s, %s bytes)",

@@ -66,6 +66,7 @@ from .validators import (
     BaseValidator,
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
+    FitSecurityValidator,
     UnicodeSecurityValidator,
     WindowsSecurityValidator,
     XmlSecurityValidator,
@@ -123,6 +124,7 @@ __all__ = [
     "ExtensionSecurityValidator",
     "WindowsSecurityValidator",
     "CompressionSecurityValidator",
+    "FitSecurityValidator",
     "XmlSecurityValidator",
     # Inspectors
     "BaseInspector",

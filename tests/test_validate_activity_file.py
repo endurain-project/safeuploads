@@ -7,6 +7,7 @@ import pytest
 from safeuploads.audit import get_correlation_id
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
+    ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
@@ -20,6 +21,7 @@ from safeuploads.exceptions import (
     XmlSecurityError,
 )
 from safeuploads.file_validator import FileValidator
+from tests.validators.test_fit_validator import build_fit
 
 # ---------------------------------------------------------------------------
 # Minimal valid activity file payloads
@@ -43,13 +45,7 @@ _TCX_CONTENT = (
     b"</TrainingCenterDatabase>"
 )
 
-# 14-byte FIT header: bytes 8-11 must be b".FIT"
-_FIT_CONTENT = (
-    b"\x0e\x10\x00\x00"  # header_size, protocol, profile
-    b"\x00\x00\x00\x00"  # data_size
-    b".FIT"  # signature at bytes 8-11
-    b"\x00\x00"  # crc
-)
+_FIT_CONTENT = build_fit(header_size=14)
 
 _XXE_XML = (
     b'<?xml version="1.0"?>'
@@ -194,6 +190,77 @@ class TestValidateActivityFileSignatureErrors:
         f = mock_upload_file("activity.fit", bad_fit)
         with pytest.raises(FileSignatureError):
             await validator.validate_activity_file(f)
+
+    async def test_validate_activity_file_fake_fit_rejected(
+        self, mock_upload_file
+    ):
+        validator = FileValidator()
+        fake = b"\x0e\x10" + b"\0" * 6 + b".FIT" + b"<?php evil ?>" * 10
+        f = mock_upload_file("a.fit", fake)
+        with pytest.raises(FileSignatureError) as exc_info:
+            await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FIT_INVALID_STRUCTURE
+
+    async def test_validate_activity_file_fit_trailing_data_rejected(
+        self, mock_upload_file
+    ):
+        validator = FileValidator()
+        f = mock_upload_file("a.fit", _FIT_CONTENT + b"<?php evil ?>")
+        with pytest.raises(FileSignatureError) as exc_info:
+            await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FIT_INVALID_STRUCTURE
+
+
+def _analysis_validator(enabled: bool) -> FileValidator:
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(enable_content_analysis=enabled)
+    return FileValidator(config)
+
+
+_GPX_SCRIPT = b'<?xml version="1.0"?><gpx><script>x</script></gpx>'
+_FIT_PHP = build_fit(b"<?php evil ?>" * 4)
+
+
+class TestValidateActivityFileContentAnalysis:
+    """Optional content analysis covers activity files."""
+
+    @pytest.mark.parametrize(
+        ("name", "content"),
+        [("a.gpx", _GPX_SCRIPT), ("a.fit", _FIT_PHP)],
+    )
+    async def test_threat_rejected_when_enabled(
+        self, mock_upload_file, name, content
+    ):
+        validator = _analysis_validator(True)
+        with pytest.raises(ContentThreatError) as exc_info:
+            await validator.validate_activity_file(
+                mock_upload_file(name, content)
+            )
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    @pytest.mark.parametrize(
+        ("name", "content"),
+        [("a.gpx", _GPX_SCRIPT), ("a.fit", _FIT_PHP)],
+    )
+    async def test_threat_accepted_when_disabled(
+        self, mock_upload_file, name, content
+    ):
+        validator = _analysis_validator(False)
+        await validator.validate_activity_file(mock_upload_file(name, content))
+
+    @pytest.mark.parametrize(
+        ("name", "content"),
+        [
+            ("a.gpx", _GPX_CONTENT),
+            ("a.tcx", _TCX_CONTENT),
+            ("a.fit", _FIT_CONTENT),
+        ],
+    )
+    async def test_clean_file_accepted_when_enabled(
+        self, mock_upload_file, name, content
+    ):
+        validator = _analysis_validator(True)
+        await validator.validate_activity_file(mock_upload_file(name, content))
 
 
 class TestValidateActivityFileXmlSecurity:

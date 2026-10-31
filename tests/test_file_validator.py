@@ -32,6 +32,7 @@ from safeuploads.exceptions import (
 )
 from safeuploads.file_validator import FileValidator
 from safeuploads.utils import ResourceMonitor, check_resource_limits
+from tests.validators.test_fit_validator import build_fit
 
 
 class TestFileValidatorInitialization:
@@ -1828,15 +1829,7 @@ class TestValidateActivityFile:
     async def test_validate_valid_fit(self, mock_upload_file):
         """Test validation of valid FIT file."""
         validator = FileValidator()
-        # Minimal FIT header: 14 bytes header + ".FIT" at 8-11
-        fit_content = (
-            b"\x0e"  # header size
-            b"\x10"  # protocol version
-            b"\x00\x08"  # profile version
-            b"\x00\x00\x00\x00"  # data size
-            b".FIT"  # magic
-            b"\x00\x00" + b"\x00" * 50  # CRC  # padding
-        )
+        fit_content = build_fit(b"\x00" * 50, header_size=14)
         file = mock_upload_file(filename="ride.fit", content=fit_content)
         await validator.validate_activity_file(file)
 

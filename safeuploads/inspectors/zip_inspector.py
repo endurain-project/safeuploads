@@ -736,15 +736,18 @@ class ZipContentInspector(BaseInspector):
         temporary file, checked like a top-level archive (the
         compression checks of ``CompressionSecurityValidator`` and
         the entry and structure checks of this inspector) and then
-        recursed into. Depth, cumulative entry count, elapsed time
-        and archive hashes are tracked across all levels to detect
-        recursive and quine structures. An inner archive that
+        recursed into. Depth, cumulative entry count and elapsed time are
+        tracked across all levels, and the hashes of an archive's
+        ancestors to detect recursive and quine structures. Sibling
+        archives with identical content are not a quine. An inner archive that
         cannot be read, parsed or fully inspected is rejected.
 
         Args:
             file_obj: Seekable file containing ZIP data.
             depth: Current nesting depth (0 = outermost).
-            seen_hashes: Set of SHA-256 hashes already seen.
+            seen_hashes: SHA-256 hashes of ancestor archives of
+                ``file_obj``; an archive matching one is a quine.
+                Not modified.
             entry_counter: Single-element list holding the
                 cumulative entry count shared across all
                 recursion branches.
@@ -764,7 +767,7 @@ class ZipContentInspector(BaseInspector):
             file_obj,
             "",
             depth,
-            set() if seen_hashes is None else seen_hashes,
+            frozenset() if seen_hashes is None else frozenset(seen_hashes),
             [0] if entry_counter is None else entry_counter,
             time.monotonic() if start_time is None else start_time,
         )
@@ -774,7 +777,7 @@ class ZipContentInspector(BaseInspector):
         file_obj: SeekableFile,
         path: str,
         depth: int,
-        seen_hashes: set[str],
+        ancestors: frozenset[str],
         entry_counter: list[int],
         start_time: float,
     ) -> None:
@@ -786,7 +789,7 @@ class ZipContentInspector(BaseInspector):
             path: Nesting path of this archive, entry names joined
                 by ``/``; empty for the outermost archive.
             depth: Nesting depth of this archive (0 = outermost).
-            seen_hashes: SHA-256 hashes of archives already seen.
+            ancestors: SHA-256 hashes of the ancestor archives.
             entry_counter: Single-element list holding the
                 cumulative entry count across all levels.
             start_time: Monotonic timestamp of the initial call.
@@ -817,7 +820,7 @@ class ZipContentInspector(BaseInspector):
 
             # Quine / recursive check via hash
             archive_hash = self._compute_archive_hash(file_obj)
-            if archive_hash in seen_hashes:
+            if archive_hash in ancestors:
                 raise ZipContentError(
                     message=(
                         "Recursive ZIP structure detected"
@@ -826,7 +829,7 @@ class ZipContentInspector(BaseInspector):
                     threats=["Quine/recursive ZIP detected"],
                     error_code=ErrorCode.ZIP_QUINE_DETECTED,
                 )
-            seen_hashes.add(archive_hash)
+            chain = ancestors | {archive_hash}
 
             if depth:
                 self._check_nested_level(file_obj, path, start_time)
@@ -834,7 +837,7 @@ class ZipContentInspector(BaseInspector):
             file_obj.seek(0)
             with zipfile.ZipFile(file_obj, "r") as zf:
                 self._recurse_entries(
-                    zf, path, depth, seen_hashes, entry_counter, start_time
+                    zf, path, depth, chain, entry_counter, start_time
                 )
 
         except (ZipBombError, ZipContentError, ResourceLimitError):
@@ -862,7 +865,7 @@ class ZipContentInspector(BaseInspector):
         zf: zipfile.ZipFile,
         path: str,
         depth: int,
-        seen_hashes: set[str],
+        ancestors: frozenset[str],
         entry_counter: list[int],
         start_time: float,
     ) -> None:
@@ -876,7 +879,8 @@ class ZipContentInspector(BaseInspector):
             zf: Open archive at this level.
             path: Nesting path of the archive; empty when outermost.
             depth: Nesting depth of the archive.
-            seen_hashes: SHA-256 hashes of archives already seen.
+            ancestors: SHA-256 hashes of this archive and its
+                ancestors.
             entry_counter: Single-element list holding the
                 cumulative entry count across all levels.
             start_time: Monotonic timestamp of the initial call.
@@ -929,7 +933,7 @@ class ZipContentInspector(BaseInspector):
                         inner,
                         entry_path,
                         depth + 1,
-                        seen_hashes,
+                        ancestors,
                         entry_counter,
                         start_time,
                     )

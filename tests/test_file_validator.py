@@ -2541,6 +2541,31 @@ class TestNestedArchivesEndToEnd:
 
         await _nested_zip_validator().validate_zip_file(file)
 
+    async def test_identical_sibling_archives_accepted(self, mock_upload_file):
+        """Two identical inner archives are not reported as a quine."""
+        inner = _zip_with({"a.txt": b"hello"})
+        data = _zip_with({"a/lib.zip": inner, "b/lib.zip": inner})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        await _nested_zip_validator().validate_zip_file(file)
+
+    async def test_identical_sibling_fan_out_rejected(self, mock_upload_file):
+        """Identical-sibling fan-out hits the total entries limit."""
+        leaf = _zip_with({"a.txt": b"x"})
+        mid = _zip_with({f"l{i}.zip": leaf for i in range(10)})
+        data = _zip_with({f"m{i}.zip": mid for i in range(10)})
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True, max_total_entries_recursive=50
+        )
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            await FileValidator(config=config).validate_zip_file(file)
+
+        assert type(exc_info.value) is ZipContentError
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
     async def test_inner_traversal_rejected(self, mock_upload_file):
         """A traversal entry inside an inner archive is rejected."""
         inner = _zip_with({"../evil.txt": b"x"})

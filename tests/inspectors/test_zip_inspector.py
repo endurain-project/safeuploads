@@ -2310,6 +2310,52 @@ class TestNestedArchivesCheckedPerLevel:
             )
         assert exc_info.value.error_code == ErrorCode.ZIP_QUINE_DETECTED
 
+    def test_identical_siblings_accepted(self):
+        """Identical sibling archives are not a quine."""
+        inner = _build_zip({"a.txt": b"x"})
+        data = _build_zip({"a/x.zip": inner, "b/x.zip": inner})
+        _nested_inspector().inspect_nested_archives(io.BytesIO(data))
+
+    def test_identical_siblings_at_depth_accepted(self):
+        """Identical siblings below another archive are accepted."""
+        inner = _build_zip({"a.txt": b"x"})
+        mid = _build_zip({"one.zip": inner, "two.zip": inner})
+        data = _build_zip({"mid.zip": mid, "other.zip": mid})
+        _nested_inspector().inspect_nested_archives(io.BytesIO(data))
+
+    def test_seen_hashes_argument_not_modified(self):
+        """The caller's ancestor set is left untouched."""
+        data = _build_zip({"inner.zip": _build_zip({"a.txt": b"x"})})
+        seen: set[str] = set()
+        _nested_inspector().inspect_nested_archives(
+            io.BytesIO(data), seen_hashes=seen
+        )
+        assert seen == set()
+
+    def test_ancestor_hash_deep_in_tree_detected(self):
+        """A passed ancestor hash matches an archive at any depth."""
+        leaf = _build_zip({"a.txt": b"x"})
+        mid = _build_zip({"leaf.zip": leaf})
+        data = _build_zip({"mid.zip": mid, "ok.zip": _build_zip({"b": b"y"})})
+        seen = {hashlib.sha256(leaf).hexdigest()}
+        with pytest.raises(ZipContentError) as exc_info:
+            _nested_inspector().inspect_nested_archives(
+                io.BytesIO(data), seen_hashes=seen
+            )
+        assert exc_info.value.error_code == ErrorCode.ZIP_QUINE_DETECTED
+
+    def test_identical_sibling_fan_out_bounded_by_total_entries(self):
+        """Many identical siblings hit the cumulative entry limit."""
+        leaf = _build_zip({"a.txt": b"x"})
+        mid = _build_zip({f"l{i}.zip": leaf for i in range(10)})
+        data = _build_zip({f"m{i}.zip": mid for i in range(10)})
+        _assert_nested_rejected(
+            _nested_inspector(max_total_entries_recursive=50),
+            data,
+            ErrorCode.ZIP_COMPLEXITY_ATTACK,
+            "Total recursive entries",
+        )
+
     def test_chain_memory_bounded(self):
         """
         A four-level chain does not hold every level in memory.

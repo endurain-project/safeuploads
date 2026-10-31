@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import magic
 
@@ -157,14 +157,36 @@ class FileValidator:
                 err,
             )
 
+    def _submit(
+        self, func: Callable[..., _T], *args: object
+    ) -> asyncio.Future[_T]:
+        """
+        Schedule a blocking callable in a worker thread.
+
+        Uses the configured executor when one was supplied,
+        otherwise the default ``asyncio`` pool. The current context
+        (including the correlation ID) is propagated to the worker
+        thread in both cases.
+
+        Args:
+            func: Blocking callable to execute.
+            *args: Positional arguments passed to ``func``.
+
+        Returns:
+            Future resolving to the value returned by ``func``.
+        """
+        ctx = contextvars.copy_context()
+
+        def _call() -> _T:
+            return ctx.run(func, *args)
+
+        return asyncio.get_running_loop().run_in_executor(
+            self._executor, _call
+        )
+
     async def _to_thread(self, func: Callable[..., _T], *args: object) -> _T:
         """
         Run a blocking callable in a worker thread.
-
-        Uses the configured executor when one was supplied,
-        otherwise the default ``asyncio.to_thread`` pool. The
-        current context (including the correlation ID) is
-        propagated to the worker thread in both cases.
 
         Args:
             func: Blocking callable to execute.
@@ -173,16 +195,59 @@ class FileValidator:
         Returns:
             The value returned by ``func``.
         """
-        if self._executor is None:
-            return await asyncio.to_thread(func, *args)
+        return await self._submit(func, *args)
 
-        loop = asyncio.get_running_loop()
-        ctx = contextvars.copy_context()
+    @staticmethod
+    def _close_when_idle(
+        temp_file: tempfile.SpooledTemporaryFile[bytes],
+        worker: asyncio.Future[Any] | None,
+    ) -> None:
+        """
+        Close a temp file once no worker thread is using it.
 
-        def _call() -> _T:
-            return ctx.run(func, *args)
+        A cancelled await leaves the worker thread running, so
+        closing right away would race with its reads or writes.
 
-        return await loop.run_in_executor(self._executor, _call)
+        Args:
+            temp_file: Temp file to close.
+            worker: Future of the worker that may still use the
+                file, or None when none was started.
+        """
+        if worker is None or worker.done():
+            temp_file.close()
+            return
+
+        def _close(done: asyncio.Future[Any]) -> None:
+            temp_file.close()
+            if not done.cancelled():
+                done.exception()  # mark retrieved
+
+        worker.add_done_callback(_close)
+
+    async def _inspect_temp_file(
+        self,
+        temp_file: tempfile.SpooledTemporaryFile[bytes],
+        func: Callable[..., None],
+        *args: object,
+    ) -> None:
+        """
+        Run ``func(temp_file, *args)`` off the loop, then close the file.
+
+        The worker future is shielded so that cancelling the
+        caller closes the file only after the worker finished, and
+        the cancellation propagates.
+
+        Args:
+            temp_file: Temp file handed to ``func`` and closed
+                afterwards.
+            func: Blocking inspection taking the temp file first.
+            *args: Further positional arguments for ``func``.
+        """
+        worker = self._submit(func, temp_file, *args)
+        try:
+            await asyncio.shield(worker)
+        finally:
+            self._close_when_idle(temp_file, worker)
 
     def _detect_mime_type(self, file_content: bytes, filename: str) -> str:
         """
@@ -632,11 +697,17 @@ class FileValidator:
 
         Raises:
             FileSizeError: File exceeds maximum or is empty.
+
+        On any failure, including cancellation, the temp file is
+        closed (after an in-flight offloaded write finished) and
+        the error propagates.
         """
         temp = tempfile.SpooledTemporaryFile(  # noqa: SIM115
             max_size=self.config.limits.max_memory_buffer_size
         )
         total_bytes = 0
+        write_worker: asyncio.Future[int] | None = None
+        spill_threshold = self.config.limits.max_memory_buffer_size
         chunk_size = self.config.limits.chunk_size
 
         await file.seek(0)
@@ -649,7 +720,6 @@ class FileValidator:
                     break
                 total_bytes += len(chunk)
                 if total_bytes > max_file_size:
-                    temp.close()
                     raise FileSizeError(
                         f"File too large. "
                         f"Maximum: "
@@ -657,10 +727,14 @@ class FileValidator:
                         size=total_bytes,
                         max_size=max_file_size,
                     )
-                temp.write(chunk)
+                if total_bytes > spill_threshold:
+                    # Past the in-memory buffer the write is disk I/O
+                    write_worker = self._submit(temp.write, chunk)
+                    await asyncio.shield(write_worker)
+                else:
+                    temp.write(chunk)
 
             if total_bytes == 0:
-                temp.close()
                 raise FileSizeError(
                     "Empty file not allowed",
                     size=0,
@@ -671,10 +745,8 @@ class FileValidator:
             temp.seek(0)
             await file.seek(0)
             return temp, total_bytes
-        except FileSizeError:
-            raise
-        except Exception:
-            temp.close()
+        except BaseException:
+            self._close_when_idle(temp, write_worker)
             raise
 
     def _read_header_and_detect(
@@ -860,7 +932,9 @@ class FileValidator:
 
             # Detect MIME type
             filename = file.filename or "unknown"
-            detected_mime = self._detect_mime_type(file_content, filename)
+            detected_mime = await self._to_thread(
+                self._detect_mime_type, file_content, filename
+            )
 
             self._enforce_mime(
                 detected_mime,
@@ -943,14 +1017,11 @@ class FileValidator:
                 file, self.config.limits.max_zip_size
             )
 
-            try:
-                # Offload the CPU/IO-bound ZIP inspection off the loop
-                filename = file.filename or "unknown"
-                await self._to_thread(
-                    self._inspect_zip_sync, temp_file, file_size, filename
-                )
-            finally:
-                temp_file.close()
+            # Offload the CPU/IO-bound ZIP inspection off the loop
+            filename = file.filename or "unknown"
+            await self._inspect_temp_file(
+                temp_file, self._inspect_zip_sync, file_size, filename
+            )
 
     def _inspect_zip_sync(
         self,
@@ -1063,16 +1134,10 @@ class FileValidator:
                 self.config.limits.max_activity_file_size,
             )
 
-            try:
-                filename = file.filename or "unknown"
-                await self._to_thread(
-                    self._inspect_activity_sync,
-                    temp_file,
-                    file_size,
-                    filename,
-                )
-            finally:
-                temp_file.close()
+            filename = file.filename or "unknown"
+            await self._inspect_temp_file(
+                temp_file, self._inspect_activity_sync, file_size, filename
+            )
 
     def _inspect_activity_sync(
         self,
@@ -1172,16 +1237,10 @@ class FileValidator:
                 self.config.limits.max_gzip_size,
             )
 
-            try:
-                filename = file.filename or "unknown"
-                await self._to_thread(
-                    self._inspect_gzip_sync,
-                    temp_file,
-                    file_size,
-                    filename,
-                )
-            finally:
-                temp_file.close()
+            filename = file.filename or "unknown"
+            await self._inspect_temp_file(
+                temp_file, self._inspect_gzip_sync, file_size, filename
+            )
 
     def _inspect_gzip_sync(
         self,

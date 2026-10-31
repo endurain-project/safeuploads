@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import io
 import logging
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -1333,13 +1334,13 @@ def _audited_validator() -> FileValidator:
 
 def _advance_clock_during_inspection(validator, clock, monkeypatch) -> None:
     """Start the fake clock when the offloaded inspection begins."""
-    original = validator._to_thread
+    original = validator._submit
 
-    async def _to_thread(func, *args):
+    def _submit(func, *args):
         clock.advancing = True
-        return await original(func, *args)
+        return original(func, *args)
 
-    monkeypatch.setattr(validator, "_to_thread", _to_thread)
+    monkeypatch.setattr(validator, "_submit", _submit)
 
 
 def _raised_in(exc_info) -> set[str]:
@@ -2190,3 +2191,230 @@ class TestHostileFilenamesEndToEnd:
     def test_legitimate_names_accepted(self, name, expected):
         """Legitimate names pass and come back NFC, not NFKC."""
         assert FileValidator()._sanitize_filename(name) == expected
+
+
+class _TrackedSpool:
+    """Wrap a temp file to record whether it was closed."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.closed_event = threading.Event()
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def close(self) -> None:
+        self._inner.close()
+        self.closed_event.set()
+
+
+async def _settle() -> None:
+    """Yield to the loop a few times so callbacks can run."""
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+class TestCancellationSafety:
+    """Cancellation closes temp files and never races a worker."""
+
+    @pytest.fixture
+    def tracked(self, monkeypatch):
+        """Record every SpooledTemporaryFile the validator creates."""
+        import tempfile
+
+        created: list[_TrackedSpool] = []
+        real = tempfile.SpooledTemporaryFile
+
+        def _factory(*args, **kwargs):
+            tracked = _TrackedSpool(real(*args, **kwargs))
+            created.append(tracked)
+            return tracked
+
+        monkeypatch.setattr(
+            "safeuploads.file_validator.tempfile.SpooledTemporaryFile",
+            _factory,
+        )
+        return created
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_streaming_closes_temp_file(self, tracked):
+        """Cancelling a read closes the temp file and propagates."""
+        reading = asyncio.Event()
+        calls = 0
+
+        class _HangingFile:
+            filename = "a.zip"
+            size = None
+
+            async def read(self, size: int = -1) -> bytes:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return b"x" * 100
+                reading.set()
+                await asyncio.Event().wait()
+                return b""
+
+            async def seek(self, offset: int) -> int:
+                return offset
+
+        validator = FileValidator()
+        task = asyncio.create_task(
+            validator._stream_to_temp_file(_HangingFile(), 1024 * 1024)
+        )
+        await reading.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert tracked[0].closed_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_spilled_write_waits_for_worker(
+        self, tracked, monkeypatch
+    ):
+        """A cancelled disk write closes the file after the worker."""
+        started = threading.Event()
+        release = threading.Event()
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_memory_buffer_size=10, chunk_size=64
+        )
+        validator = FileValidator(config=config)
+        real_submit = validator._submit
+
+        def _held_submit(func, *args):
+            def _slow(*a):
+                started.set()
+                release.wait(5)
+                return func(*a)
+
+            return real_submit(_slow, *args)
+
+        monkeypatch.setattr(validator, "_submit", _held_submit)
+
+        class _File:
+            filename = "a.zip"
+            size = None
+
+            async def read(self, size: int = -1) -> bytes:
+                return b"x" * 64
+
+            async def seek(self, offset: int) -> int:
+                return offset
+
+        task = asyncio.create_task(
+            validator._stream_to_temp_file(_File(), 10**6)
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _settle()
+        assert not tracked[0].closed_event.is_set()
+        release.set()
+        assert await asyncio.to_thread(tracked[0].closed_event.wait, 5)
+
+    @pytest.mark.asyncio
+    async def test_spilled_writes_run_off_the_loop(self, monkeypatch):
+        """Writes past the memory buffer happen in worker threads."""
+        threads: list[int] = []
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_memory_buffer_size=10, chunk_size=64
+        )
+        validator = FileValidator(config=config)
+        real_submit = validator._submit
+
+        def _recording(func, *args):
+            def _call(*a):
+                threads.append(threading.get_ident())
+                return func(*a)
+
+            return real_submit(_call, *args)
+
+        monkeypatch.setattr(validator, "_submit", _recording)
+
+        class _File:
+            def __init__(self) -> None:
+                self.data = [b"x" * 64, b"y" * 64, b""]
+
+            async def read(self, size: int = -1) -> bytes:
+                return self.data.pop(0)
+
+            async def seek(self, offset: int) -> int:
+                return offset
+
+        temp, total = await validator._stream_to_temp_file(_File(), 10**6)
+        try:
+            assert total == 128
+            assert temp.read() == b"x" * 64 + b"y" * 64
+        finally:
+            temp.close()
+        assert threads
+        assert threading.get_ident() not in threads
+
+    @pytest.mark.parametrize("use_executor", [False, True])
+    @pytest.mark.asyncio
+    async def test_cancel_during_inspection_closes_after_worker(
+        self, tracked, mock_upload_file, create_zip_file, use_executor
+    ):
+        """The temp file stays open until the worker has finished."""
+        started = threading.Event()
+        release = threading.Event()
+        executor = ThreadPoolExecutor(max_workers=1) if use_executor else None
+        validator = FileValidator(executor=executor)
+
+        def _held(temp_file, file_size, filename):
+            started.set()
+            release.wait(5)
+            assert not temp_file.closed
+
+        validator._inspect_zip_sync = _held
+        file = mock_upload_file(
+            filename="a.zip", content=create_zip_file(files={"a": b"b"})
+        )
+        task = asyncio.create_task(validator.validate_zip_file(file))
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _settle()
+        assert not tracked[0].closed_event.is_set()
+        release.set()
+        assert await asyncio.to_thread(tracked[0].closed_event.wait, 5)
+        if executor is not None:
+            executor.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_inspection_error_closes_temp_file(
+        self, tracked, mock_upload_file
+    ):
+        """A failing inspection closes the file and raises."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"not a zip")
+        with pytest.raises(FileSignatureError):
+            await validator.validate_zip_file(file)
+        assert tracked[0].closed_event.is_set()
+
+
+class TestImageMimeDetectionOffLoop:
+    """Image MIME detection must not run on the event loop."""
+
+    @pytest.mark.asyncio
+    async def test_detect_mime_runs_in_worker_thread(
+        self, mock_upload_file, valid_jpeg_bytes, monkeypatch
+    ):
+        """libmagic is called from a thread other than the loop."""
+        validator = FileValidator()
+        threads: list[int] = []
+        real = validator._detect_mime_type
+
+        def _recording(content, filename):
+            threads.append(threading.get_ident())
+            return real(content, filename)
+
+        monkeypatch.setattr(validator, "_detect_mime_type", _recording)
+        file = mock_upload_file(filename="p.jpg", content=valid_jpeg_bytes)
+        await validator.validate_image_file(file)
+        assert threads
+        assert threading.get_ident() not in threads

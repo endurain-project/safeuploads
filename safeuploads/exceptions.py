@@ -74,10 +74,8 @@ class ErrorCode(StrEnum):
     # Filename validation errors
     FILENAME_EMPTY = "FILENAME_EMPTY"
     FILENAME_INVALID = "FILENAME_INVALID"
-    FILENAME_TOO_LONG = "FILENAME_TOO_LONG"
 
     # Unicode security errors
-    UNICODE_SECURITY = "UNICODE_SECURITY"
     UNICODE_DANGEROUS_CHARS = "UNICODE_DANGEROUS_CHARS"
     UNICODE_NORMALIZATION_ERROR = "UNICODE_NORMALIZATION_ERROR"
 
@@ -93,7 +91,6 @@ class ErrorCode(StrEnum):
     # File size errors
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
     FILE_EMPTY = "FILE_EMPTY"
-    FILE_SIZE_UNKNOWN = "FILE_SIZE_UNKNOWN"
 
     # MIME type errors
     MIME_TYPE_INVALID = "MIME_TYPE_INVALID"
@@ -101,7 +98,6 @@ class ErrorCode(StrEnum):
     MIME_DETECTION_FAILED = "MIME_DETECTION_FAILED"
 
     # File signature errors
-    FILE_SIGNATURE_INVALID = "FILE_SIGNATURE_INVALID"
     FILE_SIGNATURE_MISSING = "FILE_SIGNATURE_MISSING"
     FILE_SIGNATURE_MISMATCH = "FILE_SIGNATURE_MISMATCH"
     FIT_INVALID_STRUCTURE = "FIT_INVALID_STRUCTURE"
@@ -140,8 +136,6 @@ class ErrorCode(StrEnum):
     # Generic and processing errors
     VALIDATION_FAILED = "VALIDATION_FAILED"
     PROCESSING_ERROR = "PROCESSING_ERROR"
-    IO_ERROR = "IO_ERROR"
-    MEMORY_ERROR = "MEMORY_ERROR"
 
 
 # ============================================================================

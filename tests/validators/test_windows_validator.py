@@ -2,7 +2,7 @@
 
 import pytest
 
-from safeuploads.exceptions import WindowsReservedNameError
+from safeuploads.exceptions import ErrorCode, WindowsReservedNameError
 from safeuploads.validators.windows_validator import WindowsSecurityValidator
 
 
@@ -223,3 +223,37 @@ class TestWindowsSecurityValidator:
         # These should be allowed - not reserved names
         validator.validate_windows_reserved_names("console.tar.gz")
         validator.validate_windows_reserved_names("content.backup.zip")
+
+
+class TestAdditionalReservedNames:
+    """COM0, LPT0 and the console device names are reserved."""
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "COM0.jpg",
+            "LPT0.jpg",
+            "CONIN$.jpg",
+            "CONOUT$.jpg",
+            "CLOCK$.jpg",
+            "clock$.txt.jpg",
+            "Clock$ .jpg",
+        ],
+    )
+    def test_rejected(self, default_config, filename):
+        """Each name is rejected with the reserved-name code."""
+        validator = WindowsSecurityValidator(default_config)
+
+        with pytest.raises(WindowsReservedNameError) as exc_info:
+            validator.validate_windows_reserved_names(filename)
+
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
+
+    @pytest.mark.parametrize(
+        "filename", ["clock.jpg", "com10.jpg", "lpt00.jpg", "conin.jpg"]
+    )
+    def test_similar_names_accepted(self, default_config, filename):
+        """Names that only resemble reserved ones are accepted."""
+        validator = WindowsSecurityValidator(default_config)
+
+        validator.validate_windows_reserved_names(filename)

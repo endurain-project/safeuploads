@@ -54,8 +54,8 @@ class WindowsSecurityValidator(BaseValidator):
             # Get basename without extension
             name_without_ext, ext = os.path.splitext(current_name)
 
-            # Normalize: lowercase, strip whitespace
-            name_to_check = name_without_ext.lower().strip()
+            # Normalize: casefold, strip whitespace
+            name_to_check = name_without_ext.casefold().strip()
             # Remove leading dots for hidden files
             # like ".CON.jpg"
             name_to_check = name_to_check.lstrip(".")

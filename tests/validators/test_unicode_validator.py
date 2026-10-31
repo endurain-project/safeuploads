@@ -3,7 +3,11 @@
 import pytest
 
 from safeuploads.config import FileSecurityConfig
-from safeuploads.exceptions import ErrorCode, UnicodeSecurityError
+from safeuploads.exceptions import (
+    ErrorCode,
+    FilenameSecurityError,
+    UnicodeSecurityError,
+)
 from safeuploads.validators.unicode_validator import UnicodeSecurityValidator
 
 
@@ -211,3 +215,68 @@ class TestUnicodeSecurityValidator:
                 exc_info.value.error_code
                 == ErrorCode.UNICODE_NORMALIZATION_ERROR
             )
+
+
+class TestRejectedUnicodeCategories:
+    """Characters in invisible or unassigned categories are rejected."""
+
+    @pytest.mark.parametrize(
+        "char",
+        [
+            "\x00",
+            "\x7f",
+            "\x85",
+            "\x9b",
+            "\u00ad",
+            "\u200f",
+            "\U000e0041",
+            "\ue000",
+            "\u0378",
+            "\ud800",
+            "\u2028",
+            "\u2029",
+        ],
+    )
+    def test_category_rejected(self, default_config, char):
+        """Cc, Cf, Co, Cn, Cs, Zl and Zp characters are rejected."""
+        validator = UnicodeSecurityValidator(default_config)
+
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            validator.validate_unicode_security(f"a{char}b.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
+
+    @pytest.mark.parametrize(
+        "name", ["r\u00e9sum\u00e9.jpg", "\u65e5\u672c\u8a9e.png", "a b.jpg"]
+    )
+    def test_ordinary_text_accepted(self, default_config, name):
+        """Letters, marks and ordinary spaces are accepted."""
+        validator = UnicodeSecurityValidator(default_config)
+
+        assert validator.validate_unicode_security(name) == name
+
+
+class TestCompatibilityForm:
+    """The NFKC form is used for checks and never returned."""
+
+    def test_folds_compatibility_characters(self, default_config):
+        """Fullwidth letters fold to ASCII."""
+        validator = UnicodeSecurityValidator(default_config)
+
+        assert validator.compatibility_form("\uff50\uff48\uff50") == "php"
+
+    @pytest.mark.parametrize("name", ["a\uff0fb", "a\uff3cb", "\ufe52\ufe52b"])
+    def test_hidden_path_component_rejected(self, default_config, name):
+        """A separator or '..' introduced by NFKC is rejected."""
+        validator = UnicodeSecurityValidator(default_config)
+
+        with pytest.raises(FilenameSecurityError) as exc_info:
+            validator.compatibility_form(name)
+
+        assert exc_info.value.error_code == ErrorCode.FILENAME_INVALID
+
+    def test_existing_double_dot_accepted(self, default_config):
+        """A '..' already present in the NFC name is not new."""
+        validator = UnicodeSecurityValidator(default_config)
+
+        assert validator.compatibility_form("a..b") == "a..b"

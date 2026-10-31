@@ -221,3 +221,39 @@ class TestCompoundExtensionCase:
         error = exc_info.value
         assert error.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
         assert error.extension == ".tar.z"
+
+
+class TestAddedBlockedExtensions:
+    """Server-side script and Windows script variants are blocked."""
+
+    @pytest.mark.parametrize(
+        "ext",
+        [
+            ".phar",
+            ".php7",
+            ".php8",
+            ".phps",
+            ".pht",
+            ".phtml",
+            ".shtml",
+            ".shtm",
+            ".stm",
+            ".vbe",
+            ".wsc",
+            ".wsf",
+            ".jse",
+        ],
+    )
+    def test_rejected_as_inner_extension(self, default_config, ext):
+        """The extension is rejected even when followed by .jpg."""
+        validator = ExtensionSecurityValidator(default_config)
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_extensions(f"x{ext}.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+        assert exc_info.value.extension == ext
+
+    def test_default_config_still_valid(self, default_config):
+        """The default configuration reports no errors."""
+        assert default_config.validate_instance() == []

@@ -16,6 +16,7 @@ from safeuploads.config import FileSecurityConfig
 from safeuploads.exceptions import (
     CompressionSecurityError,
     FileSizeError,
+    UnicodeSecurityError,
     ZipBombError,
     ZipContentError,
 )
@@ -559,11 +560,14 @@ class TestAuditLogInjectionEndToEnd:
         validator = FileValidator(cfg)
         file = mock_upload_file(_FORGED + ".jpg", valid_jpeg_bytes)
 
-        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(UnicodeSecurityError),
+        ):
             await validator.validate_image_file(file)
 
         records = [r for r in caplog.records if r.name == "safeuploads.audit"]
-        assert len(records) == 2  # start + success
+        assert len(records) == 2  # start + failure
         for record in records:
             assert "\n" not in record.getMessage()
         assert "\nsafeuploads.audit: [forged]" not in caplog.text

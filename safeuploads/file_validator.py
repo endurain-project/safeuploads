@@ -380,27 +380,33 @@ class FileValidator:
         # before any other processing
         filename = self.unicode_validator.validate_unicode_security(filename)
 
+        # Compatibility characters must not hide a path component
+        # from basename (e.g. a fullwidth solidus)
+        self.unicode_validator.compatibility_form(filename)
+
         # Remove path components to prevent directory traversal
         filename = os.path.basename(filename)
 
-        # Remove null bytes and control characters
-        filename = "".join(
-            char for char in filename if ord(char) >= 32 and char != "\x7f"
-        )
-
         # Remove dangerous characters that could be used
         # for path traversal or command injection
-        dangerous_chars = '<>:"/\\|?*\x00'
+        dangerous_chars = '<>:"/\\|?*'
         for char in dangerous_chars:
             filename = filename.replace(char, "_")
 
-        # Check for Windows reserved names before any other processing
-        # This must be done early to prevent reserved names from being created
-        self.windows_validator.validate_windows_reserved_names(filename)
+        # Name checks run on the NFC name and on its NFKC form, so
+        # compatibility characters (fullwidth letters, superscript
+        # digits) cannot disguise a reserved name or extension
+        def check_name(name: str) -> None:
+            for form in (
+                name,
+                self.unicode_validator.compatibility_form(name),
+            ):
+                # Windows reserved names come before any other check
+                self.windows_validator.validate_windows_reserved_names(form)
+                # Compound, double and every dangerous extension
+                self.extension_validator.validate_extensions(form)
 
-        # Handle compound and double extensions security risk
-        # This also checks all dangerous extensions
-        self.extension_validator.validate_extensions(filename)
+        check_name(filename)
 
         # Limit filename length (preserve extension)
         name_part, ext_part = os.path.splitext(filename)
@@ -421,8 +427,7 @@ class FileValidator:
         # Final checks on the returned name: truncation can expose a
         # blocked extension or a reserved name that the earlier checks
         # never saw, so both run again on the final filename
-        self.windows_validator.validate_windows_reserved_names(filename)
-        self.extension_validator.validate_extensions(filename)
+        check_name(filename)
 
         # Log with %r so control characters in the raw input are
         # escaped rather than injected into the log stream.

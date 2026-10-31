@@ -154,16 +154,15 @@ class TestSanitizeFilename:
         assert "*" not in result
         assert "_" in result  # Replaced with underscore
 
-    def test_sanitize_removes_control_characters(self):
-        """Test that control characters are removed."""
+    @pytest.mark.parametrize("char", ["\x00", "\x01", "\x1f", "\x7f"])
+    def test_sanitize_rejects_control_characters(self, char):
+        """Control characters are rejected, not silently stripped."""
         validator = FileValidator()
-        result = validator._sanitize_filename("file\x00\x01\x1f\x7f.txt")
 
-        assert "\x00" not in result
-        assert "\x01" not in result
-        assert "\x1f" not in result
-        assert "\x7f" not in result
-        assert result == "file.txt"
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            validator._sanitize_filename(f"file{char}.txt")
+
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
     def test_sanitize_limits_filename_length(self):
         """Test that filename length is limited."""
@@ -1767,17 +1766,17 @@ class TestEnforceMimeAndWiredErrorCodes:
 class TestSanitizeFilenameEdgeCases:
     """Tests for _sanitize_filename edge cases."""
 
-    def test_sanitize_removes_null_bytes(self):
+    def test_sanitize_rejects_null_bytes(self):
         """
-        Test explicit null byte removal from filename.
+        Test that null bytes are rejected, not stripped.
 
         Returns:
             None
         """
         validator = FileValidator()
-        result = validator._sanitize_filename("file\x00.txt\x00")
-        assert "\x00" not in result
-        assert result == "file.txt"
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            validator._sanitize_filename("file\x00.txt\x00")
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
     def test_sanitize_whitespace_only_name_part(self):
         """
@@ -2074,3 +2073,120 @@ class TestConcurrentValidation:
             assert recorder.calls > 0
         finally:
             recorder.shutdown(wait=True)
+
+
+_UNICODE_REJECTED = [
+    "a\u200fb.jpg",
+    "a\u00adb.jpg",
+    "a\U000e0041.jpg",
+    "a\u0085b.jpg",
+    "a\u009bb.jpg",
+    "a\x00b.jpg",
+    "a\ue000b.jpg",
+    "a\u0378b.jpg",
+    "a\ud800b.jpg",
+    "a\u2028b.jpg",
+    "a\u2029b.jpg",
+    "a\u200db.jpg",
+]
+
+_RESERVED_REJECTED = [
+    "COM\u00b9.jpg",
+    "LPT\u00b2.jpg",
+    "COM0.jpg",
+    "LPT0.jpg",
+    "CONIN$.jpg",
+    "CONOUT$.jpg",
+    "CLOCK$.jpg",
+    "clock$.txt.jpg",
+    "\uff23\uff2f\uff2e.jpg",
+]
+
+_EXTENSION_REJECTED = [
+    "shell.\uff50\uff48\uff50.jpg",
+    "x.phar.jpg",
+    "x.php7.jpg",
+    "x.php8.jpg",
+    "x.shtml.jpg",
+    "x.shtm.jpg",
+    "x.stm.jpg",
+    "x.pht.jpg",
+    "x.phps.jpg",
+    "x.vbe.jpg",
+    "x.wsc.jpg",
+]
+
+
+class TestHostileFilenamesEndToEnd:
+    """Hostile names are rejected through validate_image_file."""
+
+    @pytest.mark.parametrize("name", _UNICODE_REJECTED)
+    async def test_invisible_characters_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Control, format, private-use and unassigned chars fail."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
+
+    @pytest.mark.parametrize("name", _RESERVED_REJECTED)
+    async def test_reserved_names_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Reserved device names fail, also in compatibility form."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(WindowsReservedNameError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
+
+    @pytest.mark.parametrize("name", _EXTENSION_REJECTED)
+    async def test_blocked_extensions_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Blocked extensions fail, also in compatibility form."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "..\uff0f..\uff0fetc\uff0fx.jpg",
+            "a\uff3cb.jpg",
+            "a\ufe52\ufe52b.jpg",
+        ],
+    )
+    async def test_hidden_path_components_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Compatibility characters cannot hide a path component."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(FilenameSecurityError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.FILENAME_INVALID
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("r\u00e9sum\u00e9.jpg", "r\u00e9sum\u00e9.jpg"),
+            ("\u65e5\u672c\u8a9e.png", "\u65e5\u672c\u8a9e.png"),
+            ("\u0444\u0430\u0439\u043b.jpg", "\u0444\u0430\u0439\u043b.jpg"),
+            ("cafe\u0301.jpg", "caf\u00e9.jpg"),
+            ("caf\u00e9.jpg", "caf\u00e9.jpg"),
+            ("\ufb01le.jpg", "\ufb01le.jpg"),
+            ("a..b.jpg", "a..b.jpg"),
+        ],
+    )
+    def test_legitimate_names_accepted(self, name, expected):
+        """Legitimate names pass and come back NFC, not NFKC."""
+        assert FileValidator()._sanitize_filename(name) == expected

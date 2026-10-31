@@ -213,12 +213,25 @@ class TestSanitizeFilename:
         # Should keep the hidden file name (. prefix is allowed for extensions)
         assert ".hidden" in result or result.startswith("file_")
 
-    def test_sanitize_rejects_empty_filename(self):
-        """Test that empty filename raises ValueError."""
+    def test_sanitize_replaces_empty_name_part(self):
+        """Test that an empty name gets a generated name."""
         validator = FileValidator()
 
-        with pytest.raises(ValueError, match="Filename cannot be empty"):
-            validator._sanitize_filename("")
+        assert validator._sanitize_filename("").startswith("file_")
+        assert validator._sanitize_filename(".jpg") == ".jpg"
+
+    @pytest.mark.asyncio
+    async def test_validate_filename_rejects_empty_filename(
+        self, mock_upload_file
+    ):
+        """Test that an empty filename is rejected before sanitizing."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="", content=b"x")
+
+        with pytest.raises(FilenameSecurityError) as exc_info:
+            validator._validate_filename(file)
+
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
     def test_sanitize_rejects_windows_reserved_names(self):
         """Test that Windows reserved names are rejected."""
@@ -409,6 +422,19 @@ class TestValidateFileExtension:
             )
 
         assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
+
+    def test_extension_not_allowed_message_lists_sorted(
+        self, mock_upload_file
+    ):
+        """Test that the allowed extensions appear in sorted order."""
+        validator = FileValidator()
+        allowed = frozenset({".png", ".gif", ".jpg"})
+
+        file = mock_upload_file(filename="document.pdf", content=b"test")
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._validate_file_extension(file, allowed)
+
+        assert str(exc_info.value).endswith("Allowed: .gif, .jpg, .png")
 
     @pytest.mark.asyncio
     async def test_validate_zip_extension_not_allowed(self, mock_upload_file):

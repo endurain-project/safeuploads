@@ -368,7 +368,6 @@ class FileValidator:
         signatures = {
             "image": [
                 b"\xff\xd8\xff",  # JPEG
-                b"\xff\xd8\xff\xe1",  # JPEG EXIF (additional JPEG variant)
                 b"\x89PNG\r\n\x1a\n",  # PNG
             ],
             "zip": [
@@ -434,11 +433,7 @@ class FileValidator:
                 device names.
             ExtensionSecurityError: Filename contains blocked or
                 dangerous file extensions.
-            ValueError: Filename is empty string.
         """
-        if not filename:
-            raise ValueError("Filename cannot be empty")
-
         # Preserve the raw input for truthful logging; every step
         # below reassigns ``filename`` as it sanitizes.
         original_filename = filename
@@ -534,14 +529,6 @@ class FileValidator:
 
             # Update the file object with sanitized filename
             file.filename = sanitized_filename
-
-            # Additional validation after sanitization
-            if not sanitized_filename or sanitized_filename.strip() == "":
-                raise FilenameSecurityError(
-                    "Invalid filename after sanitization",
-                    filename=file.filename,
-                    error_code=ErrorCode.FILENAME_INVALID,
-                )
         except FileValidationError:
             # Let FileValidationError and subclasses propagate
             raise
@@ -588,7 +575,7 @@ class FileValidator:
                 (
                     "Invalid file extension."
                     " Allowed:"
-                    f" {', '.join(allowed_extensions)}"
+                    f" {', '.join(sorted(allowed_extensions))}"
                 ),
                 filename=file.filename,
                 extension=ext,

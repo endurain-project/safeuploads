@@ -435,6 +435,52 @@ class TestLimitRangeValidation:
         assert [e.error_type for e in errors] == ["invalid_timeout"]
 
 
+class TestNestedArchiveScanDependency:
+    """Nested archives need ZIP content scanning to be inspected."""
+
+    def test_nested_without_scan_is_reported(self):
+        """allow_nested_archives without scan_zip_content is an error."""
+        errors = _errors_for(
+            allow_nested_archives=True, scan_zip_content=False
+        )
+
+        assert [e.error_type for e in errors] == [
+            "nested_archives_require_scan"
+        ]
+        assert errors[0].severity == "error"
+        assert "scan_zip_content" in errors[0].message
+
+    def test_nested_with_scan_is_accepted(self):
+        """Nested archives with scanning enabled are valid."""
+        assert (
+            _errors_for(allow_nested_archives=True, scan_zip_content=True)
+            == []
+        )
+
+    def test_no_nested_without_scan_is_accepted(self):
+        """Disabling both nested archives and scanning is valid."""
+        assert (
+            _errors_for(allow_nested_archives=False, scan_zip_content=False)
+            == []
+        )
+
+    def test_default_configuration_reports_nothing(self):
+        """The default configuration reports no issue."""
+        assert FileSecurityConfig().validate_instance() == []
+
+    def test_type_error_suppresses_cross_field_check(self):
+        """A wrongly typed limit is reported before the dependency."""
+        errors = _errors_for(
+            allow_nested_archives=True,
+            scan_zip_content=False,
+            max_image_size="big",
+        )
+
+        assert "nested_archives_require_scan" not in [
+            e.error_type for e in errors
+        ]
+
+
 class TestLimitTypeValidation:
     """Wrongly typed limits are reported without raising."""
 

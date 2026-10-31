@@ -22,6 +22,7 @@ from ..exceptions import (
     ErrorCode,
     FileProcessingError,
     ResourceLimitError,
+    ZipBombError,
     ZipContentError,
 )
 from ..utils import (
@@ -117,6 +118,7 @@ class ZipContentInspector(BaseInspector):
             file_obj: Seekable file-like object containing ZIP data.
 
         Raises:
+            ZipBombError: If a nested archive is a zip bomb.
             ZipContentError: If security threats are detected in ZIP
                 content such as directory traversal, symlinks, nested
                 archives, or suspicious patterns, or a nested archive
@@ -133,7 +135,7 @@ class ZipContentInspector(BaseInspector):
             if self.config.limits.allow_nested_archives:
                 self.inspect_nested_archives(file_obj)
 
-        except (ZipContentError, ResourceLimitError):
+        except (ZipBombError, ZipContentError, ResourceLimitError):
             # Re-raise our own exceptions
             raise
         except zipfile.BadZipFile as err:
@@ -672,6 +674,7 @@ class ZipContentInspector(BaseInspector):
             start_time: Monotonic timestamp of initial call.
 
         Raises:
+            ZipBombError: If a nested archive is a zip bomb.
             ZipContentError: If recursive structure, quine,
                 or complexity attack is detected, a nested archive
                 fails a check, or an archive cannot be read or
@@ -712,6 +715,7 @@ class ZipContentInspector(BaseInspector):
             start_time: Monotonic timestamp of the initial call.
 
         Raises:
+            ZipBombError: If a nested archive is a zip bomb.
             ZipContentError: If this archive or a nested one fails
                 a check or cannot be read or parsed.
             ResourceLimitError: If the active resource monitor's
@@ -756,7 +760,7 @@ class ZipContentInspector(BaseInspector):
                     zf, path, depth, seen_hashes, entry_counter, start_time
                 )
 
-        except (ZipContentError, ResourceLimitError):
+        except (ZipBombError, ZipContentError, ResourceLimitError):
             raise
         except zipfile.BadZipFile as err:
             logger.warning("Corrupt %s at depth %d", location, depth)
@@ -933,7 +937,9 @@ class ZipContentInspector(BaseInspector):
 
         Applies the compression, size, entry-count and layout
         checks of ``CompressionSecurityValidator`` and this
-        inspector's entry and structure checks. Failures are
+        inspector's entry and structure checks. A zip bomb is
+        re-raised as ``ZipBombError`` with its details and
+        ``path`` prefixed to the message; other failures are
         raised as ``ZipContentError`` with the original error
         code, and their threats are prefixed with ``path``.
 
@@ -944,6 +950,8 @@ class ZipContentInspector(BaseInspector):
                 counts from.
 
         Raises:
+            ZipBombError: If the nested archive exceeds a
+                compression ratio or size limit.
             ZipContentError: If the nested archive fails a check.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
@@ -954,6 +962,16 @@ class ZipContentInspector(BaseInspector):
             size = file_obj.seek(0, os.SEEK_END)
             self._compression.validate_zip_compression_ratio(file_obj, size)
             self._inspect_archive(file_obj, start_time)
+        except ZipBombError as err:
+            raise ZipBombError(
+                message=f"{path}: {err.message}",
+                filename=err.filename,
+                compression_ratio=err.compression_ratio,
+                uncompressed_size=err.uncompressed_size,
+                max_ratio=err.max_ratio,
+                max_size=err.max_size,
+                error_code=err.error_code,
+            ) from err
         except CompressionSecurityError as err:
             threats = [
                 f"{path}: {threat}"

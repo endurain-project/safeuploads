@@ -109,6 +109,32 @@ class TestFileValidatorInitialization:
         assert {e.severity for e in errors} == {"error"}
         assert any(field in e.message for e in errors)
 
+    def test_nested_archives_without_scan_rejected(self):
+        """Nested archives need scan_zip_content to be inspected."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True, scan_zip_content=False
+        )
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+
+        assert [e.error_type for e in exc_info.value.errors] == [
+            "nested_archives_require_scan"
+        ]
+
+    @pytest.mark.parametrize(
+        ("nested", "scan"), [(True, True), (False, False)]
+    )
+    def test_nested_scan_consistent_config_constructs(self, nested, scan):
+        """Consistent nested and scan flags construct a validator."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=nested, scan_zip_content=scan
+        )
+
+        FileValidator(config=config)
+
     def test_warning_only_config_constructs(self, caplog):
         """Warnings are logged but never block construction."""
         import logging
@@ -2465,16 +2491,17 @@ class TestNestedArchivesEndToEnd:
         assert "inner.zip: Directory traversal attack" in str(exc_info.value)
 
     async def test_inner_ratio_bomb_rejected(self, mock_upload_file):
-        """An inner archive over the compression ratio is rejected."""
+        """An inner archive over the compression ratio is a ZipBombError."""
         inner = _zip_with(
             {"zeros.dat": b"\x00" * (2 * 1024 * 1024)}, zipfile.ZIP_DEFLATED
         )
         data = _zip_with({"inner.zip": inner})
         file = mock_upload_file(filename="outer.zip", content=data)
 
-        with pytest.raises(ZipContentError) as exc_info:
+        with pytest.raises(ZipBombError) as exc_info:
             await _nested_zip_validator().validate_zip_file(file)
 
+        assert type(exc_info.value) is ZipBombError
         assert (
             exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
         )

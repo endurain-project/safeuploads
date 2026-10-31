@@ -20,6 +20,9 @@ from safeuploads.exceptions import (
 )
 from safeuploads.inspectors import zip_inspector
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
+from safeuploads.validators.compression_validator import (
+    CompressionSecurityValidator,
+)
 
 
 class TestZipContentInspector:
@@ -1989,16 +1992,41 @@ class TestNestedArchivesCheckedPerLevel:
         _nested_inspector().inspect_zip_content(io.BytesIO(data))
 
     def test_inner_ratio_bomb_rejected(self):
-        """An inner archive over the compression ratio is rejected."""
+        """An inner archive over the compression ratio is a ZipBombError."""
         inner = _deflated_zip({"zeros.dat": b"\x00" * (2 * 1024 * 1024)})
         data = _build_zip({"inner.zip": inner})
-        err = _assert_nested_rejected(
-            _nested_inspector(),
-            data,
-            ErrorCode.COMPRESSION_RATIO_EXCEEDED,
-            "inner.zip: Excessive compression ratio",
-        )
+        with pytest.raises(ZipBombError) as exc_info:
+            _nested_inspector().inspect_zip_content(io.BytesIO(data))
+        err = exc_info.value
+        assert type(err) is ZipBombError
+        assert err.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        assert "inner.zip: Excessive compression ratio" in str(err)
+        assert err.compression_ratio > 100
         assert isinstance(err.__cause__, ZipBombError)
+
+    def test_two_levels_down_ratio_bomb_shows_full_path(self):
+        """A bomb two levels down names the whole nesting path."""
+        inner = _deflated_zip({"zeros.dat": b"\x00" * (2 * 1024 * 1024)})
+        mid = _build_zip({"inner.zip": inner})
+        data = _build_zip({"mid.zip": mid})
+        with pytest.raises(ZipBombError) as exc_info:
+            _nested_inspector().inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == (
+            ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert "mid.zip/inner.zip: Excessive compression ratio" in str(
+            exc_info.value
+        )
+
+    def test_top_level_ratio_bomb_unchanged(self):
+        """A top-level bomb keeps its unprefixed message."""
+        data = _deflated_zip({"zeros.dat": b"\x00" * (2 * 1024 * 1024)})
+        compression = CompressionSecurityValidator(FileSecurityConfig())
+        with pytest.raises(ZipBombError) as exc_info:
+            compression.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+        assert str(exc_info.value).startswith("Excessive compression ratio")
 
     @pytest.mark.parametrize(
         ("name", "threat"),

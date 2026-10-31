@@ -1169,6 +1169,24 @@ class FileSecurityConfig:
                 )
             )
 
+        # Nested archives are only inspected by the content scan
+        if limits.allow_nested_archives and not limits.scan_zip_content:
+            errors.append(
+                _config_error(
+                    "nested_archives_require_scan",
+                    (
+                        "allow_nested_archives requires"
+                        " scan_zip_content; nested archives would"
+                        " not be inspected"
+                    ),
+                    "compression",
+                    (
+                        "Enable scan_zip_content or disable"
+                        " allow_nested_archives"
+                    ),
+                )
+            )
+
         return errors
 
     @classmethod

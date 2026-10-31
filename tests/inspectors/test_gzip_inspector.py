@@ -3,6 +3,7 @@
 import gzip
 import hashlib
 import io
+import zlib
 
 import pytest
 
@@ -88,8 +89,33 @@ class TestGzipContentInspector:
         corrupted = b"\x1f\x8b\x08\x00" + b"corrupted"
         file_obj = io.BytesIO(corrupted)
 
-        with pytest.raises((CompressionSecurityError, FileProcessingError)):
+        with pytest.raises(CompressionSecurityError) as exc_info:
             inspector.inspect_gzip_content(file_obj, len(corrupted))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+    def test_corrupt_deflate_data_rejected_as_corrupt(self, default_config):
+        """Invalid deflate data (zlib.error) is a corrupt-archive error."""
+        inspector = GzipContentInspector(default_config)
+        good = gzip.compress(b"hello world" * 100)
+        bad = good[:12] + b"\xff\xff\xff\xff" + good[16:]
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            inspector.inspect_gzip_content(io.BytesIO(bad), len(bad))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+        assert isinstance(exc_info.value.__cause__, zlib.error)
+        # The untouched stream is accepted
+        inspector.inspect_gzip_content(io.BytesIO(good), len(good))
+
+    @pytest.mark.parametrize("offset", [-8, -4], ids=["bad_crc", "bad_length"])
+    def test_bad_trailer_rejected_as_corrupt(self, default_config, offset):
+        """A wrong CRC or length trailer is a corrupt-archive error."""
+        inspector = GzipContentInspector(default_config)
+        good = gzip.compress(b"hello world" * 100)
+        bad = good[:offset] + b"\x00\x00\x00\x01" + good[offset + 4 :]
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            inspector.inspect_gzip_content(io.BytesIO(bad), len(bad))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
 
     def test_file_position_reset_after_inspection(self, default_config):
         """Test file position is reset after inspection."""

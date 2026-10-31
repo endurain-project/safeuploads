@@ -442,6 +442,7 @@ class TestCompressionSecurityValidator:
             )
 
         assert "timeout" in str(exc_info.value).lower()
+        assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
 
     def test_memory_error_handling(self, default_config, monkeypatch):
         """Test handling of MemoryError during ZIP processing."""

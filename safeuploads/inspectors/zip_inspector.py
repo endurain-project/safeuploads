@@ -6,10 +6,11 @@ import gzip
 import hashlib
 import logging
 import os
+import stat
 import tempfile
 import time
 import zipfile
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from ..audit import get_correlation_id, log_extra
 from ..enums import (
@@ -42,6 +43,24 @@ logger = logging.getLogger(__name__)
 
 _GZIP_MAGIC = b"\x1f\x8b"
 _ZIP_MAGIC = b"PK"
+
+
+class _Threat(NamedTuple):
+    """
+    One threat found in an archive.
+
+    Attributes:
+        code: ``ErrorCode`` raised when this threat is the first found.
+        message: Human-readable description.
+    """
+
+    code: str
+    message: str
+
+
+def _content_threat(message: str) -> _Threat:
+    """Return a threat reported as ``ZIP_CONTENT_THREAT``."""
+    return _Threat(ErrorCode.ZIP_CONTENT_THREAT, message)
 
 
 class ZipContentInspector(BaseInspector):
@@ -122,11 +141,14 @@ class ZipContentInspector(BaseInspector):
             ZipContentError: If security threats are detected in ZIP
                 content such as directory traversal, symlinks, nested
                 archives, or suspicious patterns, or a nested archive
-                fails any check.
+                fails any check. Its ``error_code`` is that of the
+                first threat found.
+            CompressionSecurityError: With ``ZIP_CORRUPT`` if the
+                ZIP structure is invalid.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
-            FileProcessingError: If ZIP structure is invalid or
-                unexpected error occurs during inspection.
+            FileProcessingError: If an unexpected error occurs during
+                inspection.
         """
         try:
             logger.debug("Starting ZIP content inspection")
@@ -142,9 +164,9 @@ class ZipContentInspector(BaseInspector):
             logger.error(
                 "Invalid or corrupted ZIP file structure", exc_info=True
             )
-            raise FileProcessingError(
+            raise CompressionSecurityError(
                 message="Invalid or corrupted ZIP file structure",
-                original_error=err,
+                error_code=ErrorCode.ZIP_CORRUPT,
             ) from err
         except Exception as err:
             logger.error(
@@ -172,13 +194,14 @@ class ZipContentInspector(BaseInspector):
 
         Raises:
             ZipContentError: If any entry or the structure is a
-                threat, or the analysis timeout is exceeded.
+                threat, or the analysis timeout is exceeded. The
+                error code is that of the first threat found.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
             zipfile.BadZipFile: If the archive cannot be parsed.
         """
         file_obj.seek(0)
-        threats_found = []
+        threats_found: list[_Threat] = []
         timeout = self.config.limits.zip_analysis_timeout
 
         with zipfile.ZipFile(file_obj, "r") as zip_file:
@@ -214,14 +237,15 @@ class ZipContentInspector(BaseInspector):
             threats_found.extend(self._inspect_zip_structure(zip_entries))
 
         if threats_found:
-            summary = "; ".join(threats_found)
+            messages = [threat.message for threat in threats_found]
+            summary = "; ".join(messages)
             logger.warning(
                 "ZIP content threats detected",
                 extra=log_extra(
                     {
                         "error_type": "zip_content_threat",
-                        "threats": threats_found,
-                        "threat_count": len(threats_found),
+                        "threats": messages,
+                        "threat_count": len(messages),
                     }
                 ),
             )
@@ -230,7 +254,8 @@ class ZipContentInspector(BaseInspector):
                 self._audit.threat("", cid, summary)
             raise ZipContentError(
                 message=f"ZIP content threats detected: {summary}",
-                threats=threats_found,
+                threats=messages,
+                error_code=threats_found[0].code,
             )
 
         logger.debug(
@@ -240,7 +265,7 @@ class ZipContentInspector(BaseInspector):
 
     def _inspect_zip_entry(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
-    ) -> list[str]:
+    ) -> list[_Threat]:
         """
         Inspect single ZIP entry for security threats.
 
@@ -254,30 +279,47 @@ class ZipContentInspector(BaseInspector):
             zip_file: Parent ZIP archive.
 
         Returns:
-            List of threat descriptions.
+            List of threats, each with the code it is reported as.
         """
-        threats = []
+        threats: list[_Threat] = []
         filename = entry.filename
 
         # 1. Check for null bytes (truncation attacks); zipfile
         # truncates ``filename`` at the first NUL, so check the raw name
         if "\x00" in entry.orig_filename:
-            threats.append(f"Null byte in filename: '{filename}'")
+            threats.append(
+                _content_threat(f"Null byte in filename: '{filename}'")
+            )
 
         # 2. Check for directory traversal attacks
         if self._has_directory_traversal(filename):
-            threats.append(f"Directory traversal attack in '{filename}'")
+            threats.append(
+                _Threat(
+                    ErrorCode.ZIP_DIRECTORY_TRAVERSAL,
+                    f"Directory traversal attack in '{filename}'",
+                )
+            )
 
         # 3. Check for absolute paths
         if (
             not self.config.limits.allow_absolute_paths
             and self._has_absolute_path(filename)
         ):
-            threats.append(f"Absolute path detected in '{filename}'")
+            threats.append(
+                _Threat(
+                    ErrorCode.ZIP_ABSOLUTE_PATH,
+                    f"Absolute path detected in '{filename}'",
+                )
+            )
 
         # 4. Check for symbolic links
         if not self.config.limits.allow_symlinks and self._is_symlink(entry):
-            threats.append(f"Symbolic link detected: '{filename}'")
+            threats.append(
+                _Threat(
+                    ErrorCode.ZIP_SYMLINK_DETECTED,
+                    f"Symbolic link detected: '{filename}'",
+                )
+            )
 
         # 5. Check filename length limits
         if (
@@ -285,31 +327,44 @@ class ZipContentInspector(BaseInspector):
             > self.config.limits.max_filename_length
         ):
             threats.append(
-                f"Filename too long: '{filename}'"
-                f" ({len(os.path.basename(filename))}"
-                " chars)"
+                _content_threat(
+                    f"Filename too long: '{filename}'"
+                    f" ({len(os.path.basename(filename))}"
+                    " chars)"
+                )
             )
 
         # 6. Check path length limits
         if len(filename) > self.config.limits.max_path_length:
             threats.append(
-                f"Path too long: '{filename}' ({len(filename)} chars)"
+                _content_threat(
+                    f"Path too long: '{filename}' ({len(filename)} chars)"
+                )
             )
 
         # 7. Check for suspicious filename patterns
-        suspicious_patterns = self._check_suspicious_patterns(filename)
-        threats.extend(suspicious_patterns)
+        threats.extend(
+            _content_threat(message)
+            for message in self._check_suspicious_patterns(filename)
+        )
 
         # 8. Check for nested archives
         if (
             not self.config.limits.allow_nested_archives
             and self._is_nested_archive(filename)
         ):
-            threats.append(f"Nested archive detected: '{filename}'")
+            threats.append(
+                _Threat(
+                    ErrorCode.ZIP_NESTED_ARCHIVE,
+                    f"Nested archive detected: '{filename}'",
+                )
+            )
 
         # 9. Check for executable, script and system file extensions
         if self._extension(filename) in self._dangerous_exts:
-            threats.append(f"Dangerous file type detected: '{filename}'")
+            threats.append(
+                _content_threat(f"Dangerous file type detected: '{filename}'")
+            )
 
         # 10. Check file content if enabled
         # Only first 512 bytes are read, so no size gate needed
@@ -321,7 +376,7 @@ class ZipContentInspector(BaseInspector):
 
     def _inspect_zip_structure(
         self, entries: list[zipfile.ZipInfo]
-    ) -> list[str]:
+    ) -> list[_Threat]:
         """
         Inspect ZIP structure for anomalies.
 
@@ -329,9 +384,9 @@ class ZipContentInspector(BaseInspector):
             entries: All ZIP entries to analyze.
 
         Returns:
-            List of structural threat descriptions.
+            List of structural threats.
         """
-        threats = []
+        threats: list[_Threat] = []
 
         # Check directory depth
         max_depth = 0
@@ -341,8 +396,10 @@ class ZipContentInspector(BaseInspector):
 
         if max_depth > self.config.limits.max_zip_depth:
             threats.append(
-                f"Excessive directory depth: {max_depth}"
-                f" (max: {self.config.limits.max_zip_depth})"
+                _content_threat(
+                    f"Excessive directory depth: {max_depth}"
+                    f" (max: {self.config.limits.max_zip_depth})"
+                )
             )
 
         # Check for suspicious file distribution
@@ -356,8 +413,11 @@ class ZipContentInspector(BaseInspector):
         for ext, count in file_types.items():
             if count > self.config.limits.max_number_files_same_type:
                 threats.append(
-                    f"Excessive number of {ext} files: {count}"
-                    f" (max: {self.config.limits.max_number_files_same_type})"
+                    _content_threat(
+                        f"Excessive number of {ext} files: {count}"
+                        " (max:"
+                        f" {self.config.limits.max_number_files_same_type})"
+                    )
                 )
 
         return threats
@@ -411,8 +471,7 @@ class ZipContentInspector(BaseInspector):
         Returns:
             True if entry is a symlink.
         """
-        # Check if entry has symlink attributes
-        return (entry.external_attr >> 16) & 0o120000 == 0o120000
+        return stat.S_ISLNK(entry.external_attr >> 16)
 
     def _check_suspicious_patterns(self, filename: str) -> list[str]:
         """
@@ -480,7 +539,7 @@ class ZipContentInspector(BaseInspector):
 
     def _inspect_entry_content(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
-    ) -> list[str]:
+    ) -> list[_Threat]:
         """
         Inspect ZIP entry content for malicious signatures.
 
@@ -492,9 +551,9 @@ class ZipContentInspector(BaseInspector):
             zip_file: Parent ZIP archive.
 
         Returns:
-            List of content threat descriptions.
+            List of content threats.
         """
-        threats = []
+        threats: list[_Threat] = []
 
         try:
             # Read first few bytes to check for executable signatures
@@ -508,7 +567,10 @@ class ZipContentInspector(BaseInspector):
                     content_sample, self._exec_signatures
                 ):
                     threats.append(
-                        f"Executable content detected in '{entry.filename}'"
+                        _content_threat(
+                            "Executable content detected in"
+                            f" '{entry.filename}'"
+                        )
                     )
 
                 if (
@@ -519,7 +581,10 @@ class ZipContentInspector(BaseInspector):
                     )
                 ):
                     threats.append(
-                        f"Nested archive detected: '{entry.filename}'"
+                        _Threat(
+                            ErrorCode.ZIP_NESTED_ARCHIVE,
+                            f"Nested archive detected: '{entry.filename}'",
+                        )
                     )
 
                 ext = os.path.splitext(entry.filename)[1].lower()
@@ -534,7 +599,9 @@ class ZipContentInspector(BaseInspector):
                     )
                 ):
                     threats.append(
-                        f"Script content detected in '{entry.filename}'"
+                        _content_threat(
+                            f"Script content detected in '{entry.filename}'"
+                        )
                     )
 
         except Exception as err:
@@ -544,14 +611,16 @@ class ZipContentInspector(BaseInspector):
                 err,
             )
             threats.append(
-                f"Entry content could not be inspected: '{entry.filename}'"
+                _content_threat(
+                    f"Entry content could not be inspected: '{entry.filename}'"
+                )
             )
 
         return threats
 
     def _inspect_gzip_entry(
         self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
-    ) -> list[str]:
+    ) -> list[_Threat]:
         """
         Inspect the decompressed start of a gzip ZIP entry.
 
@@ -567,7 +636,7 @@ class ZipContentInspector(BaseInspector):
             zip_file: Parent ZIP archive.
 
         Returns:
-            List of content threat descriptions.
+            List of content threats.
 
         Raises:
             gzip.BadGzipFile: If the entry is not a valid gzip stream.
@@ -582,13 +651,17 @@ class ZipContentInspector(BaseInspector):
 
         if sample.startswith(_GZIP_MAGIC):
             return [
-                f"Entry content could not be inspected: '{entry.filename}'"
+                _content_threat(
+                    f"Entry content could not be inspected: '{entry.filename}'"
+                )
             ]
 
-        threats = []
+        threats: list[_Threat] = []
         if matches_signature_prefix(sample, self._exec_signatures):
             threats.append(
-                f"Executable content detected in '{entry.filename}'"
+                _content_threat(
+                    f"Executable content detected in '{entry.filename}'"
+                )
             )
 
         name, ext = os.path.splitext(entry.filename)
@@ -598,7 +671,11 @@ class ZipContentInspector(BaseInspector):
             ext.lower() not in self._binary_exts
             and self._contains_script_patterns(sample, entry.filename)
         ):
-            threats.append(f"Script content detected in '{entry.filename}'")
+            threats.append(
+                _content_threat(
+                    f"Script content detected in '{entry.filename}'"
+                )
+            )
 
         return threats
 

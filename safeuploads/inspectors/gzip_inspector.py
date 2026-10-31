@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import zlib
 from typing import TYPE_CHECKING
 
 from ..audit import get_correlation_id, log_extra
@@ -140,7 +141,7 @@ class GzipContentInspector(BaseInspector):
 
         except (ZipBombError, ResourceLimitError):
             raise
-        except gzip.BadGzipFile as err:
+        except (gzip.BadGzipFile, zlib.error) as err:
             logger.error(
                 "Invalid or corrupted gzip file",
                 exc_info=True,

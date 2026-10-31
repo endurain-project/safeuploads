@@ -594,6 +594,7 @@ class CompressionSecurityValidator(BaseValidator):
                                 " - potential zip bomb"
                             ),
                             compression_ratio=0,
+                            error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
                         )
 
                     # Directory entries hold no data; a declared

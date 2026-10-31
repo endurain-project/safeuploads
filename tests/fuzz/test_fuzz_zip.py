@@ -8,6 +8,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from safeuploads.config import FileSecurityConfig
+from safeuploads.exceptions import CompressionSecurityError, ErrorCode
 from safeuploads.file_validator import FileValidator
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
 from safeuploads.validators.compression_validator import (
@@ -80,13 +81,7 @@ class TestFuzzZipInspector:
         config = FileSecurityConfig()
         inspector = ZipContentInspector(config)
 
-        # Non-ZIP bytes are a known bug (see
-        # TestKnownBugs.test_inspector_maps_non_zip_to_validation_error)
-        if accepted(
-            inspector.inspect_zip_content,
-            io.BytesIO(data),
-            known_causes=(zipfile.BadZipFile,),
-        ):
+        if accepted(inspector.inspect_zip_content, io.BytesIO(data)):
             _assert_entries_safe(config, data)
 
 
@@ -158,17 +153,9 @@ class TestFuzzCompressionValidator:
 class TestKnownBugs:
     """Regression tests pinning bugs found by fuzzing."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "ZipContentInspector.inspect_zip_content maps"
-            " zipfile.BadZipFile to a plain FileProcessingError"
-            " (PROCESSING_ERROR) instead of a FileValidationError"
-        ),
-    )
     def test_inspector_maps_non_zip_to_validation_error(self):
-        """Corrupt ZIP data must be rejected as a validation error."""
+        """Corrupt ZIP data is rejected with ZIP_CORRUPT."""
         inspector = ZipContentInspector(FileSecurityConfig())
-        assert not accepted(
-            inspector.inspect_zip_content, io.BytesIO(b"\x00\x00\x00\x00")
-        )
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(b"\x00\x00\x00\x00"))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT

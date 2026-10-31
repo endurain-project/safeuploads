@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import io
 import logging
+import tempfile
 import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -651,7 +652,7 @@ class TestValidateImageFile:
         with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_image_file(file)
 
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_INVALID
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_valid_jpeg_with_stream_at_end_accepted(
@@ -758,7 +759,7 @@ class TestValidateImageFile:
 
         with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_image_file(file)
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_INVALID
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_validate_image_text_content_rejected_by_mime(
@@ -773,7 +774,7 @@ class TestValidateImageFile:
 
         with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_image_file(file)
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_INVALID
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
 
 class TestValidateZipFile:
@@ -869,7 +870,7 @@ class TestValidateZipFile:
 
         with pytest.raises(ZipContentError) as exc_info:
             await validator.validate_zip_file(file)
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
     @pytest.mark.asyncio
     async def test_validate_zip_nested_archive(
@@ -1815,6 +1816,26 @@ class TestEnforceMimeAndWiredErrorCodes:
             await validator._validate_file_size(file, max_file_size=1024)
         assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
+    def test_read_header_keeps_signature_error_code(self):
+        """A too-small upload keeps FILE_SIGNATURE_MISSING."""
+        validator = FileValidator()
+        with tempfile.SpooledTemporaryFile() as temp_file:
+            temp_file.write(b"PK")
+            temp_file.seek(0)
+            with pytest.raises(FileSignatureError) as exc_info:
+                validator._read_header_and_detect(temp_file, "a.zip", "zip")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISSING
+
+    def test_read_header_mismatch_keeps_mismatch_code(self):
+        """A wrong signature still reports FILE_SIGNATURE_MISMATCH."""
+        validator = FileValidator()
+        with tempfile.SpooledTemporaryFile() as temp_file:
+            temp_file.write(b"PK\x03\x04" + b"\x00" * 32)
+            temp_file.seek(0)
+            with pytest.raises(FileSignatureError) as exc_info:
+                validator._read_header_and_detect(temp_file, "a.gz", "gzip")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
+
     def test_signature_too_small_reports_missing_code(self):
         """A too-small header reports FILE_SIGNATURE_MISSING."""
         validator = FileValidator()
@@ -2529,7 +2550,7 @@ class TestNestedArchivesEndToEnd:
         with pytest.raises(ZipContentError) as exc_info:
             await _nested_zip_validator().validate_zip_file(file)
 
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
         assert "inner.zip: Directory traversal attack" in str(exc_info.value)
 
     async def test_inner_ratio_bomb_rejected(self, mock_upload_file):

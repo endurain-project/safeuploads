@@ -48,7 +48,6 @@ def _fail_on_internal_error(err: FileProcessingError) -> None:
 def accepted(
     call: Callable[..., Any],
     *args: Any,
-    known_causes: tuple[type[Exception], ...] = (),
 ) -> bool:
     """
     Run ``call`` and classify its outcome.
@@ -57,17 +56,12 @@ def accepted(
         True when validation passed, False when it was rejected with a
         FileValidationError or ResourceLimitError. Any other outcome,
         including a plain FileProcessingError, fails the test.
-        A plain FileProcessingError wrapping one of ``known_causes``
-        counts as a rejection; use it only for a bug that a strict
-        xfail regression test pins.
     """
     try:
         call(*args)
     except (FileValidationError, ResourceLimitError):
         return False
     except FileProcessingError as err:
-        if isinstance(err.original_error, known_causes):
-            return False
         _fail_on_internal_error(err)
     return True
 

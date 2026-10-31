@@ -790,6 +790,7 @@ class FileValidator:
                 f"File content does not match expected {sig_type} format",
                 filename=filename,
                 expected_type=sig_type,
+                error_code=err.error_code,
             ) from err
         return header, detected_mime
 
@@ -947,6 +948,7 @@ class FileValidator:
                 detected_mime,
                 self.config.ALLOWED_IMAGE_MIMES,
                 filename,
+                error_code=ErrorCode.MIME_TYPE_MISMATCH,
             )
 
             # Validate file signature (raises exceptions on failure)

@@ -246,10 +246,10 @@ general_validator = FileValidator()  # Default config
 
 ### "Import could not be resolved" errors
 
-If you see import errors for `uvicorn`, install the FastAPI extras:
+`uvicorn` is not installed by any safeuploads extra. Install it separately to run the FastAPI example:
 
 ```bash
-pip install safeuploads[fastapi]
+pip install uvicorn
 ```
 
 ### python-magic errors

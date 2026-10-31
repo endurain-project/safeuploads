@@ -90,7 +90,10 @@ that addresses it.
 - [ ] Internal error details from exceptions are **not**
   forwarded to API responses.
 - [ ] `ErrorCode` values used for machine-readable API error
-  responses, not raw exception messages.
+  responses, not raw exception messages. A `ZipContentError`
+  carries the code of the first threat found (for example
+  `ZIP_DIRECTORY_TRAVERSAL`), not always `ZIP_CONTENT_THREAT`,
+  and `threats` lists all messages.
 - [ ] Generic 500 errors for unexpected failures — no stack
   traces in production responses.
 

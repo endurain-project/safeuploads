@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `safeuploads.__version__`; `UploadFileProtocol`, `XmlSecurityError`, `ContentThreatError` and `FitSecurityValidator` are exported from the package root.
 - `XmlSecurityValidator.validate_xml_safety` and `validate` take a keyword-only `filename`; `FitSecurityValidator.validate` takes the same.
 - `find_embedded_signature` takes an optional `start` offset.
+- `FileSignatureValidator`, `MimeTypeValidator` and `FilenameSecurityValidator`, exported from `safeuploads` and `safeuploads.validators`, and `ExtensionSecurityValidator.validate_allowed`. `FileValidator` exposes them as `signature_validator`, `mime_validator` and `filename_validator`; `magic_mime` and `magic_available` are properties that delegate to `mime_validator`. Validation behaviour is unchanged.
+- `SecurityAuditLogger.resource_limit`: resource-limit failures emit a `RESOURCE_LIMIT` audit event instead of `VALIDATION_FAILURE`.
 
 ### Security
 
@@ -40,6 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Windows reserved names `com0`, `lpt0`, `conin$`, `conout$` and `clock$` are rejected, and reserved names are compared case-folded.
 - Blocked extensions added to `DangerousExtensionCategory`: `.vbe`, `.wsc`, `.php7`, `.php8`, `.phar`, `.phps`, `.pht`, `.shtml`, `.shtm` and `.stm`.
 - A correlation ID set by the host (`set_correlation_id`) is reused by validation and restored afterwards, instead of being replaced and cleared.
+- Symlink entries in a ZIP are detected with the exact file-type bits (`stat.S_ISLNK`) instead of a bit mask that other modes also matched.
+- With `allow_nested_archives=True`, identical sibling inner archives are accepted: quine detection compares an archive only with its ancestors. `inspect_nested_archives(seen_hashes=...)` takes the hashes of ancestor archives and does not modify the set. Fan-out stays bounded by `max_total_entries_recursive`, `max_zip_depth` and the analysis timeout.
 - Image MIME detection and temp-file writes that spill to disk run in the worker thread, not on the event loop. Cancelling a validation closes its temp files after any running worker finishes and propagates `CancelledError`.
 
 ### Changed
@@ -56,6 +60,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Breaking:** `FileValidator(config)` raises `FileSecurityConfigurationError` when `validate_instance()` reports any error-severity issue; it only logged them before. New error-severity checks: type checks on every `SecurityLimits` field, positive values for the size, buffer, chunk, memory, scan, timeout, filename/path length and entry-count limits, `max_zip_depth >= 0`, allow-lists for activity and gzip files checked like image and ZIP, and uppercase extension entries. Warnings are still only logged.
 - **Breaking:** ZIP archives with bytes outside their listed entries, such as trailing padding written by `bsdtar` to a pipe, or with non-empty stored entries that use a data descriptor, are rejected with `ZIP_INVALID_STRUCTURE`.
 - **Breaking:** uploads are rejected with `MIME_DETECTION_FAILED` when libmagic is unavailable or fails. `FileValidator` still constructs without libmagic, sets `magic_available=False` and logs an error.
+- **Breaking:** `ZipContentError.error_code` is the code of the first threat found (entry order, then structure): `ZIP_DIRECTORY_TRAVERSAL`, `ZIP_ABSOLUTE_PATH`, `ZIP_SYMLINK_DETECTED`, `ZIP_NESTED_ARCHIVE`, otherwise `ZIP_CONTENT_THREAT`. `threats` still lists all messages, and nested levels keep the inner code.
+- **Breaking:** a corrupt ZIP in `ZipContentInspector.inspect_zip_content` raises `CompressionSecurityError` with `ZIP_CORRUPT` instead of `FileProcessingError` with `PROCESSING_ERROR`. Corrupt gzip deflate data (`zlib.error`) also raises `CompressionSecurityError` with `ZIP_CORRUPT`.
+- **Breaking:** the per-entry analysis timeout of `CompressionSecurityValidator` raises `ZipBombError` with `ZIP_ANALYSIS_TIMEOUT` instead of `ZIP_BOMB_DETECTED`.
+- **Breaking:** image uploads with a disallowed MIME type are rejected with `MIME_TYPE_MISMATCH` instead of `MIME_TYPE_INVALID`, like the other upload types.
+- **Breaking:** ZIP, gzip and activity uploads too small to carry a signature are rejected with `FILE_SIGNATURE_MISSING` instead of `FILE_SIGNATURE_MISMATCH`, as images already were.
+- **Breaking:** the category enums (`DangerousExtensionCategory`, `CompoundExtensionCategory`, `UnicodeAttackCategory`, `SuspiciousFilePattern`, `BinaryFileCategory` and the other enums with set values) hold `frozenset` values. The `FileSecurityConfig` getters return mutable `set` copies.
+- The `Allowed:` extension list in the extension error message is sorted.
+
+### Removed
+
+- **Breaking:** the `ErrorCode` members `FILENAME_TOO_LONG`, `UNICODE_SECURITY`, `FILE_SIZE_UNKNOWN`, `FILE_SIGNATURE_INVALID`, `IO_ERROR` and `MEMORY_ERROR`, which the library never raised.
 
 ## [1.1.3] - 2026-10-22
 

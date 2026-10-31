@@ -20,6 +20,9 @@ safeuploads/
 │   ├── base.py                # BaseValidator interface
 │   ├── unicode_validator.py   # Unicode normalization & checks
 │   ├── extension_validator.py # Extension allow/block rules
+│   ├── filename_validator.py  # Path and length rules for filenames
+│   ├── signature_validator.py # File header signature checks
+│   ├── mime_validator.py      # Content MIME detection and enforcement
 │   ├── windows_validator.py   # Windows reserved name checks
 │   ├── fit_validator.py       # FIT container structure checks
 │   ├── compression_validator.py # ZIP bomb detection
@@ -35,13 +38,16 @@ safeuploads/
 
 | Component | Responsibility |
 |---|---|
-| `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring, audit events, offloads blocking inspection to a worker thread (or a configured `executor`), and delegates to validators/inspectors. |
+| `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring, audit events, offloads blocking inspection to a worker thread (or a configured `executor`), and delegates to validators/inspectors. Exposes them as `filename_validator`, `signature_validator`, `mime_validator` and the other validator attributes; `magic_mime` and `magic_available` are properties that delegate to `mime_validator`. |
 | `FileSecurityConfig` | Centralizes all configuration: allowed MIME types, extensions, blocked extensions, Unicode characters, and Windows reserved names. |
 | `SecurityLimits` | Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps. |
 | `BaseValidator` | Abstract base class; validators inherit and implement `validate()`. |
 | `UnicodeSecurityValidator` | NFC normalization and dangerous character detection (rejects with `UnicodeSecurityError`). |
-| `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. The allowlist check is `FileValidator._validate_file_extension`. |
+| `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. `validate_allowed` checks an extension against the allowlist and the blocked list. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
+| `FilenameSecurityValidator` | Strips path components and dangerous characters from a filename and limits its length to `max_sanitized_name_length`. |
+| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image, ZIP, gzip, activity or FIT). |
+| `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename) and enforces the allowed MIME types. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |
 | `FitSecurityValidator` | Checks the FIT container: headers, header CRC, data size, CRC-16 per section, and that the sections cover the file exactly. |
@@ -373,11 +379,11 @@ default is:
 | `ExtensionSecurityError` | `EXTENSION_BLOCKED` |
 | `WindowsReservedNameError` | `WINDOWS_RESERVED_NAME` |
 | `FileSizeError` | `FILE_TOO_LARGE` |
-| `MimeTypeError` | `MIME_TYPE_INVALID` |
+| `MimeTypeError` | `MIME_TYPE_INVALID` (uploads whose detected MIME is not allowed are reported as `MIME_TYPE_MISMATCH`) |
 | `FileSignatureError` | `FILE_SIGNATURE_MISMATCH` |
 | `CompressionSecurityError` | `ZIP_INVALID_STRUCTURE` |
 | `ZipBombError` | `ZIP_BOMB_DETECTED` |
-| `ZipContentError` | `ZIP_CONTENT_THREAT` |
+| `ZipContentError` | `ZIP_CONTENT_THREAT` (the ZIP inspector passes the code of the first threat found) |
 | `XmlSecurityError` | `XML_MALFORMED` |
 | `ContentThreatError` | `CONTENT_THREAT_DETECTED` |
 | `ResourceLimitError` | `RESOURCE_LIMIT_EXCEEDED` |
@@ -405,11 +411,12 @@ FileValidator.validate_*()  (_run_validation)
   │
   ├── On success: audit.success()   # VALIDATION_SUCCESS
   ├── On failure: audit.failure()   # VALIDATION_FAILURE
+  ├── On resource limit: audit.resource_limit()   # RESOURCE_LIMIT
   │
   └── restore the previous correlation ID
 ```
 
-`start`, `success`, `failure` and `threat` are methods of
+`start`, `success`, `failure`, `threat` and `resource_limit` are methods of
 `SecurityAuditLogger`; each builds an `AuditEvent` and passes it
 to `log_event`. Audit records carry the correlation ID as
 `audit_correlation_id` in `extra`, together with the

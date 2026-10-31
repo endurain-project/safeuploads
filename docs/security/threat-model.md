@@ -124,7 +124,8 @@ uncompressed), exhausting disk and memory.
   uncompressed data is rejected with `ZIP_INVALID_STRUCTURE`, so
   data cannot hide from the size and ratio checks behind a
   directory name.
-- `zip_analysis_timeout` (default 5 s) prevents slow analysis.
+- `zip_analysis_timeout` (default 5 s) prevents slow analysis;
+  exceeding it raises `ZipBombError` with `ZIP_ANALYSIS_TIMEOUT`.
 - All timeout checks use `time.monotonic()` to prevent bypass
   via NTP clock adjustment.
 
@@ -153,12 +154,17 @@ ZIPs that cause infinite recursion during inspection.
 
 **Mitigations:**
 
-- `ZipContentInspector.inspect_nested_archives()` tracks
-  archive SHA-256 hashes; encountering a previously seen hash
-  raises `ZIP_QUINE_DETECTED`.
+- `ZipContentInspector.inspect_nested_archives()` tracks the
+  SHA-256 hashes of an archive's ancestors; an inner archive
+  whose hash matches one of its ancestors raises
+  `ZIP_QUINE_DETECTED`. Identical sibling archives are not a
+  quine and are accepted. The `seen_hashes` argument holds
+  ancestor hashes and is not modified.
 - `max_zip_depth` (default 10) limits nesting level.
 - `max_total_entries_recursive` (default 50,000) limits the
-  cumulative entry count across all nesting levels.
+  cumulative entry count across all nesting levels. Together
+  with `max_zip_depth` and the analysis timeout, it bounds the
+  work for many identical sibling archives.
 - `ZIP_RECURSIVE_STRUCTURE` and `ZIP_COMPLEXITY_ATTACK` error
   codes provide precise feedback.
 
@@ -189,7 +195,7 @@ single-level content inspection.
   same checks as the top level: the entry count, exact layout,
   size and ratio checks of `CompressionSecurityValidator` and
   the entry and structure checks of `ZipContentInspector`, plus
-  the depth, count and hash checks above.
+  the depth, count and ancestor hash checks above.
 - An inner archive that is larger than
   `max_individual_file_size` (`FILE_TOO_LARGE`), cannot be read,
   is corrupt (`ZIP_CORRUPT`) or cannot be inspected is rejected,
@@ -253,7 +259,13 @@ outside the extraction directory (Zip Slip).
 **Mitigations:**
 
 - `ZipContentInspector._inspect_zip_entry()` checks for
-  traversal patterns and absolute paths.
+  traversal patterns and absolute paths. A `ZipContentError`
+  carries the `error_code` of the first threat found, in entry
+  order and then structure checks: `ZIP_DIRECTORY_TRAVERSAL`,
+  `ZIP_ABSOLUTE_PATH`, `ZIP_SYMLINK_DETECTED`,
+  `ZIP_NESTED_ARCHIVE`, otherwise `ZIP_CONTENT_THREAT`. Its
+  `threats` attribute lists every message, and an inner archive
+  keeps the code of its own threat.
 - Null bytes are rejected first, checked on the raw entry name
   (`ZipInfo.orig_filename`), to prevent C-string truncation
   bypasses (CWE-158). Python's `zipfile` truncates `filename`
@@ -305,7 +317,10 @@ arbitrary system files when extracted.
 **Mitigations:**
 
 - Symlink entries are detected and rejected when
-  `allow_symlinks=False` (default).
+  `allow_symlinks=False` (default). An entry is a symlink when
+  the file-type bits of its Unix mode equal `S_IFLNK`
+  (`stat.S_ISLNK`), so other modes that share some of those
+  bits are not mistaken for symlinks.
 
 ---
 
@@ -490,6 +505,8 @@ size, similar to ZIP bombs.
   `SecurityLimits` progressively.
 - Exceeding either limit raises a validation error immediately,
   without reading the rest of the stream.
+- Deflate data that `zlib` cannot decode is rejected with
+  `CompressionSecurityError` (`ZIP_CORRUPT`).
 
 ---
 

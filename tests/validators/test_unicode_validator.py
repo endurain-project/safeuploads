@@ -46,6 +46,7 @@ class TestUnicodeSecurityValidator:
 
         with pytest.raises(UnicodeSecurityError) as exc_info:
             validator.validate_unicode_security(filename)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
         error = exc_info.value
         assert "Dangerous Unicode characters detected" in error.message
@@ -61,6 +62,7 @@ class TestUnicodeSecurityValidator:
 
         with pytest.raises(UnicodeSecurityError) as exc_info:
             validator.validate_unicode_security(filename)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
         error = exc_info.value
         assert error.dangerous_chars[0][1] == 0x202D
@@ -73,6 +75,7 @@ class TestUnicodeSecurityValidator:
 
         with pytest.raises(UnicodeSecurityError) as exc_info:
             validator.validate_unicode_security(filename)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
         error = exc_info.value
         assert error.dangerous_chars[0][1] == 0x200B
@@ -85,6 +88,7 @@ class TestUnicodeSecurityValidator:
 
         with pytest.raises(UnicodeSecurityError) as exc_info:
             validator.validate_unicode_security(filename)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
         error = exc_info.value
         assert len(error.dangerous_chars) == 2
@@ -118,6 +122,7 @@ class TestUnicodeSecurityValidator:
 
         with pytest.raises(UnicodeSecurityError) as exc_info:
             validator.validate_unicode_security(filename)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
         error = exc_info.value
         assert error.dangerous_chars[0][2] == 3  # Position
@@ -129,6 +134,7 @@ class TestUnicodeSecurityValidator:
 
         with pytest.raises(UnicodeSecurityError) as exc_info:
             validator.validate_unicode_security(filename)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
         error = exc_info.value
         assert error.filename == filename
@@ -149,8 +155,12 @@ class TestUnicodeSecurityValidator:
         for char_code in dangerous_chars:
             if char_code in default_config.DANGEROUS_UNICODE_CHARS:
                 filename = f"file{chr(char_code)}.txt"
-                with pytest.raises(UnicodeSecurityError):
+                with pytest.raises(UnicodeSecurityError) as exc_info:
                     validator.validate_unicode_security(filename)
+                assert (
+                    exc_info.value.error_code
+                    == ErrorCode.UNICODE_DANGEROUS_CHARS
+                )
 
     def test_reject_zero_width_joiners(self, default_config):
         """Test rejection of zero-width joiner characters."""
@@ -167,8 +177,12 @@ class TestUnicodeSecurityValidator:
         for char_code in zero_width_chars:
             if char_code in default_config.DANGEROUS_UNICODE_CHARS:
                 filename = f"file{chr(char_code)}.txt"
-                with pytest.raises(UnicodeSecurityError):
+                with pytest.raises(UnicodeSecurityError) as exc_info:
                     validator.validate_unicode_security(filename)
+                assert (
+                    exc_info.value.error_code
+                    == ErrorCode.UNICODE_DANGEROUS_CHARS
+                )
 
     def test_normalization_introduces_dangerous_character(self) -> None:
         """

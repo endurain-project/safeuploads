@@ -503,8 +503,11 @@ class TestValidateAndReport:
             "limits",
             SecurityLimits(max_compression_ratio=5),
         )
-        with pytest.raises(FileSecurityConfigurationError):
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileSecurityConfig.validate_and_report(strict=True)
+        assert [(e.error_type, e.severity) for e in exc_info.value.errors] == [
+            ("too_strict_compression", "warning")
+        ]
 
     def test_non_strict_does_not_raise_on_errors(self, monkeypatch):
         """
@@ -868,8 +871,11 @@ class TestValidateAndReportStrictMode:
             "limits",
             SecurityLimits(max_image_size=-1),
         )
-        with pytest.raises(FileSecurityConfigurationError):
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileSecurityConfig.validate_and_report(strict=True)
+        assert [(e.error_type, e.severity) for e in exc_info.value.errors] == [
+            ("invalid_size_limit", "error")
+        ]
 
 
 class TestCrossDependencyValidationExtra:
@@ -947,8 +953,11 @@ class TestInstanceValidation:
         config = FileSecurityConfig()
         config.limits = SecurityLimits(max_image_size=-1)
 
-        with pytest.raises(FileSecurityConfigurationError):
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
             config.validate_and_report_instance(strict=True)
+        assert [(e.error_type, e.severity) for e in exc_info.value.errors] == [
+            ("invalid_size_limit", "error")
+        ]
 
     def test_validate_and_report_instance_non_strict_logs(self, caplog):
         """Non-strict instance reporting logs without raising."""

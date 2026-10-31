@@ -134,6 +134,9 @@ class TestCompressionSecurityValidator:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(zip_bytes), len(zip_bytes)
             )
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
 
         assert "compression ratio" in str(exc_info.value).lower()
 
@@ -162,6 +165,7 @@ class TestCompressionSecurityValidator:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(zip_bytes), len(zip_bytes)
             )
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
 
         assert "Total uncompressed size too large" in str(exc_info.value)
         assert exc_info.value.uncompressed_size is not None
@@ -453,6 +457,7 @@ class TestCompressionSecurityValidator:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(b"fake zip"), 100
             )
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
 
         assert "memory" in str(exc_info.value).lower()
 
@@ -549,6 +554,7 @@ class TestCompressionSecurityValidator:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(zip_bytes), len(zip_bytes)
             )
+        assert exc_info.value.error_code == ErrorCode.ZIP_TOO_MANY_ENTRIES
 
         error_msg = str(exc_info.value)
         # Should include both actual count and limit
@@ -651,6 +657,7 @@ class TestCompressionSecurityValidator:
                 validator.validate_zip_compression_ratio(
                     io.BytesIO(zip_bytes), len(zip_bytes)
                 )
+            assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
 
             assert "memory" in str(exc_info.value).lower()
             assert "zip bomb" in str(exc_info.value).lower()
@@ -681,6 +688,7 @@ class TestCompressionSecurityValidator:
                 validator.validate_zip_compression_ratio(
                     io.BytesIO(zip_bytes), len(zip_bytes)
                 )
+            assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
             assert "validation failed" in str(exc_info.value).lower()
 
@@ -723,6 +731,9 @@ class TestCompressionSecurityValidator:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(zip_bytes), 100
             )
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
 
         error_msg = str(exc_info.value).lower()
         assert "overall compression ratio" in error_msg

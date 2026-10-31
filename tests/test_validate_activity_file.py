@@ -91,24 +91,27 @@ class TestValidateActivityFileFilenameErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file(None, _GPX_CONTENT)
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
     async def test_validate_activity_file_empty_filename_raises(
         self, mock_upload_file
     ):
         validator = FileValidator()
         f = mock_upload_file("", _GPX_CONTENT)
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
     async def test_validate_activity_file_unicode_filename_raises(
         self, mock_upload_file, dangerous_unicode_filename
     ):
         validator = FileValidator()
         f = mock_upload_file(dangerous_unicode_filename, _GPX_CONTENT)
-        with pytest.raises(UnicodeSecurityError):
+        with pytest.raises(UnicodeSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
 
 class TestValidateActivityFileExtensionErrors:
@@ -119,16 +122,18 @@ class TestValidateActivityFileExtensionErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file("document.pdf", _GPX_CONTENT)
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
 
     async def test_validate_activity_file_exe_extension_raises(
         self, mock_upload_file
     ):
         validator = FileValidator()
         f = mock_upload_file("malware.exe", b"data")
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
 
 class TestValidateActivityFileSizeErrors:
@@ -139,8 +144,9 @@ class TestValidateActivityFileSizeErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file("track.gpx", b"", size=0)
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
     async def test_validate_activity_file_exceeds_max_size_raises(
         self, mock_upload_file
@@ -150,8 +156,9 @@ class TestValidateActivityFileSizeErrors:
         validator = FileValidator(config=config)
         oversized = b"X" * 2048
         f = mock_upload_file("track.gpx", oversized)
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
 
 class TestValidateActivityFileMimeErrors:
@@ -167,8 +174,9 @@ class TestValidateActivityFileMimeErrors:
             lambda content, filename: "application/pdf",
         )
         f = mock_upload_file("track.gpx", _GPX_CONTENT)
-        with pytest.raises(MimeTypeError):
+        with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
 
 class TestValidateActivityFileSignatureErrors:
@@ -179,8 +187,9 @@ class TestValidateActivityFileSignatureErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file("track.gpx", b"This is not XML")
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     async def test_validate_activity_file_invalid_fit_signature(
         self, mock_upload_file
@@ -188,8 +197,9 @@ class TestValidateActivityFileSignatureErrors:
         validator = FileValidator()
         bad_fit = b"\x0e\x10\x00\x00\x00\x00\x00\x00XXXX\x00\x00"
         f = mock_upload_file("activity.fit", bad_fit)
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     async def test_validate_activity_file_fake_fit_rejected(
         self, mock_upload_file
@@ -299,8 +309,9 @@ class TestValidateActivityFileExceptionWrapping:
 
         monkeypatch.setattr(validator, "_stream_to_temp_file", _raise_runtime)
         f = mock_upload_file("track.gpx", _GPX_CONTENT)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
 
 class TestValidateActivityFileAuditEvents:
@@ -357,8 +368,9 @@ class TestValidateActivityFileAuditEvents:
     ):
         validator = FileValidator()
         f = mock_upload_file("", _GPX_CONTENT)
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
         assert get_correlation_id() is None
 
 
@@ -372,5 +384,6 @@ class TestValidateActivityFileResourceLimit:
         config.limits = SecurityLimits(max_validation_time_seconds=1e-9)
         validator = FileValidator(config=config)
         f = mock_upload_file("track.gpx", _GPX_CONTENT)
-        with pytest.raises(ResourceLimitError):
+        with pytest.raises(ResourceLimitError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED

@@ -27,6 +27,7 @@ class TestWindowsSecurityValidator:
 
         with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("CON.txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
         error = exc_info.value
         assert "CON" in error.message
@@ -38,6 +39,7 @@ class TestWindowsSecurityValidator:
 
         with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("PRN.doc")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
         error = exc_info.value
         assert error.reserved_name == "PRN"
@@ -46,15 +48,17 @@ class TestWindowsSecurityValidator:
         """Test rejection of AUX reserved device name."""
         validator = WindowsSecurityValidator(default_config)
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("AUX.log")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_reject_nul_device_name(self, default_config):
         """Test rejection of NUL reserved device name."""
         validator = WindowsSecurityValidator(default_config)
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("NUL.dat")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_reject_com_ports(self, default_config):
         """Test rejection of COM port device names."""
@@ -63,6 +67,7 @@ class TestWindowsSecurityValidator:
         for i in range(1, 10):
             with pytest.raises(WindowsReservedNameError) as exc_info:
                 validator.validate_windows_reserved_names(f"COM{i}.txt")
+            assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
             assert exc_info.value.reserved_name == f"COM{i}"
 
     def test_reject_lpt_ports(self, default_config):
@@ -72,6 +77,7 @@ class TestWindowsSecurityValidator:
         for i in range(1, 10):
             with pytest.raises(WindowsReservedNameError) as exc_info:
                 validator.validate_windows_reserved_names(f"LPT{i}.doc")
+            assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
             assert exc_info.value.reserved_name == f"LPT{i}"
 
     def test_case_insensitive_reserved_names(self, default_config):
@@ -79,51 +85,60 @@ class TestWindowsSecurityValidator:
         validator = WindowsSecurityValidator(default_config)
 
         # Should reject all case variations
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("con.txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("Con.txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("CON.txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_reserved_name_without_extension(self, default_config):
         """Test rejection of reserved names without extensions."""
         validator = WindowsSecurityValidator(default_config)
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("CON")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("PRN")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_reserved_name_with_leading_dot(self, default_config):
         """Test rejection of hidden reserved names."""
         validator = WindowsSecurityValidator(default_config)
 
         # .CON.txt should still be rejected
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names(".CON.txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_reserved_name_with_trailing_dots(self, default_config):
         """Test rejection of reserved names with trailing dots."""
         validator = WindowsSecurityValidator(default_config)
 
         # CON. and CON.. should be rejected
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("CON.")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("CON..")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_reserved_name_with_spaces(self, default_config):
         """Test rejection of reserved names with spaces."""
         validator = WindowsSecurityValidator(default_config)
 
         # " CON " with spaces should be rejected after stripping
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names(" CON .txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_filename_containing_but_not_matching_reserved(
         self, default_config
@@ -145,8 +160,9 @@ class TestWindowsSecurityValidator:
         validator.validate("normal.txt")
 
         # Should raise for reserved name
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate("CON.txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_error_includes_filename(self, default_config):
         """Test that error includes the problematic filename."""
@@ -155,6 +171,7 @@ class TestWindowsSecurityValidator:
 
         with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names(filename)
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
         error = exc_info.value
         assert error.filename == filename
@@ -189,8 +206,9 @@ class TestWindowsSecurityValidator:
         ]
 
         for reserved in reserved_names:
-            with pytest.raises(WindowsReservedNameError):
+            with pytest.raises(WindowsReservedNameError) as exc_info:
                 validator.validate_windows_reserved_names(f"{reserved}.txt")
+            assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_reserved_name_various_extensions(self, default_config):
         """Test reserved names with various file extensions."""
@@ -199,8 +217,9 @@ class TestWindowsSecurityValidator:
         extensions = [".txt", ".doc", ".jpg", ".exe", ".zip", ""]
 
         for ext in extensions:
-            with pytest.raises(WindowsReservedNameError):
+            with pytest.raises(WindowsReservedNameError) as exc_info:
                 validator.validate_windows_reserved_names(f"CON{ext}")
+            assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_compound_extension_with_reserved_name(self, default_config):
         """Test reserved names with compound extensions.
@@ -211,14 +230,17 @@ class TestWindowsSecurityValidator:
         validator = WindowsSecurityValidator(default_config)
 
         # These ARE caught - compound extensions with reserved names
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("CON.tar.gz")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("PRN.backup.zip")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator.validate_windows_reserved_names("AUX.tar.bz2")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
         # These should be allowed - not reserved names
         validator.validate_windows_reserved_names("console.tar.gz")

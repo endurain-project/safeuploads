@@ -16,6 +16,7 @@ from safeuploads.audit import (
 from safeuploads.config import FileSecurityConfig
 from safeuploads.exceptions import (
     CompressionSecurityError,
+    ErrorCode,
     FileSizeError,
     UnicodeSecurityError,
     ZipBombError,
@@ -629,8 +630,9 @@ class TestCorrelationIdPreservedByValidation:
         set_correlation_id("host-err")
         try:
             file = mock_upload_file(filename="photo.jpg", content=b"")
-            with pytest.raises(FileValidationError):
+            with pytest.raises(FileValidationError) as exc_info:
                 await self._validator().validate_image_file(file)
+            assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
             assert get_correlation_id() == "host-err"
         finally:
             reset_correlation_id()

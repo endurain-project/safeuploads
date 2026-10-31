@@ -56,8 +56,9 @@ class TestExtensionSecurityValidator:
         ]
 
         for filename in dangerous_scripts:
-            with pytest.raises(ExtensionSecurityError):
+            with pytest.raises(ExtensionSecurityError) as exc_info:
                 validator.validate_extensions(filename)
+            assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_reject_compound_extension_tar_gz(self, default_config):
         """Test rejection of .tar.gz compound extension."""
@@ -102,29 +103,38 @@ class TestExtensionSecurityValidator:
         validator = ExtensionSecurityValidator(default_config)
 
         # file.txt.exe should be rejected because of .exe
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("document.txt.exe")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_case_insensitive_extension_check(self, default_config):
         """Test that extension checking is case-insensitive."""
         validator = ExtensionSecurityValidator(default_config)
 
         # Should reject .EXE, .Exe, .exe, etc.
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("malware.EXE")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("malware.Exe")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_case_insensitive_compound_extension(self, default_config):
         """Test case-insensitive compound extension checking."""
         validator = ExtensionSecurityValidator(default_config)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("archive.TAR.GZ")
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
+        )
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("archive.Tar.Gz")
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
+        )
 
     def test_validate_method_delegates_correctly(self, default_config):
         """Test that validate() method delegates to validate_extensions()."""
@@ -134,8 +144,9 @@ class TestExtensionSecurityValidator:
         validator.validate("safe.txt")
 
         # Should raise for dangerous extension
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate("dangerous.exe")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_all_parts_checked_for_dangerous_extensions(self, default_config):
         """Test that all extension parts are checked."""
@@ -144,6 +155,7 @@ class TestExtensionSecurityValidator:
         # file.doc.exe - should catch .exe even though .doc is first
         with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("report.doc.exe")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
         error = exc_info.value
         assert ".exe" in error.message or "exe" in error.message.lower()
@@ -155,6 +167,7 @@ class TestExtensionSecurityValidator:
 
         with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions(filename)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
         error = exc_info.value
         assert error.filename == filename
@@ -163,22 +176,25 @@ class TestExtensionSecurityValidator:
         """Test rejection of DLL files."""
         validator = ExtensionSecurityValidator(default_config)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("library.dll")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_reject_msi_extension(self, default_config):
         """Test rejection of MSI installer files."""
         validator = ExtensionSecurityValidator(default_config)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("installer.msi")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_reject_scr_extension(self, default_config):
         """Test rejection of screensaver executable files."""
         validator = ExtensionSecurityValidator(default_config)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions("screensaver.scr")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_no_extension_file_allowed(self, default_config):
         """Test that files without extensions are allowed."""
@@ -196,8 +212,9 @@ class TestExtensionSecurityValidator:
         """Test rejection of hidden files with dangerous extensions."""
         validator = ExtensionSecurityValidator(default_config)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_extensions(".hidden.exe")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_multiple_dots_with_safe_extensions(self, default_config):
         """Test files with multiple dots but safe extensions."""

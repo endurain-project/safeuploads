@@ -55,6 +55,9 @@ class TestGzipContentInspector:
 
         with pytest.raises(ZipBombError) as exc_info:
             inspector.inspect_gzip_content(file_obj, len(compressed))
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
         assert "ratio" in str(exc_info.value).lower()
 
     def test_reject_excessive_uncompressed_size(self):
@@ -75,6 +78,7 @@ class TestGzipContentInspector:
 
         with pytest.raises(ZipBombError) as exc_info:
             inspector.inspect_gzip_content(file_obj, len(compressed))
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
         assert "size" in str(exc_info.value).lower()
 
     def test_reject_corrupted_gzip(self, default_config):
@@ -122,6 +126,7 @@ class TestGzipContentInspector:
         file_obj = io.BytesIO(b"\x1f\x8b")
         with pytest.raises(ZipBombError) as exc_info:
             inspector.inspect_gzip_content(file_obj, 100)
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
         assert "memory" in str(exc_info.value).lower()
 
 
@@ -177,10 +182,11 @@ class TestGzipInspectorEdgeCases:
 
         monkeypatch.setattr(_m.gzip, "open", _failing_open)
 
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             inspector.inspect_gzip_content(
                 io.BytesIO(compressed), len(compressed)
             )
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
     def test_size_exceeded_with_correlation_id(self):
         from safeuploads.audit import (
@@ -204,11 +210,12 @@ class TestGzipInspectorEdgeCases:
 
         set_correlation_id("test-cid")
         try:
-            with pytest.raises(ZipBombError):
+            with pytest.raises(ZipBombError) as exc_info:
                 inspector.inspect_gzip_content(
                     io.BytesIO(compressed),
                     len(compressed),
                 )
+            assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
         finally:
             reset_correlation_id()
 
@@ -240,6 +247,7 @@ class TestGzipInspectorEdgeCases:
                     io.BytesIO(compressed),
                     len(compressed),
                 )
+            assert exc.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
             assert "ratio" in str(exc.value).lower()
         finally:
             reset_correlation_id()

@@ -58,6 +58,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Directory traversal" in str(exc_info.value)
         assert exc_info.value.threats is not None
@@ -73,6 +74,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -86,6 +88,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -99,6 +102,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -112,6 +116,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -125,6 +130,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -138,6 +144,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -171,6 +178,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Symbolic link" in str(exc_info.value)
 
@@ -203,6 +211,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Filename too long" in str(exc_info.value)
 
@@ -220,6 +229,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Path too long" in str(exc_info.value)
 
@@ -233,6 +243,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -246,6 +257,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -259,6 +271,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious path component" in str(exc_info.value)
 
@@ -272,6 +285,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious path component" in str(exc_info.value)
 
@@ -293,6 +307,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(outer_zip.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Nested archive" in str(exc_info.value)
 
@@ -308,6 +323,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Nested archive" in str(exc_info.value)
 
@@ -343,6 +359,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Excessive directory depth" in str(exc_info.value)
 
@@ -358,6 +375,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Excessive number" in str(exc_info.value)
 
@@ -376,6 +394,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Executable content" in str(exc_info.value)
 
@@ -394,6 +413,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Executable content" in str(exc_info.value)
 
@@ -411,6 +431,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Script content" in str(exc_info.value)
 
@@ -428,6 +449,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Script content" in str(exc_info.value)
 
@@ -441,6 +463,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Script content" in str(exc_info.value)
 
@@ -476,8 +499,9 @@ class TestZipContentInspector:
             zf.writestr("large.dat", large_content)
 
         # Should detect executable signature regardless of size
-        with pytest.raises(ZipContentError):
+        with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_handle_corrupted_zip(self, default_config):
         """Test handling of corrupted ZIP file."""
@@ -546,6 +570,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         # Should detect multiple threats
         assert exc_info.value.threats is not None
@@ -575,6 +600,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -589,6 +615,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -601,8 +628,9 @@ class TestZipContentInspector:
             zf.writestr("../evil.txt", b"malicious")
 
         # Should raise ZipContentError, not FileProcessingError
-        with pytest.raises(ZipContentError):
+        with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_empty_zip_allowed(self, default_config):
         """Test that empty ZIP files are allowed."""
@@ -942,6 +970,7 @@ class TestZipInspectorStructureGaps:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
         assert "Excessive number" in str(exc_info.value)
 
     def test_script_in_txt_entry_detected(self):
@@ -960,6 +989,7 @@ class TestZipInspectorStructureGaps:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
         assert "Script content" in str(exc_info.value)
 
     def test_entry_content_read_exception_is_threat(self, monkeypatch):
@@ -2026,6 +2056,9 @@ class TestNestedArchivesCheckedPerLevel:
             compression.validate_zip_compression_ratio(
                 io.BytesIO(data), len(data)
             )
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
         assert str(exc_info.value).startswith("Excessive compression ratio")
 
     @pytest.mark.parametrize(

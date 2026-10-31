@@ -238,6 +238,7 @@ class TestXmlValidatorDefusedxmlBranches:
         data = b'<?xml version="1.0"?><!DOCTYPE g [<!ENTITY a "b">]><g/>'
         with pytest.raises(XmlSecurityError) as exc_info:
             validator.validate(io.BytesIO(data), filename="x.gpx")
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
         assert exc_info.value.filename == "x.gpx"
 
 

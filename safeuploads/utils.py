@@ -61,7 +61,7 @@ def matches_signature_prefix(
 
 
 def find_embedded_signature(
-    content: bytes, signatures: Iterable[bytes]
+    content: bytes, signatures: Iterable[bytes], start: int = 0
 ) -> bytes | None:
     """
     Return the first signature found anywhere in the content.
@@ -72,37 +72,36 @@ def find_embedded_signature(
     Args:
         content: Raw bytes to scan.
         signatures: Candidate byte signatures.
+        start: Offset at which the search begins; bytes before it
+            are skipped without copying the content.
 
     Returns:
         The first matching signature, or None if none present.
     """
     for sig in signatures:
-        if sig in content:
+        if content.find(sig, start) != -1:
             return sig
     return None
 
 
 def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
     """
-    Return the first text pattern present in decoded content.
+    Return the first text pattern present in the content.
 
-    Content is decoded as UTF-8 with errors ignored and lower-
-    cased so binary data degrades gracefully. Any decoding
-    failure is treated as "no match".
+    The content is matched as bytes, lower-cased in ASCII, with
+    no decoding: invalid bytes never join the text around them,
+    and the only copy made is the lower-cased one.
 
     Args:
         content: Raw bytes to scan.
-        patterns: Lower-case substrings to search for.
+        patterns: Lower-case ASCII substrings to search for.
 
     Returns:
         The first matching pattern, or None if none present.
     """
-    try:
-        text = content.decode("utf-8", errors="ignore").lower()
-    except Exception:
-        return None
+    lowered = content.lower()
     for pattern in patterns:
-        if pattern in text:
+        if pattern.encode("ascii") in lowered:
             return pattern
     return None
 

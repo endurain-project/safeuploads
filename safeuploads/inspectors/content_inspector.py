@@ -9,6 +9,7 @@ MIME/signature/extension checks.  Gated behind
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from ..audit import get_correlation_id, log_extra
@@ -22,11 +23,138 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Script patterns checked against decoded text content,
-# sourced from the shared SuspiciousFilePattern enum.
+# Script patterns checked against the lower-cased content,
+# sourced from the shared SuspiciousFilePattern enum. The bare
+# "<%" is left out: this scan covers whole binary samples, where
+# a 2-byte marker occurs by chance. ASP/JSP is detected by the
+# distinctive WEBSHELL_PATTERNS markers instead, added here so
+# they also match in any letter case.
 _SCRIPT_PATTERNS: tuple[str, ...] = tuple(
-    SuspiciousFilePattern.SCRIPT_PATTERNS.value
+    pattern
+    for pattern in SuspiciousFilePattern.SCRIPT_PATTERNS.value
+    if pattern != "<%"
+) + tuple(
+    sig.decode("ascii").lower()
+    for sig in MalwareSignatureCategory.WEBSHELL_PATTERNS.value
 )
+
+# Header structure that must follow an executable magic before it
+# is reported. A bare 2-4 byte magic occurs by chance in random
+# data (images, compressed streams), so each format is verified.
+# Mach-O CPU types (x86, x86-64, ARM, ARM64, ARM64_32, PPC, PPC64)
+# as 4 bytes, and file types 1-12 (MH_OBJECT to MH_FILESET).
+_CPU_BE = rb"[\x00-\x02]\x00\x00[\x07\x0c\x12]"
+_CPU_LE = rb"[\x07\x0c\x12]\x00\x00[\x00-\x02]"
+_FILETYPE_BE = rb"\x00\x00\x00[\x01-\x0c]"
+_FILETYPE_LE = rb"[\x01-\x0c]\x00\x00\x00"
+# Shell Link CLSID {00021401-0000-0000-C000-000000000046} in its
+# on-disk (little-endian fields) byte order.
+_LNK_CLSID = (
+    b"\x01\x14\x02\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46"
+)
+# Java class files carry minor then major version (45 = Java 1.1);
+# universal Mach-O binaries carry a big-endian architecture count
+# below 45 followed by the first architecture's CPU type. The
+# ranges do not overlap.
+_JAVA_VERSION = rb"..\x00[\x2d-\x7f]"
+_FAT_HEADER = rb"\x00\x00\x00[\x01-\x2c]" + _CPU_BE
+# PE: the DOS header is 64 bytes and ends with the little-endian
+# u32 ``e_lfanew``. Only 16-bit offsets are considered; real
+# images use a few hundred bytes. The lookahead keeps scanning
+# in C and leaves overlapping candidates to be found.
+_PE_CANDIDATE = re.compile(
+    re.escape(next(iter(MalwareSignatureCategory.PE_EXECUTABLE.value)))
+    + rb"(?=.{58}..\x00\x00)",
+    re.DOTALL,
+)
+_PE_MAGIC = b"PE\x00\x00"
+_PE_MIN_OFFSET = 4
+
+
+def _build_executable_patterns() -> tuple[tuple[str, re.Pattern[bytes]], ...]:
+    """
+    Build the structural pattern for each executable format.
+
+    Returns:
+        ``(label, compiled pattern)`` pairs, one per format. A
+        pattern matches only a magic followed by a plausible
+        header.
+    """
+    escape = re.escape
+    patterns: list[tuple[str, re.Pattern[bytes]]] = []
+    for magic in MalwareSignatureCategory.ELF_EXECUTABLE.value:
+        patterns.append(
+            (
+                "ELF executable",
+                re.compile(
+                    escape(magic) + rb"[\x01\x02][\x01\x02]\x01", re.DOTALL
+                ),
+            )
+        )
+    for magic in MalwareSignatureCategory.MACHO_EXECUTABLE.value:
+        # Big-endian magics start with 0xfe, little-endian with 0xce
+        # or 0xcf.
+        if magic[0] == 0xFE:
+            tail = _CPU_BE + rb".{4}" + _FILETYPE_BE
+        else:
+            tail = _CPU_LE + rb".{4}" + _FILETYPE_LE
+        patterns.append(
+            ("Mach-O executable", re.compile(escape(magic) + tail, re.DOTALL))
+        )
+    for magic in MalwareSignatureCategory.JAVA_CLASS.value:
+        patterns.append(
+            (
+                "Java class file",
+                re.compile(escape(magic) + _JAVA_VERSION, re.DOTALL),
+            )
+        )
+        patterns.append(
+            (
+                "universal Mach-O executable",
+                re.compile(escape(magic) + _FAT_HEADER, re.DOTALL),
+            )
+        )
+    for magic in MalwareSignatureCategory.WINDOWS_SHORTCUT.value:
+        patterns.append(
+            (
+                "Windows shortcut",
+                re.compile(escape(magic + _LNK_CLSID), re.DOTALL),
+            )
+        )
+    return tuple(patterns)
+
+
+_EXECUTABLE_PATTERNS = _build_executable_patterns()
+_JAVA_CLASS_PATTERNS = tuple(
+    pattern
+    for label, pattern in _EXECUTABLE_PATTERNS
+    if label == "Java class file"
+)
+
+
+def _find_pe(content: bytes) -> bool:
+    """
+    Return whether a structurally valid PE header is present.
+
+    A PE header is an ``MZ`` DOS header whose ``e_lfanew`` field
+    points at the PE signature inside the content.
+
+    Args:
+        content: Raw bytes to inspect.
+
+    Returns:
+        True if a structurally valid PE header is found.
+    """
+    for match in _PE_CANDIDATE.finditer(content):
+        offset = match.start()
+        e_lfanew = int.from_bytes(
+            content[offset + 0x3C : offset + 0x40], "little"
+        )
+        if e_lfanew >= _PE_MIN_OFFSET and content.startswith(
+            _PE_MAGIC, offset + e_lfanew
+        ):
+            return True
+    return False
 
 
 class ContentSecurityInspector(BaseInspector):
@@ -55,23 +183,14 @@ class ContentSecurityInspector(BaseInspector):
         """
         super().__init__(config)
 
-        # Pre-compile signature sets
-        self._executable_sigs: tuple[bytes, ...] = tuple(
-            sig
-            for cat in (
-                MalwareSignatureCategory.PE_EXECUTABLE,
-                MalwareSignatureCategory.ELF_EXECUTABLE,
-                MalwareSignatureCategory.MACHO_EXECUTABLE,
-                MalwareSignatureCategory.JAVA_CLASS,
-                MalwareSignatureCategory.WINDOWS_SHORTCUT,
-            )
-            for sig in cat.value
-        )
         self._webshell_sigs: tuple[bytes, ...] = tuple(
             MalwareSignatureCategory.WEBSHELL_PATTERNS.value
         )
+        # The Java class magic is verified structurally instead.
         self._polyglot_sigs: tuple[bytes, ...] = tuple(
-            MalwareSignatureCategory.POLYGLOT_SIGNATURES.value
+            sig
+            for sig in MalwareSignatureCategory.POLYGLOT_SIGNATURES.value
+            if sig not in MalwareSignatureCategory.JAVA_CLASS.value
         )
 
     def scan_content(
@@ -139,10 +258,28 @@ class ContentSecurityInspector(BaseInspector):
         Returns:
             List of threat descriptions.
         """
-        sig = find_embedded_signature(content, self._executable_sigs)
-        if sig is not None:
-            return [f"Executable signature detected in '{filename}': {sig!r}"]
+        label = self._find_executable(content)
+        if label is not None:
+            return [f"Executable signature detected in '{filename}': {label}"]
         return []
+
+    @staticmethod
+    def _find_executable(content: bytes) -> str | None:
+        """
+        Find an executable header whose structure verifies.
+
+        Args:
+            content: Raw bytes to inspect.
+
+        Returns:
+            Label of the first executable format found, or None.
+        """
+        if _find_pe(content):
+            return "PE executable"
+        for label, pattern in _EXECUTABLE_PATTERNS:
+            if pattern.search(content):
+                return label
+        return None
 
     def _check_script_patterns(
         self, content: bytes, filename: str
@@ -201,9 +338,13 @@ class ContentSecurityInspector(BaseInspector):
 
         # Skip first 8 bytes (longest common header is
         # PNG at 8 bytes) and search rest for secondary
-        # signatures to detect polyglot files
-        tail = content[8:]
-        sig = find_embedded_signature(tail, self._polyglot_sigs)
+        # signatures to detect polyglot files. A Java class
+        # magic counts only with a valid class-file version.
+        sig = find_embedded_signature(content, self._polyglot_sigs, 8)
+        if sig is None and any(
+            pattern.search(content, 8) for pattern in _JAVA_CLASS_PATTERNS
+        ):
+            sig = next(iter(MalwareSignatureCategory.JAVA_CLASS.value))
         if sig is not None:
             return [
                 f"Polyglot file detected"

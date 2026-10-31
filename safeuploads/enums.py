@@ -536,20 +536,31 @@ class MalwareSignatureCategory(Enum):
     """
     Byte-level signatures for embedded malware detection.
 
+    The executable members hold the leading magic of each format.
+    A magic alone is too short to be evidence (random data
+    contains ``MZ`` every few kilobytes), so the content
+    inspector reports a match only when the format's header
+    structure also verifies at that offset.
+
     Attributes:
-        PE_EXECUTABLE: Windows PE/MZ executable headers.
-        ELF_EXECUTABLE: Linux ELF executable headers.
-        MACHO_EXECUTABLE: macOS Mach-O executable headers.
-        JAVA_CLASS: Java class file headers.
-        WINDOWS_SHORTCUT: Windows .lnk shortcut headers.
-        WEBSHELL_PATTERNS: Common web shell script markers.
+        PE_EXECUTABLE: Windows PE ``MZ`` magic; reported only
+            when ``e_lfanew`` points at the PE signature.
+        ELF_EXECUTABLE: Linux ELF magic; reported only with a
+            valid class, byte order and version.
+        MACHO_EXECUTABLE: macOS Mach-O magics; reported only
+            with a known CPU type and file type.
+        JAVA_CLASS: Java class / universal Mach-O magic;
+            reported only with a valid class-file version or
+            fat header.
+        WINDOWS_SHORTCUT: Windows .lnk header size; reported
+            only when followed by the Shell Link CLSID.
+        WEBSHELL_PATTERNS: Distinctive web shell script markers.
         POLYGLOT_SIGNATURES: Multi-format file signatures.
     """
 
     # Windows PE executables
     PE_EXECUTABLE = {
         b"MZ",
-        b"PE\x00\x00",
     }
 
     # Linux ELF executables
@@ -578,7 +589,10 @@ class MalwareSignatureCategory(Enum):
     # Common web shell / script injection markers
     WEBSHELL_PATTERNS = {
         b"<?php",
-        b"<%",
+        b"<%@ page",
+        b"<%@page",
+        b"<%@ language",
+        b"<%@language",
         b"<script",
     }
 

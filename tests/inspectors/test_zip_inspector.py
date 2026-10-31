@@ -428,6 +428,19 @@ class TestZipContentInspector:
 
         assert "Script content" in str(exc_info.value)
 
+    def test_detect_script_content_asp_delimiter(self):
+        """Test a text entry starting with ``<%`` is rejected."""
+        inspector = ZipContentInspector(FileSecurityConfig())
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("readme.txt", b"<% Response.Write(1) %>")
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+
+        assert "Script content" in str(exc_info.value)
+
     def test_skip_content_scan_when_disabled(self):
         """Test that content scanning can be disabled."""
         config = FileSecurityConfig()
@@ -984,21 +997,6 @@ class TestZipInspectorStructureGaps:
         bad_info.orig_filename = "test\x00evil.txt"
         threats = inspector._inspect_zip_entry(bad_info, None)
         assert any("Null byte" in t for t in threats)
-
-    def test_script_pattern_decode_exception_silenced(
-        self,
-    ):
-        config = FileSecurityConfig()
-        inspector = ZipContentInspector(config)
-
-        class _BadBytes:
-            def decode(self, *args, **kwargs):
-                raise RuntimeError("decode failed")
-
-        # Passes a non-bytes object whose .decode() raises;
-        # covers the except Exception branch (lines 488-490)
-        result = inspector._contains_script_patterns(_BadBytes(), "file.txt")
-        assert result is False
 
 
 class TestZipInspectorNestedArchives:

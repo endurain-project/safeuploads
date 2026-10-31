@@ -1075,14 +1075,6 @@ class FileValidator:
             temp_file.seek(0)
             self.zip_inspector.inspect_zip_content(temp_file)
 
-        # Optional content analysis
-        if self.config.limits.enable_content_analysis:
-            temp_file.seek(0)
-            scan_size = self.config.limits.content_scan_max_size
-            sample = temp_file.read(scan_size)
-            temp_file.seek(0)
-            self._raise_on_content_threats(sample, filename, "zip")
-
         logger.debug(
             "ZIP file validation passed: %r (%s, %s bytes)",
             filename,

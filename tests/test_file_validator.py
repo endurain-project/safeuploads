@@ -14,6 +14,7 @@ import pytest
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     CompressionSecurityError,
+    ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
@@ -25,6 +26,7 @@ from safeuploads.exceptions import (
     ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
+    XmlSecurityError,
     ZipBombError,
     ZipContentError,
 )
@@ -1866,8 +1868,10 @@ class TestValidateActivityFile:
             b"<gpx>&xxe;</gpx>"
         )
         file = mock_upload_file(filename="evil.gpx", content=xxe_gpx)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
+        assert exc_info.value.filename == "evil.gpx"
 
     @pytest.mark.asyncio
     async def test_reject_malformed_gpx_xml(self, mock_upload_file):
@@ -1875,8 +1879,10 @@ class TestValidateActivityFile:
         validator = FileValidator()
         bad_xml = b'<?xml version="1.0"?><gpx><unclosed>'
         file = mock_upload_file(filename="bad.gpx", content=bad_xml)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
+        assert exc_info.value.filename == "bad.gpx"
 
     @pytest.mark.asyncio
     async def test_reject_oversized_activity(self, mock_upload_file):
@@ -1992,8 +1998,12 @@ class TestImageContentAnalysisIntegration:
             b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04" + b"\xff\xd9"
         )
         file = mock_upload_file(filename="poly.jpg", content=jpeg)
-        with pytest.raises(FileProcessingError, match="Content analysis"):
+        with pytest.raises(ContentThreatError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+        assert exc_info.value.filename == "poly.jpg"
+        assert exc_info.value.threats
+        assert "Content analysis" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_clean_large_image_passes(self, mock_upload_file):

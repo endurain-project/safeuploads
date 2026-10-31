@@ -9,7 +9,9 @@ from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     ErrorCode,
     FileProcessingError,
+    FileValidationError,
     ResourceLimitError,
+    XmlSecurityError,
 )
 from safeuploads.validators.xml_validator import XmlSecurityValidator
 
@@ -59,9 +61,10 @@ class TestXmlSecurityValidator:
         )
         file_obj = io.BytesIO(xxe_xml)
         with pytest.raises(
-            FileProcessingError, match="forbidden DTD declaration"
-        ):
+            XmlSecurityError, match="forbidden DTD declaration"
+        ) as exc_info:
             validator.validate_xml_safety(file_obj)
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
 
     def test_reject_dtd_declaration(self, default_config):
         """Test rejection of DTD declarations."""
@@ -75,9 +78,10 @@ class TestXmlSecurityValidator:
         )
         file_obj = io.BytesIO(dtd_xml)
         with pytest.raises(
-            FileProcessingError, match="forbidden DTD declaration"
-        ):
+            XmlSecurityError, match="forbidden DTD declaration"
+        ) as exc_info:
             validator.validate_xml_safety(file_obj)
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
 
     def test_reject_billion_laughs(self, default_config):
         """Test rejection of billion laughs attack."""
@@ -93,24 +97,29 @@ class TestXmlSecurityValidator:
         )
         file_obj = io.BytesIO(billion_laughs)
         with pytest.raises(
-            FileProcessingError, match="forbidden DTD declaration"
-        ):
+            XmlSecurityError, match="forbidden DTD declaration"
+        ) as exc_info:
             validator.validate_xml_safety(file_obj)
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
 
     def test_reject_malformed_xml(self, default_config):
         """Test rejection of malformed XML."""
         validator = XmlSecurityValidator(default_config)
         bad_xml = b"<gpx><unclosed>"
         file_obj = io.BytesIO(bad_xml)
-        with pytest.raises(FileProcessingError, match="Malformed"):
-            validator.validate_xml_safety(file_obj)
+        with pytest.raises(XmlSecurityError, match="Malformed") as exc_info:
+            validator.validate_xml_safety(file_obj, filename="bad.gpx")
+        assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
+        assert exc_info.value.filename == "bad.gpx"
+        assert isinstance(exc_info.value, FileValidationError)
 
     def test_reject_non_xml_content(self, default_config):
         """Test rejection of non-XML content."""
         validator = XmlSecurityValidator(default_config)
         file_obj = io.BytesIO(b"This is not XML at all.")
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             validator.validate_xml_safety(file_obj)
+        assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
 
     def test_validate_delegates_to_validate_xml_safety(self, default_config):
         """Test validate() delegates correctly."""
@@ -139,8 +148,9 @@ class TestXmlSecurityValidator:
         """Test empty content is rejected."""
         validator = XmlSecurityValidator(default_config)
         file_obj = io.BytesIO(b"")
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             validator.validate_xml_safety(file_obj)
+        assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
 
 
 def _parser_failing_with(error: Exception) -> type:
@@ -172,8 +182,9 @@ class TestXmlValidatorDefusedxmlBranches:
         monkeypatch.setattr(
             _mod.DefusedET, "DefusedXMLParser", _parser_failing_with(error)
         )
-        with pytest.raises(FileProcessingError, match="entity"):
+        with pytest.raises(XmlSecurityError, match="entity") as exc_info:
             validator.validate_xml_safety(io.BytesIO(b"<root/>"))
+        assert exc_info.value.error_code == ErrorCode.XML_ENTITY_FORBIDDEN
 
     def test_external_ref_forbidden_raises(self, default_config, monkeypatch):
         from defusedxml import ElementTree as DefusedET
@@ -185,8 +196,9 @@ class TestXmlValidatorDefusedxmlBranches:
         monkeypatch.setattr(
             _mod.DefusedET, "DefusedXMLParser", _parser_failing_with(error)
         )
-        with pytest.raises(FileProcessingError, match="external"):
+        with pytest.raises(XmlSecurityError, match="external") as exc_info:
             validator.validate_xml_safety(io.BytesIO(b"<root/>"))
+        assert exc_info.value.error_code == ErrorCode.XML_EXTERNAL_REFERENCE
 
     def test_unexpected_exception_raises(self, default_config, monkeypatch):
         import safeuploads.validators.xml_validator as _mod
@@ -197,8 +209,36 @@ class TestXmlValidatorDefusedxmlBranches:
             "DefusedXMLParser",
             _parser_failing_with(OSError("disk failure")),
         )
-        with pytest.raises(FileProcessingError, match="failed"):
+        with pytest.raises(FileProcessingError, match="failed") as exc_info:
             validator.validate_xml_safety(io.BytesIO(b"<root/>"))
+        assert not isinstance(exc_info.value, FileValidationError)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b'<?xml version="1.0" encoding="bogus"?><a/>',
+            b'<?xml version="1.0" encoding="rot13"?><a/>',
+            b'<?xml version="1.0" encoding="utf-7"?><a/>',
+        ],
+        ids=["unknown", "not-text", "multi-byte"],
+    )
+    def test_bad_encoding_declaration_is_malformed(
+        self, default_config, payload
+    ):
+        """An unusable encoding declaration is attacker input."""
+        validator = XmlSecurityValidator(default_config)
+        with pytest.raises(XmlSecurityError) as exc_info:
+            validator.validate_xml_safety(io.BytesIO(payload))
+        assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
+
+    def test_dtd_error_carries_filename(self, default_config):
+        """The optional filename is attached to the error."""
+        validator = XmlSecurityValidator(default_config)
+        data = b'<?xml version="1.0"?><!DOCTYPE g [<!ENTITY a "b">]><g/>'
+        with pytest.raises(XmlSecurityError) as exc_info:
+            validator.validate(io.BytesIO(data), filename="x.gpx")
+        assert exc_info.value.filename == "x.gpx"
 
 
 def _gpx_of_size(size: int) -> bytes:
@@ -243,8 +283,9 @@ class TestXmlStreamingParse:
         config.limits = SecurityLimits(chunk_size=3)
         validator = XmlSecurityValidator(config)
         data = b'<?xml version="1.0"?><!DOCTYPE g [<!ENTITY a "b">]><g/>'
-        with pytest.raises(FileProcessingError, match="DTD"):
+        with pytest.raises(XmlSecurityError, match="DTD") as exc_info:
             validator.validate_xml_safety(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
 
     def test_parse_within_budget_passes(self, default_config, fake_clock):
         """A parse that stays in budget is accepted."""

@@ -33,6 +33,7 @@ from .audit import (
 )
 from .config import FileSecurityConfig
 from .exceptions import (
+    ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
@@ -804,13 +805,16 @@ class FileValidator:
                 (e.g. "image", "zip").
 
         Raises:
-            FileProcessingError: If the content scan reports one
+            ContentThreatError: If the content scan reports one
                 or more threats.
         """
         threats = self.content_inspector.scan_content(sample, filename, kind)
         if threats:
-            raise FileProcessingError(
-                f"Content analysis threats detected: {'; '.join(threats)}"
+            raise ContentThreatError(
+                f"Content analysis threats detected: {'; '.join(threats)}",
+                filename=filename,
+                threats=threats,
+                error_code=ErrorCode.CONTENT_THREAT_DETECTED,
             )
 
     async def _run_validation(
@@ -897,6 +901,7 @@ class FileValidator:
             MimeTypeError: MIME type is not in allowed image types.
             FileSignatureError: File signature doesn't match expected image
                 format.
+            ContentThreatError: Content analysis found threats.
             FileProcessingError: Unexpected error during validation.
         """
         await self._run_validation(file, "image", self._validate_image_body)
@@ -910,7 +915,7 @@ class FileValidator:
 
         Raises:
             FileValidationError: If an image validation check fails.
-            FileProcessingError: If content analysis finds threats.
+            ContentThreatError: If content analysis finds threats.
         """
         # Validate filename (raises exceptions on failure)
         self._validate_filename(file)
@@ -987,6 +992,7 @@ class FileValidator:
                 format.
             CompressionSecurityError: ZIP compression validation failed
                 (zip bomb detected).
+            ContentThreatError: Content analysis found threats.
             FileProcessingError: Unexpected error during validation.
         """
         await self._run_validation(file, "ZIP", self._validate_zip_body)
@@ -1000,7 +1006,7 @@ class FileValidator:
 
         Raises:
             FileValidationError: If a ZIP validation check fails.
-            FileProcessingError: If content analysis finds threats.
+            ContentThreatError: If content analysis finds threats.
         """
         # Validate filename (raises exceptions on failure)
         self._validate_filename(file)
@@ -1041,7 +1047,7 @@ class FileValidator:
             MimeTypeError: If the MIME type is not allowed.
             FileSignatureError: If the signature mismatches.
             CompressionSecurityError: If a zip bomb is detected.
-            FileProcessingError: If content analysis finds threats.
+            ContentThreatError: If content analysis finds threats.
         """
         # Read header for MIME/signature checks
         _, detected_mime = self._read_header_and_detect(
@@ -1099,7 +1105,8 @@ class FileValidator:
             FileSizeError: File exceeds size limit or empty.
             MimeTypeError: MIME type not allowed.
             FileSignatureError: Signature mismatch.
-            FileProcessingError: XML parsing or other error.
+            XmlSecurityError: The XML is forbidden or malformed.
+            FileProcessingError: Unexpected error during validation.
         """
         await self._run_validation(
             file, "activity", self._validate_activity_body
@@ -1117,7 +1124,7 @@ class FileValidator:
 
         Raises:
             FileValidationError: If an activity check fails.
-            FileProcessingError: If XML parsing fails.
+            XmlSecurityError: If the XML is forbidden or malformed.
         """
         self._validate_filename(file)
         self._validate_file_extension(
@@ -1159,7 +1166,7 @@ class FileValidator:
         Raises:
             MimeTypeError: If the MIME type is not allowed.
             FileSignatureError: If the signature mismatches.
-            FileProcessingError: If XML parsing fails.
+            XmlSecurityError: If the XML is forbidden or malformed.
         """
         _, ext = os.path.splitext(filename.lower())
         is_fit = ext == ".fit"
@@ -1180,7 +1187,9 @@ class FileValidator:
 
         # XXE-safe XML validation for GPX/TCX
         if not is_fit:
-            self.xml_validator.validate_xml_safety(temp_file)
+            self.xml_validator.validate_xml_safety(
+                temp_file, filename=filename
+            )
 
         logger.debug(
             "Activity file validation passed: %r (%s, %s bytes)",

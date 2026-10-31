@@ -13,7 +13,12 @@ from defusedxml.common import (
     ExternalReferenceForbidden,
 )
 
-from ..exceptions import FileProcessingError, ResourceLimitError
+from ..exceptions import (
+    ErrorCode,
+    FileProcessingError,
+    ResourceLimitError,
+    XmlSecurityError,
+)
 from ..utils import check_resource_limits
 from .base import BaseValidator
 
@@ -56,7 +61,9 @@ class XmlSecurityValidator(BaseValidator):
         """
         super().__init__(config)
 
-    def validate_xml_safety(self, file_obj: SeekableFile) -> None:
+    def validate_xml_safety(
+        self, file_obj: SeekableFile, *, filename: str | None = None
+    ) -> None:
         """
         Parse XML with XXE protections and validate structure.
 
@@ -68,10 +75,15 @@ class XmlSecurityValidator(BaseValidator):
 
         Args:
             file_obj: Seekable file containing XML data.
+            filename: Optional sanitized filename for error context.
 
         Raises:
-            FileProcessingError: If the XML is malformed, contains
-                XXE attacks, or fails safety checks.
+            XmlSecurityError: If the XML contains a DTD, entity or
+                external reference (XML_DTD_FORBIDDEN,
+                XML_ENTITY_FORBIDDEN, XML_EXTERNAL_REFERENCE) or is
+                malformed (XML_MALFORMED).
+            FileProcessingError: If reading the file fails
+                unexpectedly.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
         """
@@ -94,22 +106,35 @@ class XmlSecurityValidator(BaseValidator):
             raise
         except DTDForbidden as err:
             logger.warning("XML contains forbidden DTD declaration")
-            raise FileProcessingError(
-                "XML contains forbidden DTD declaration"
+            raise XmlSecurityError(
+                "XML contains forbidden DTD declaration",
+                filename=filename,
+                error_code=ErrorCode.XML_DTD_FORBIDDEN,
             ) from err
         except EntitiesForbidden as err:
             logger.warning("XML contains forbidden entity reference")
-            raise FileProcessingError(
-                "XML contains forbidden external entity"
+            raise XmlSecurityError(
+                "XML contains forbidden external entity",
+                filename=filename,
+                error_code=ErrorCode.XML_ENTITY_FORBIDDEN,
             ) from err
         except ExternalReferenceForbidden as err:
             logger.warning("XML contains forbidden external reference")
-            raise FileProcessingError(
-                "XML contains forbidden external reference"
+            raise XmlSecurityError(
+                "XML contains forbidden external reference",
+                filename=filename,
+                error_code=ErrorCode.XML_EXTERNAL_REFERENCE,
             ) from err
-        except ParseError as err:
+        except (ParseError, LookupError, ValueError) as err:
+            # expat raises ParseError for malformed input; an
+            # unknown or unsupported encoding declaration surfaces
+            # as LookupError or ValueError.
             logger.warning("Malformed XML: %s", err)
-            raise FileProcessingError("Malformed XML content") from err
+            raise XmlSecurityError(
+                "Malformed XML content",
+                filename=filename,
+                error_code=ErrorCode.XML_MALFORMED,
+            ) from err
         except Exception as err:
             logger.warning("XML validation failed: %s", err)
             raise FileProcessingError("XML validation failed") from err
@@ -117,14 +142,20 @@ class XmlSecurityValidator(BaseValidator):
         logger.debug("XML safety validation passed")
         file_obj.seek(0)
 
-    def validate(self, file_obj: SeekableFile) -> None:
+    def validate(
+        self, file_obj: SeekableFile, *, filename: str | None = None
+    ) -> None:
         """
         Validate XML file for security threats.
 
         Args:
             file_obj: Seekable file containing XML data.
+            filename: Optional sanitized filename for error context.
 
         Raises:
-            FileProcessingError: If the XML fails safety checks.
+            XmlSecurityError: If the XML fails safety checks.
+            FileProcessingError: If reading the file fails
+                unexpectedly.
+            ResourceLimitError: If a resource limit is exceeded.
         """
-        return self.validate_xml_safety(file_obj)
+        return self.validate_xml_safety(file_obj, filename=filename)

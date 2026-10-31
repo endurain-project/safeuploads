@@ -7,14 +7,17 @@ import pytest
 from safeuploads.audit import get_correlation_id
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
+    ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
     FileProcessingError,
     FileSignatureError,
     FileSizeError,
+    FileValidationError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
+    XmlSecurityError,
 )
 from safeuploads.file_validator import FileValidator
 
@@ -201,16 +204,19 @@ class TestValidateActivityFileXmlSecurity:
     ):
         validator = FileValidator()
         f = mock_upload_file("track.gpx", _XXE_XML)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
+        assert isinstance(exc_info.value, FileValidationError)
 
     async def test_validate_activity_file_malformed_xml_raises(
         self, mock_upload_file
     ):
         validator = FileValidator()
         f = mock_upload_file("track.gpx", _MALFORMED_XML)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
 
 
 class TestValidateActivityFileExceptionWrapping:

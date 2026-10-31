@@ -4,7 +4,7 @@ import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.enums import MalwareSignatureCategory
-from safeuploads.exceptions import FileProcessingError
+from safeuploads.exceptions import ContentThreatError, ErrorCode
 from safeuploads.inspectors.content_inspector import (
     ContentSecurityInspector,
 )
@@ -152,9 +152,11 @@ class TestContentAnalysisIntegration:
             b"\x00\x00" + b"\x00" * 50 + sig + b"\x00" * 50 + b"\xff\xd9"
         )
         file = mock_upload_file(filename="bad.jpg", content=content)
-        with pytest.raises(FileProcessingError) as exc:
+        with pytest.raises(ContentThreatError) as exc:
             await validator.validate_image_file(file)
         assert "Content analysis" in str(exc.value)
+        assert exc.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+        assert exc.value.filename == "bad.jpg"
 
     @pytest.mark.asyncio
     async def test_clean_zip_passes(self, mock_upload_file, create_zip_file):

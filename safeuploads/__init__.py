@@ -5,6 +5,8 @@ A comprehensive file security system for
 validating uploads and preventing attacks.
 """
 
+from importlib.metadata import version
+
 from .audit import (
     AuditEvent,
     AuditEventType,
@@ -27,6 +29,7 @@ from .enums import (
 from .exceptions import (
     CompressionSecurityError,
     ConfigValidationError,
+    ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
@@ -40,6 +43,7 @@ from .exceptions import (
     ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
+    XmlSecurityError,
     ZipBombError,
     ZipContentError,
 )
@@ -54,7 +58,7 @@ from .inspectors import (
     GzipContentInspector,
     ZipContentInspector,
 )
-from .protocols import SeekableFile
+from .protocols import SeekableFile, UploadFileProtocol
 from .utils import ResourceMonitor
 
 # Specialized validators
@@ -72,13 +76,17 @@ from .validators import (
 # callers can invoke FileSecurityConfig.validate_and_report() or
 # config.validate_instance() for an early check.
 
+__version__ = version("safeuploads")
+
 # Export all public APIs
 __all__ = [
+    "__version__",
     # Core configuration
     "SecurityLimits",
     "FileSecurityConfig",
     # Protocols
     "SeekableFile",
+    "UploadFileProtocol",
     # Exceptions
     "ConfigValidationError",
     "FileSecurityConfigurationError",
@@ -95,6 +103,8 @@ __all__ = [
     "CompressionSecurityError",
     "ZipBombError",
     "ZipContentError",
+    "XmlSecurityError",
+    "ContentThreatError",
     "FileProcessingError",
     "ResourceLimitError",
     # Enums

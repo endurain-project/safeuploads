@@ -507,7 +507,9 @@ paths (e.g., ZIP with many entries, deeply nested structures).
   archive with too many entries is rejected with
   `ZIP_TOO_MANY_ENTRIES` at bounded cost, even if its end record
   under-reports the count. Malformed directories are left to
-  `zipfile` (`ZIP_CORRUPT`). The parsed count is checked again
+  `zipfile` (`ZIP_CORRUPT`), including names flagged as UTF-8
+  that are not, extract versions above 6.3 and ZIP features
+  `zipfile` does not support. The parsed count is checked again
   after parsing.
 
 ### Gzip Decompression Bombs

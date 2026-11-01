@@ -28,6 +28,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Errors ``zipfile`` raises for an archive it cannot parse or read:
+# BadZipFile for a malformed structure, UnicodeDecodeError for a
+# UTF-8-flagged name (or Unicode Path field) that is not UTF-8, and
+# NotImplementedError for an extract version above 63, an unsupported
+# compression method, or compressed patched data / strong encryption
+ZIP_PARSE_ERRORS = (
+    zipfile.BadZipFile,
+    UnicodeDecodeError,
+    NotImplementedError,
+)
+
 # ZIP record layouts and limits, as zipfile reads them
 _EOCD_STRUCT = "<4s4H2LH"
 _EOCD_SIGNATURE = b"PK\x05\x06"
@@ -938,7 +949,7 @@ class CompressionSecurityValidator(BaseValidator):
                     overall_compression_ratio,
                 )
 
-        except zipfile.BadZipFile as err:
+        except ZIP_PARSE_ERRORS as err:
             logger.error("Invalid or corrupted ZIP file", exc_info=True)
             raise CompressionSecurityError(
                 message="Invalid or corrupted ZIP file",
@@ -1046,9 +1057,10 @@ class CompressionSecurityValidator(BaseValidator):
         validate the CRC and decompression, so an archive whose
         real content does not match its declared sizes raises
         ``zipfile.BadZipFile`` (surfaced by the caller as a
-        corrupt archive). Reads are bounded by the already-
-        validated declared sizes, and resource limits are checked
-        after every chunk.
+        corrupt archive), and an entry ``zipfile`` cannot read
+        raises one of ``ZIP_PARSE_ERRORS`` the same way. Reads are
+        bounded by the already-validated declared sizes, and
+        resource limits are checked after every chunk.
 
         Args:
             zip_file: Open ZIP archive to verify.

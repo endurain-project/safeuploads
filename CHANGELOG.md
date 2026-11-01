@@ -79,6 +79,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Breaking:** a config with `enable_content_analysis=True` and a `content_scan_max_size` smaller than `max_image_size` or `max_activity_file_size` makes `FileValidator(config)` raise `FileSecurityConfigurationError`. The defaults are unaffected.
 - **Breaking:** ZIP entries whose data descriptor uses the other size width than their local header selects are rejected with `ZIP_INVALID_STRUCTURE`.
 - **Breaking:** the polyglot threat message reads `found in content` instead of `found after header`.
+- **Breaking:** ZIP archives `zipfile` cannot parse because a UTF-8-flagged name or Unicode Path field is not UTF-8, or the extract version is above 6.3, are rejected with `ZIP_CORRUPT` instead of `PROCESSING_ERROR`; inner archives with such names give `ZIP_CORRUPT` instead of `ZIP_CONTENT_THREAT`. With `verify_zip_decompression=True`, entries with an unsupported compression method, patched data or strong encryption also give `ZIP_CORRUPT`.
 - **Breaking:** the category enums (`DangerousExtensionCategory`, `CompoundExtensionCategory`, `UnicodeAttackCategory`, `SuspiciousFilePattern`, `BinaryFileCategory` and the other enums with set values) hold `frozenset` values. The `FileSecurityConfig` getters return mutable `set` copies.
 - The `Allowed:` extension list in the extension error message is sorted.
 

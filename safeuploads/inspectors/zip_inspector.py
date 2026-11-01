@@ -31,7 +31,10 @@ from ..utils import (
     iter_gzip_chunks,
     matches_signature_prefix,
 )
-from ..validators.compression_validator import CompressionSecurityValidator
+from ..validators.compression_validator import (
+    ZIP_PARSE_ERRORS,
+    CompressionSecurityValidator,
+)
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -144,7 +147,8 @@ class ZipContentInspector(BaseInspector):
                 fails any check. Its ``error_code`` is that of the
                 first threat found.
             CompressionSecurityError: With ``ZIP_CORRUPT`` if the
-                ZIP structure is invalid.
+                ZIP structure is invalid or ``zipfile`` cannot parse
+                it (see ``ZIP_PARSE_ERRORS``).
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
             FileProcessingError: If an unexpected error occurs during
@@ -160,7 +164,7 @@ class ZipContentInspector(BaseInspector):
         except (ZipBombError, ZipContentError, ResourceLimitError):
             # Re-raise our own exceptions
             raise
-        except zipfile.BadZipFile as err:
+        except ZIP_PARSE_ERRORS as err:
             logger.error(
                 "Invalid or corrupted ZIP file structure", exc_info=True
             )
@@ -199,6 +203,9 @@ class ZipContentInspector(BaseInspector):
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
             zipfile.BadZipFile: If the archive cannot be parsed.
+            UnicodeDecodeError: If an entry name is not valid UTF-8.
+            NotImplementedError: If the archive needs a ZIP feature
+                ``zipfile`` does not support.
         """
         file_obj.seek(0)
         threats_found: list[_Threat] = []
@@ -847,7 +854,7 @@ class ZipContentInspector(BaseInspector):
 
         except (ZipBombError, ZipContentError, ResourceLimitError):
             raise
-        except zipfile.BadZipFile as err:
+        except ZIP_PARSE_ERRORS as err:
             logger.warning("Corrupt %s at depth %d", location, depth)
             raise ZipContentError(
                 message=f"Invalid or corrupted {location}",

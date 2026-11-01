@@ -2406,3 +2406,72 @@ class TestZipLayout:
         )
 
         await validator.validate_zip_file(upload)
+
+
+def _unparsable_zip(kind: str) -> bytes:
+    """
+    Build a one-entry archive that ``zipfile`` cannot parse or read.
+
+    Args:
+        kind: ``"utf8_name"`` for invalid UTF-8 under the UTF-8
+            flag, ``"version"`` for an extract version of 64, or
+            ``"method"`` for an unsupported compression method.
+
+    Returns:
+        Raw archive bytes.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("bad_.txt", b"hello")
+    data = bytearray(buf.getvalue())
+    local = data.find(b"PK\x03\x04")
+    central = data.find(b"PK\x01\x02")
+    if kind == "utf8_name":
+        struct.pack_into("<H", data, local + 6, 0x800)
+        struct.pack_into("<H", data, central + 8, 0x800)
+        return bytes(data).replace(b"bad_.txt", b"bad\xff.txt")
+    if kind == "version":
+        struct.pack_into("<H", data, central + 6, 64)
+    else:
+        struct.pack_into("<H", data, local + 8, 99)
+        struct.pack_into("<H", data, central + 10, 99)
+    return bytes(data)
+
+
+class TestUnparsableArchivesAreCorrupt:
+    """zipfile errors other than BadZipFile map to ZIP_CORRUPT."""
+
+    @pytest.mark.parametrize(
+        ("kind", "verify"),
+        [
+            ("utf8_name", False),
+            ("version", False),
+            ("method", True),
+        ],
+    )
+    def test_rejected_as_corrupt(self, kind, verify):
+        validator = _limits_validator(verify_zip_decompression=verify)
+        data = _unparsable_zip(kind)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert type(exc_info.value) is CompressionSecurityError
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+    @pytest.mark.parametrize("version", [20, 63])
+    def test_valid_utf8_name_and_version_accepted(self, version):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("café.txt", b"hello")
+        data = bytearray(buf.getvalue())
+        central = data.find(b"PK\x01\x02")
+        assert struct.unpack_from("<H", data, central + 8)[0] & 0x800
+        struct.pack_into("<H", data, central + 6, version)
+        validator = _limits_validator(verify_zip_decompression=True)
+
+        validator.validate_zip_compression_ratio(
+            io.BytesIO(bytes(data)), len(data)
+        )

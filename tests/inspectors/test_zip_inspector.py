@@ -2659,3 +2659,41 @@ class TestIsSymlink:
     def test_other_types_not_flagged(self, default_config, mode):
         inspector = ZipContentInspector(default_config)
         assert not inspector._is_symlink(_entry_with_mode(mode))
+
+
+def _invalid_utf8_name_zip() -> bytes:
+    """Build an archive whose UTF-8-flagged name is not UTF-8."""
+    data = _patch_headers(
+        _build_zip({"bad_.txt": b"hello"}),
+        (6, b"\x00\x08"),
+        (8, b"\x00\x08"),
+    )
+    return data.replace(b"bad_.txt", b"bad\xff.txt")
+
+
+class TestUnparsableArchivesAreCorrupt:
+    """zipfile errors other than BadZipFile map to ZIP_CORRUPT."""
+
+    def test_invalid_utf8_name_is_corrupt(self, default_config):
+        inspector = ZipContentInspector(default_config)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(_invalid_utf8_name_zip()))
+
+        assert type(exc_info.value) is CompressionSecurityError
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+    def test_nested_invalid_utf8_name_is_corrupt(self):
+        outer = _build_zip({"inner.zip": _invalid_utf8_name_zip()})
+
+        _assert_nested_rejected(
+            _nested_inspector(),
+            outer,
+            ErrorCode.ZIP_CORRUPT,
+            "Invalid or corrupted",
+        )
+
+    def test_nested_valid_utf8_name_accepted(self):
+        outer = _build_zip({"inner.zip": _build_zip({"café.txt": b"hello"})})
+
+        _nested_inspector().inspect_zip_content(io.BytesIO(outer))

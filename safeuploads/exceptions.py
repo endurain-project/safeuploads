@@ -104,8 +104,6 @@ class ErrorCode(StrEnum):
 
     # XML security errors
     XML_DTD_FORBIDDEN = "XML_DTD_FORBIDDEN"
-    XML_ENTITY_FORBIDDEN = "XML_ENTITY_FORBIDDEN"
-    XML_EXTERNAL_REFERENCE = "XML_EXTERNAL_REFERENCE"
     XML_MALFORMED = "XML_MALFORMED"
 
     # Content analysis errors

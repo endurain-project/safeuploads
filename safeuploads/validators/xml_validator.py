@@ -7,11 +7,7 @@ from typing import TYPE_CHECKING
 from xml.etree.ElementTree import ParseError
 
 from defusedxml import ElementTree as DefusedET
-from defusedxml.common import (
-    DTDForbidden,
-    EntitiesForbidden,
-    ExternalReferenceForbidden,
-)
+from defusedxml.common import DTDForbidden
 
 from ..exceptions import (
     ErrorCode,
@@ -78,10 +74,10 @@ class XmlSecurityValidator(BaseValidator):
             filename: Optional sanitized filename for error context.
 
         Raises:
-            XmlSecurityError: If the XML contains a DTD, entity or
-                external reference (XML_DTD_FORBIDDEN,
-                XML_ENTITY_FORBIDDEN, XML_EXTERNAL_REFERENCE) or is
-                malformed (XML_MALFORMED).
+            XmlSecurityError: If the XML contains a DTD, which is
+                the only place entities and external references can
+                be declared (XML_DTD_FORBIDDEN), or is malformed
+                (XML_MALFORMED).
             FileProcessingError: If reading the file fails
                 unexpectedly.
             ResourceLimitError: If the active resource monitor's
@@ -110,20 +106,6 @@ class XmlSecurityValidator(BaseValidator):
                 "XML contains forbidden DTD declaration",
                 filename=filename,
                 error_code=ErrorCode.XML_DTD_FORBIDDEN,
-            ) from err
-        except EntitiesForbidden as err:
-            logger.warning("XML contains forbidden entity reference")
-            raise XmlSecurityError(
-                "XML contains forbidden external entity",
-                filename=filename,
-                error_code=ErrorCode.XML_ENTITY_FORBIDDEN,
-            ) from err
-        except ExternalReferenceForbidden as err:
-            logger.warning("XML contains forbidden external reference")
-            raise XmlSecurityError(
-                "XML contains forbidden external reference",
-                filename=filename,
-                error_code=ErrorCode.XML_EXTERNAL_REFERENCE,
             ) from err
         except (ParseError, LookupError, ValueError) as err:
             # expat raises ParseError for malformed input; an

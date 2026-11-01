@@ -92,6 +92,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Removed
 
 - **Breaking:** the `ErrorCode` members `FILENAME_TOO_LONG`, `UNICODE_SECURITY`, `FILE_SIZE_UNKNOWN`, `FILE_SIGNATURE_INVALID`, `IO_ERROR` and `MEMORY_ERROR`, which the library never raised.
+- **Breaking:** the `ErrorCode` members `XML_ENTITY_FORBIDDEN` and `XML_EXTERNAL_REFERENCE`. Entities and external references can only be declared in a DTD, and every DTD is rejected first with `XML_DTD_FORBIDDEN`, so they were never raised.
+- **Breaking:** the unused `strict` parameter of `FileSecurityConfig.validate_configuration` and `validate_instance`. `validate_and_report` and `validate_and_report_instance` keep theirs.
 
 ## [1.1.3] - 2026-10-22
 

@@ -170,36 +170,6 @@ def _parser_failing_with(error: Exception) -> type:
 
 
 class TestXmlValidatorDefusedxmlBranches:
-    def test_entities_forbidden_raises(self, default_config, monkeypatch):
-        from defusedxml import ElementTree as DefusedET
-
-        import safeuploads.validators.xml_validator as _mod
-
-        validator = XmlSecurityValidator(default_config)
-        error = DefusedET.EntitiesForbidden(
-            "entity", None, None, None, None, None
-        )
-        monkeypatch.setattr(
-            _mod.DefusedET, "DefusedXMLParser", _parser_failing_with(error)
-        )
-        with pytest.raises(XmlSecurityError, match="entity") as exc_info:
-            validator.validate_xml_safety(io.BytesIO(b"<root/>"))
-        assert exc_info.value.error_code == ErrorCode.XML_ENTITY_FORBIDDEN
-
-    def test_external_ref_forbidden_raises(self, default_config, monkeypatch):
-        from defusedxml import ElementTree as DefusedET
-
-        import safeuploads.validators.xml_validator as _mod
-
-        validator = XmlSecurityValidator(default_config)
-        error = DefusedET.ExternalReferenceForbidden("ref", None, None, None)
-        monkeypatch.setattr(
-            _mod.DefusedET, "DefusedXMLParser", _parser_failing_with(error)
-        )
-        with pytest.raises(XmlSecurityError, match="external") as exc_info:
-            validator.validate_xml_safety(io.BytesIO(b"<root/>"))
-        assert exc_info.value.error_code == ErrorCode.XML_EXTERNAL_REFERENCE
-
     def test_unexpected_exception_raises(self, default_config, monkeypatch):
         import safeuploads.validators.xml_validator as _mod
 

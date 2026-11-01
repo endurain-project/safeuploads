@@ -422,13 +422,12 @@ to server-side file reads or SSRF.
 - `XmlSecurityValidator` parses with `defusedxml`'s
   `DefusedXMLParser` and `forbid_dtd=True`, blocking all DTD declarations, external
   entities, and entity expansion attacks (billion laughs).
-- `DTDForbidden`, `EntitiesForbidden`,
-  `ExternalReferenceForbidden` and malformed input (`ParseError`,
-  or an unknown encoding declaration) are caught and re-raised
-  as `XmlSecurityError`, a `FileValidationError`, with
-  `XML_DTD_FORBIDDEN`, `XML_ENTITY_FORBIDDEN`,
-  `XML_EXTERNAL_REFERENCE` or `XML_MALFORMED`. Only unexpected
-  internal failures raise `FileProcessingError`.
+- Entities and external references can only be declared in a
+  DTD, so any DOCTYPE raises `XmlSecurityError`, a
+  `FileValidationError`, with `XML_DTD_FORBIDDEN`. Malformed
+  input (`ParseError`, an undeclared entity or an unknown
+  encoding declaration) raises it with `XML_MALFORMED`. Only
+  unexpected internal failures raise `FileProcessingError`.
   `ResourceLimitError` is re-raised unchanged.
 - The document is fed to the parser in `chunk_size` chunks with
   a target that builds no element tree, so memory does not grow

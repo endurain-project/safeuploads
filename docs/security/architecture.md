@@ -428,6 +428,7 @@ it, enabling request-level tracing across those sub-components.
 
 `log_event` escapes control, format, surrogate, private-use,
 unassigned and line or paragraph separator characters in the
-filename, result and details fields with `repr()`-style escapes,
-and caps each field at 1,024 characters, marking a cut with
-`...[truncated]`.
+correlation ID, filename, result, details and source IP fields
+with `repr()`-style escapes, and caps each field at 1,024
+characters, marking a cut with `...[truncated]`. `log_extra()`
+adds the escaped correlation ID.

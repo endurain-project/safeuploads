@@ -89,12 +89,12 @@ def log_extra(
         extra: Optional existing extra dict to merge into.
 
     Returns:
-        Dict with ``correlation_id`` key added.
+        Dict with the escaped ``correlation_id`` key added.
     """
     merged: dict[str, Any] = dict(extra) if extra else {}
     cid = correlation_id_var.get()
     if cid is not None:
-        merged["correlation_id"] = cid
+        merged["correlation_id"] = _sanitize_field(cid)
     return merged
 
 
@@ -173,7 +173,8 @@ def _sanitize_field(value: str) -> str:
     ``_TRUNCATION_SUFFIX`` when it was cut.
 
     Args:
-        value: Raw filename, result or details text.
+        value: Raw filename, result, details, correlation ID or
+            source IP text.
 
     Returns:
         The escaped, length-bounded text.
@@ -219,24 +220,29 @@ class SecurityAuditLogger:
         """
         Emit an audit event as a structured log record.
 
+        The correlation ID, filename, result, details and source
+        IP are escaped and length-bounded before being logged.
+
         Args:
             event: The audit event to record.
         """
         if not self.enabled:
             return
 
+        correlation_id = _sanitize_field(event.correlation_id)
         filename = _sanitize_field(event.filename)
         result = _sanitize_field(event.result)
         details = _sanitize_field(event.details)
+        source_ip = _sanitize_field(event.source_ip or "")
 
         extra = {
             "audit_event_type": event.event_type.value,
-            "audit_correlation_id": event.correlation_id,
+            "audit_correlation_id": correlation_id,
             "audit_filename": filename,
             "audit_result": result,
             "audit_details": details,
             "audit_duration_ms": event.duration_ms,
-            "audit_source_ip": event.source_ip or "",
+            "audit_source_ip": source_ip,
         }
 
         level = logging.INFO
@@ -250,7 +256,7 @@ class SecurityAuditLogger:
         _audit_logger.log(
             level,
             "[%s] %s file=%s result=%s",
-            event.correlation_id[:12],
+            correlation_id[:12],
             event.event_type.value,
             filename,
             result,

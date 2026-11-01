@@ -552,6 +552,10 @@ threat detections) go unlogged, preventing incident response.
   1,024 characters, marking a cut with `...[truncated]`. A
   newline in a filename therefore cannot forge a second log
   record. Other log messages that print a filename use `%r`.
+- The correlation ID and source IP can come from the host's
+  request, so audit records escape and cap them the same way,
+  and `log_extra()` adds the escaped correlation ID to other
+  records. The host still reads back the ID it set.
 - Audit logging is off by default (`enable_audit_logging=
   False`) to avoid noise in development, enabled in production.
 

@@ -708,3 +708,94 @@ class TestCorrelationIdPreservedByValidation:
         results = await asyncio.gather(_run("a"), _run("b"), _run(None))
         assert results == ["a", "b", None]
         assert get_correlation_id() is None
+
+
+_FORGED_CID = "abc\nsafeuploads.audit: [forged] validation_success‮"
+_ESCAPED_CID = "abc\\nsafeuploads.audit: [forged] validation_success\\u202e"
+
+
+def _log_cid(caplog, correlation_id, **fields) -> logging.LogRecord:
+    """
+    Emit one audit event with a given ID and return its record.
+
+    Args:
+        caplog: pytest log capture fixture.
+        correlation_id: Correlation ID of the event.
+        **fields: Other ``AuditEvent`` fields to set.
+
+    Returns:
+        The only record captured on ``safeuploads.audit``.
+    """
+    audit = SecurityAuditLogger(enabled=True)
+    event = AuditEvent(
+        event_type=AuditEventType.VALIDATION_FAILURE,
+        correlation_id=correlation_id,
+        **fields,
+    )
+    with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+        audit.log_event(event)
+    assert len(caplog.records) == 1
+    return caplog.records[0]
+
+
+class TestAuditCorrelationIdAndSourceIpInjection:
+    """Host-supplied correlation IDs and IPs cannot forge records."""
+
+    def test_normal_correlation_id_unchanged(self, caplog):
+        """A hex ID appears as-is in the message and extra."""
+        cid = "0123456789abcdef0123456789abcdef"
+        record = _log_cid(caplog, cid)
+        assert record.audit_correlation_id == cid
+        assert record.getMessage().startswith(f"[{cid[:12]}] ")
+
+    def test_malicious_correlation_id_escaped(self, caplog):
+        """Newline and bidi override are escaped everywhere."""
+        record = _log_cid(caplog, _FORGED_CID)
+        assert record.audit_correlation_id == _ESCAPED_CID
+        message = record.getMessage()
+        assert "\n" not in message
+        assert "‮" not in message
+        assert message.startswith("[abc\\nsafeupl]")
+
+    def test_malicious_source_ip_escaped(self, caplog):
+        """A newline in the source IP is escaped."""
+        record = _log_cid(caplog, "cid", source_ip="1.2.3.4\nforged")
+        assert record.audit_source_ip == "1.2.3.4\\nforged"
+
+    def test_normal_source_ip_unchanged(self, caplog):
+        """An ordinary IP is kept."""
+        record = _log_cid(caplog, "cid", source_ip="203.0.113.7")
+        assert record.audit_source_ip == "203.0.113.7"
+
+    def test_missing_source_ip_is_empty(self, caplog):
+        """A None source IP becomes an empty string."""
+        record = _log_cid(caplog, "cid", source_ip=None)
+        assert record.audit_source_ip == ""
+
+    def test_log_extra_escapes_malicious_id(self):
+        """log_extra puts the escaped ID in the extra dict."""
+        from safeuploads.audit import log_extra
+
+        set_correlation_id(_FORGED_CID)
+        try:
+            assert log_extra()["correlation_id"] == _ESCAPED_CID
+        finally:
+            reset_correlation_id()
+
+    def test_log_extra_normal_id_unchanged(self):
+        """log_extra keeps an ordinary ID."""
+        from safeuploads.audit import log_extra
+
+        set_correlation_id("req-123")
+        try:
+            assert log_extra()["correlation_id"] == "req-123"
+        finally:
+            reset_correlation_id()
+
+    def test_get_correlation_id_returns_raw_value(self):
+        """The host gets back exactly the ID it set."""
+        set_correlation_id(_FORGED_CID)
+        try:
+            assert get_correlation_id() == _FORGED_CID
+        finally:
+            reset_correlation_id()

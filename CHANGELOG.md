@@ -49,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - For entries with a data descriptor (flag bit 3), the local header's CRC-32 and sizes must each be zero or equal to the central directory's, rejected with `ZIP_INVALID_STRUCTURE` otherwise. A streaming extractor ended such an entry at the local size and read a hidden entry from its data.
 - Gzip data is decompressed with `zlib` member by member, reading and producing at most `chunk_size` bytes per step and checking the active `ResourceMonitor` on each step, for gzip uploads and for the 512-byte sample of gzip ZIP entries. A stream of empty members or a long header field ran inside one `gzip` read call, beyond `max_validation_time_seconds`.
 - `FileValidator(config)` validates the instance's own MIME, extension, reserved-name and dangerous-Unicode sets, which the validators use; an instance override such as an empty `BLOCKED_EXTENSIONS` was never checked.
+- `SecurityAuditLogger` escapes and caps the correlation ID and `source_ip` like the filename, in the message and in `extra`, and `log_extra()` adds the escaped correlation ID. A host ID taken from a request header could forge audit lines with a newline. `get_correlation_id()` still returns the ID the host set.
 
 ### Changed
 

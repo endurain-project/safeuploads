@@ -1018,6 +1018,43 @@ class TestZipInspectorStructureGaps:
         assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
         assert "Entry content could not be inspected" in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("a\nFORGED.txt", "'a\\nFORGED.txt'"),
+            ("a.txt", "'a.txt'"),
+        ],
+    )
+    def test_content_warning_escapes_entry_name(
+        self, monkeypatch, caplog, name, expected
+    ):
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(scan_zip_content=True)
+        inspector = ZipContentInspector(config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(name, b"plain text")
+        zip_data = zip_buffer.getvalue()
+
+        def _mock_open(self, entry, mode="r", pwd=None, **kw):
+            raise RuntimeError("Cannot open entry")
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", _mock_open)
+        caplog.set_level("WARNING", logger=zip_inspector.__name__)
+        with pytest.raises(ZipContentError):
+            inspector.inspect_zip_content(io.BytesIO(zip_data))
+
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == zip_inspector.__name__
+            and r.getMessage().startswith("Could not inspect content of")
+        ]
+        assert len(messages) == 1
+        assert "\n" not in messages[0]
+        assert f"Could not inspect content of {expected}: " in messages[0]
+
     def test_null_byte_in_entry_filename_detected(
         self,
     ):
@@ -1244,6 +1281,55 @@ class TestZipInspectorNestedArchives:
         assert "Nested entry could not be read: 'inner.zip'" in str(
             exc_info.value
         )
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("a\nFORGED.zip", "'a\\nFORGED.zip'"),
+            ("a.zip", "'a.zip'"),
+        ],
+    )
+    def test_nested_read_warning_escapes_entry_name(
+        self, monkeypatch, caplog, name, expected
+    ):
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=5,
+            max_total_entries_recursive=50000,
+        )
+        inspector = ZipContentInspector(config)
+
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("data.txt", b"x")
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr(name, inner.getvalue())
+        outer_bytes = outer.getvalue()
+
+        original_open = zipfile.ZipFile.open
+
+        def _fail_open(self, entry, *args, **kwargs):
+            if getattr(entry, "filename", entry) == name:
+                raise RuntimeError("Corrupt entry")
+            return original_open(self, entry, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", _fail_open)
+        caplog.set_level("WARNING", logger=zip_inspector.__name__)
+        with pytest.raises(ZipContentError):
+            inspector.inspect_nested_archives(io.BytesIO(outer_bytes))
+
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == zip_inspector.__name__
+            and r.getMessage().startswith("Could not read nested entry")
+        ]
+        assert len(messages) == 1
+        assert "\n" not in messages[0]
+        assert f"Could not read nested entry {expected}: " in messages[0]
 
     def test_bad_zip_file_rejected_in_nested_inspection(
         self,

@@ -608,7 +608,7 @@ class ZipContentInspector(BaseInspector):
             raise
         except Exception as err:
             logger.warning(
-                "Could not inspect content of '%s': %s",
+                "Could not inspect content of %r: %s",
                 entry.filename,
                 err,
             )
@@ -1006,7 +1006,7 @@ class ZipContentInspector(BaseInspector):
         except (ZipContentError, ResourceLimitError):
             raise
         except Exception as err:
-            logger.warning("Could not read nested entry '%s': %s", path, err)
+            logger.warning("Could not read nested entry %r: %s", path, err)
             raise ZipContentError(
                 message=f"Nested entry could not be read: '{path}'",
                 threats=[f"Nested entry could not be read: '{path}'"],

@@ -84,6 +84,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Two ZIP inspector warnings, for an entry whose content cannot be inspected and a nested entry that cannot be read, print the entry name with `%r`, so a newline in the name cannot forge a log line.
 - Valid GPX and TCX files that libmagic reports as `text/plain`, such as exports from OsmAnd~ with namespaced `<extensions>` elements, are no longer rejected with `MIME_TYPE_MISMATCH`: `text/plain` is in `ALLOWED_ACTIVITY_MIMES`. The `<?xml` signature check and the XXE-safe XML parse still reject content that is not well-formed XML. FIT, image, ZIP and gzip MIME sets are unchanged.
 
 ### Removed

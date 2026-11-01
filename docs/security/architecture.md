@@ -75,9 +75,11 @@ UploadFile
 ┌─────────────────────────────┐
 │ 2. Filename Validation      │
 │    ├── Unicode normalization │
-│    ├── Extension allowlist   │
+│    ├── Dangerous characters  │
+│    ├── Windows reserved name │
 │    ├── Extension blocklist   │
-│    └── Windows reserved name │
+│    ├── Length limit, recheck │
+│    └── Extension allowlist   │
 └─────────────┬───────────────┘
               │
               ▼
@@ -406,7 +408,7 @@ FileValidator.validate_*()  (_run_validation)
   │   │
   │   ├── ZipContentInspector ──► audit.threat()
   │   ├── GzipContentInspector ─► audit.threat()
-  │   ├── CompressionValidator ─► audit.threat()
+  │   ├── CompressionSecurityValidator ► audit.threat()
   │   └── ContentSecurityInspector ► audit.threat()
   │
   ├── On success: audit.success()   # VALIDATION_SUCCESS

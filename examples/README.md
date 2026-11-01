@@ -119,8 +119,8 @@ validator = FileValidator(config=config)
 ```json
 {
   "error": "file_too_large",
-  "message": "File size exceeds limit",
-  "size": 25000000,
+  "message": "File too large. File size: 25MB, maximum: 20MB",
+  "size": 26214469,
   "max_size": 20971520,
   "error_code": "FILE_TOO_LARGE"
 }
@@ -130,10 +130,10 @@ validator = FileValidator(config=config)
 ```json
 {
   "error": "invalid_mime_type",
-  "message": "Invalid file type. Detected: application/x-msdownload.",
-  "detected_mime": "application/x-msdownload",
+  "message": "Invalid file type. Detected: application/x-dosexec. Allowed: image/jpeg, image/jpg, image/png",
+  "detected_mime": "application/x-dosexec",
   "allowed_mimes": ["image/jpeg", "image/jpg", "image/png"],
-  "error_code": "MIME_TYPE_INVALID"
+  "error_code": "MIME_TYPE_MISMATCH"
 }
 ```
 
@@ -141,9 +141,9 @@ validator = FileValidator(config=config)
 ```json
 {
   "error": "zip_bomb_detected",
-  "message": "Compression ratio exceeds limit",
-  "compression_ratio": 150.5,
-  "error_code": "ZIP_BOMB_DETECTED"
+  "message": "Excessive compression ratio detected: 1025.9:1 for 'a.txt'. Maximum allowed: 100:1",
+  "compression_ratio": 1025.85,
+  "error_code": "COMPRESSION_RATIO_EXCEEDED"
 }
 ```
 
@@ -151,12 +151,12 @@ validator = FileValidator(config=config)
 ```json
 {
   "error": "dangerous_zip_content",
-  "message": "ZIP contains dangerous content",
+  "message": "ZIP content threats detected: Directory traversal attack in '../../../etc/passwd'; Suspicious path component: '../../../etc/passwd' contains '/etc/'",
   "threats": [
-    "Directory traversal detected: ../../../etc/passwd",
-    "Nested archive detected: malware.zip"
+    "Directory traversal attack in '../../../etc/passwd'",
+    "Suspicious path component: '../../../etc/passwd' contains '/etc/'"
   ],
-  "error_code": "ZIP_CONTENT_THREAT"
+  "error_code": "ZIP_DIRECTORY_TRAVERSAL"
 }
 ```
 

@@ -2158,6 +2158,78 @@ class TestCancellationSafety:
         assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
         assert tracked[0].closed_event.is_set()
 
+    @pytest.mark.asyncio
+    async def test_valid_zip_closes_temp_file(
+        self, tracked, mock_upload_file, create_zip_file
+    ):
+        """A normal ZIP validates and its temp file is closed."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="a.zip", content=create_zip_file(files={"a": b"b"})
+        )
+        await validator.validate_zip_file(file)
+        assert tracked[0].closed_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_scheduling_failure_closes_temp_file(
+        self, tracked, mock_upload_file, create_zip_file
+    ):
+        """A scheduling error in inspection still closes the file.
+
+        The inspection call alone is made to fail: a shut-down
+        executor would already fail earlier in MIME detection.
+        """
+        validator = FileValidator()
+        real_submit = validator._submit
+
+        def _submit(func, *args):
+            if func.__name__ == "_inspect_zip_sync":
+                raise RuntimeError("cannot schedule new futures")
+            return real_submit(func, *args)
+
+        validator._submit = _submit
+        file = mock_upload_file(
+            filename="a.zip", content=create_zip_file(files={"a": b"b"})
+        )
+        with pytest.raises(FileProcessingError):
+            await validator.validate_zip_file(file)
+        assert tracked[0].closed_event.is_set()
+
+
+class TestCorrelationIdRestoredOnAuditFailure:
+    """The caller's correlation ID survives a failing audit start."""
+
+    @pytest.mark.parametrize("host_id", [None, "host-id"])
+    @pytest.mark.asyncio
+    async def test_failing_audit_start_restores_id(
+        self, monkeypatch, mock_upload_file, create_zip_file, host_id
+    ):
+        """A raising audit.start leaves the host's ID in place."""
+        from safeuploads.audit import (
+            SecurityAuditLogger,
+            correlation_id_var,
+            get_correlation_id,
+            set_correlation_id,
+        )
+
+        def _boom(self, *args, **kwargs):
+            raise OSError("handler failed")
+
+        monkeypatch.setattr(SecurityAuditLogger, "start", _boom)
+        token = correlation_id_var.set(None)
+        try:
+            if host_id is not None:
+                set_correlation_id(host_id)
+            file = mock_upload_file(
+                filename="a.zip",
+                content=create_zip_file(files={"a": b"b"}),
+            )
+            with pytest.raises(FileProcessingError):
+                await FileValidator().validate_zip_file(file)
+            assert get_correlation_id() == host_id
+        finally:
+            correlation_id_var.reset(token)
+
 
 class TestImageMimeDetectionOffLoop:
     """Image MIME detection must not run on the event loop."""

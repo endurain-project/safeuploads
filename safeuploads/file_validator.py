@@ -254,8 +254,9 @@ class FileValidator:
             func: Blocking inspection taking the temp file first.
             *args: Further positional arguments for ``func``.
         """
-        worker = self._submit(func, temp_file, *args)
+        worker: asyncio.Future[None] | None = None
         try:
+            worker = self._submit(func, temp_file, *args)
             await asyncio.shield(worker)
         finally:
             self._close_when_idle(temp_file, worker)
@@ -612,10 +613,12 @@ class FileValidator:
         """
         cid, cid_token = bind_correlation_id()
         filename = file.filename or "unknown"
-        self._audit.start(filename, cid)
-        logger.debug("Starting %s file validation: %r", file_type, filename)
         t0 = time.monotonic()
         try:
+            self._audit.start(filename, cid)
+            logger.debug(
+                "Starting %s file validation: %r", file_type, filename
+            )
             await body(file)
             ms = (time.monotonic() - t0) * 1000
             self._audit.success(file.filename or filename, cid, ms)

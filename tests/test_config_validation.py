@@ -16,7 +16,9 @@ from safeuploads.enums import (
 )
 from safeuploads.exceptions import (
     FileSecurityConfigurationError,
+    WindowsReservedNameError,
 )
+from safeuploads.file_validator import FileValidator
 
 
 class TestFileSizeLimitValidation:
@@ -689,9 +691,9 @@ class TestConfigClassMethods:
 class TestCrossDependencyValidation:
     """Tests for _validate_cross_dependencies branches."""
 
-    def test_non_lowercase_reserved_name_generates_warning(self, monkeypatch):
+    def test_non_lowercase_reserved_name_generates_error(self, monkeypatch):
         """
-        Test that an uppercase reserved name generates a warning.
+        Test that an uppercase reserved name generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
@@ -702,10 +704,12 @@ class TestCrossDependencyValidation:
             {"con", "PRN"},
         )
         errors = FileSecurityConfig.validate_configuration()
-        warnings = [
+        matches = [
             e for e in errors if e.error_type == "case_sensitive_reserved_name"
         ]
-        assert len(warnings) >= 1
+        assert len(matches) == 1
+        assert matches[0].severity == "error"
+        assert "never match" in matches[0].message
 
     def test_non_integer_unicode_char_generates_error(self, monkeypatch):
         """
@@ -879,15 +883,19 @@ class TestValidateAndReportStrictMode:
 
 
 class TestCrossDependencyValidationExtra:
-    def test_uppercase_reserved_name_generates_warning(self, monkeypatch):
+    def test_uppercase_reserved_name_generates_error(self, monkeypatch):
         monkeypatch.setattr(
             FileSecurityConfig,
             "WINDOWS_RESERVED_NAMES",
             frozenset({"con", "PRN"}),
         )
         errors = FileSecurityConfig.validate_configuration()
-        types = [e.error_type for e in errors]
-        assert "case_sensitive_reserved_name" in types
+        found = [
+            (e.error_type, e.severity)
+            for e in errors
+            if e.error_type == "case_sensitive_reserved_name"
+        ]
+        assert found == [("case_sensitive_reserved_name", "error")]
 
     def test_non_integer_unicode_char(self, monkeypatch):
         monkeypatch.setattr(
@@ -969,3 +977,136 @@ class TestInstanceValidation:
         with caplog.at_level(logging.ERROR, logger="safeuploads.config"):
             config.validate_and_report_instance(strict=False)
         assert "configuration error" in caplog.text.lower()
+
+
+def _error_types(exc_info) -> list[str]:
+    """
+    Return the error types carried by a configuration exception.
+
+    Args:
+        exc_info: pytest ExceptionInfo for the raised exception.
+
+    Returns:
+        Error types of the reported issues.
+    """
+    return [e.error_type for e in exc_info.value.errors]
+
+
+class TestInstanceOverrideValidation:
+    """Instance attribute overrides are validated like class ones."""
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "error_type"),
+        [
+            ("BLOCKED_EXTENSIONS", frozenset(), "empty_blocked_extensions"),
+            ("WINDOWS_RESERVED_NAMES", frozenset(), "empty_reserved_names"),
+            (
+                "COMPOUND_BLOCKED_EXTENSIONS",
+                frozenset(),
+                "empty_compound_blocked_extensions",
+            ),
+            (
+                "DANGEROUS_UNICODE_CHARS",
+                frozenset(),
+                "empty_dangerous_unicode_chars",
+            ),
+            ("ALLOWED_IMAGE_MIMES", frozenset(), "empty_mime_set"),
+            (
+                "ALLOWED_IMAGE_EXTENSIONS",
+                frozenset({".jpg", ".php"}),
+                "extension_conflict",
+            ),
+            (
+                "WINDOWS_RESERVED_NAMES",
+                frozenset({"con", "CON"}),
+                "case_sensitive_reserved_name",
+            ),
+        ],
+    )
+    def test_instance_override_rejected(self, attr, value, error_type):
+        """A hostile instance override fails FileValidator creation."""
+        config = FileSecurityConfig()
+        setattr(config, attr, value)
+
+        assert error_type in [e.error_type for e in config.validate_instance()]
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert error_type in _error_types(exc_info)
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "error_type"),
+        [
+            ("BLOCKED_EXTENSIONS", frozenset(), "empty_blocked_extensions"),
+            ("WINDOWS_RESERVED_NAMES", frozenset(), "empty_reserved_names"),
+            (
+                "COMPOUND_BLOCKED_EXTENSIONS",
+                frozenset(),
+                "empty_compound_blocked_extensions",
+            ),
+            (
+                "DANGEROUS_UNICODE_CHARS",
+                frozenset(),
+                "empty_dangerous_unicode_chars",
+            ),
+            (
+                "WINDOWS_RESERVED_NAMES",
+                frozenset({"CON"}),
+                "case_sensitive_reserved_name",
+            ),
+        ],
+    )
+    def test_subclass_override_rejected(self, attr, value, error_type):
+        """A subclass override is reported by class validation."""
+
+        class _Sub(FileSecurityConfig):
+            pass
+
+        setattr(_Sub, attr, value)
+
+        assert error_type in [
+            e.error_type for e in _Sub.validate_configuration()
+        ]
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=_Sub())
+        assert error_type in _error_types(exc_info)
+
+    def test_default_instance_constructs(self):
+        """The default configuration has no instance issues."""
+        config = FileSecurityConfig()
+
+        assert config.validate_instance() == []
+        FileValidator(config=config)
+
+    def test_valid_instance_override_is_used(self):
+        """A valid lowercase reserved name override is enforced."""
+        config = FileSecurityConfig()
+        config.WINDOWS_RESERVED_NAMES = frozenset({"con"})
+        config.ALLOWED_IMAGE_EXTENSIONS = frozenset({".png"})
+
+        assert config.validate_instance() == []
+        validator = FileValidator(config=config)
+
+        with pytest.raises(WindowsReservedNameError):
+            validator._sanitize_filename("con.png")
+        assert validator._sanitize_filename("photo.png") == "photo.png"
+
+    def test_class_validation_still_reports_class_problems(self, monkeypatch):
+        """validate_configuration reads the class attributes."""
+        monkeypatch.setattr(
+            FileSecurityConfig, "WINDOWS_RESERVED_NAMES", frozenset()
+        )
+
+        types = [
+            e.error_type for e in FileSecurityConfig.validate_configuration()
+        ]
+        assert "empty_reserved_names" in types
+
+    def test_instance_override_does_not_leak_to_class(self):
+        """An invalid instance override leaves class validation clean."""
+        config = FileSecurityConfig()
+        config.BLOCKED_EXTENSIONS = frozenset()
+
+        assert "empty_blocked_extensions" in [
+            e.error_type for e in config.validate_instance()
+        ]
+        assert FileSecurityConfig.validate_configuration() == []

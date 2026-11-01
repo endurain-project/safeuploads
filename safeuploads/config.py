@@ -463,7 +463,7 @@ class FileSecurityConfig:
         Returns:
             List of detected validation errors.
         """
-        return cls._collect_errors(cls.limits)
+        return cls._collect_errors(cls, cls.limits)
 
     def validate_instance(
         self, strict: bool = True
@@ -471,8 +471,10 @@ class FileSecurityConfig:
         """
         Validate this instance's configuration.
 
-        Validates the per-instance ``limits`` so a customized
-        instance is checked instead of the class default.
+        Validates the per-instance ``limits`` and the instance's
+        MIME, extension, reserved-name and Unicode sets, so a
+        customized instance is checked instead of the class
+        default.
 
         Args:
             strict: Reserved for future behavior adjustments.
@@ -480,19 +482,24 @@ class FileSecurityConfig:
         Returns:
             List of detected validation errors.
         """
-        return type(self)._collect_errors(self.limits)
+        return self._collect_errors(self, self.limits)
 
     @classmethod
     def _collect_errors(
-        cls, limits: SecurityLimits
+        cls,
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+        limits: SecurityLimits,
     ) -> list[ConfigValidationError]:
         """
-        Run all validation routines for the given limits.
+        Run all validation routines for the given configuration.
 
-        Class-level MIME, extension, and enum checks are
-        instance-independent and always validated as-is.
+        The MIME, extension, reserved-name and Unicode sets are
+        read from ``config`` so an instance override is validated
+        the same way as a class attribute.
 
         Args:
+            config: Class or instance whose attribute sets are
+                validated.
             limits: Security limits to validate.
 
         Returns:
@@ -513,10 +520,10 @@ class FileSecurityConfig:
             errors.extend(cls._validate_streaming_limits(limits))
 
         # Validate MIME type configurations
-        errors.extend(cls._validate_mime_configurations())
+        errors.extend(cls._validate_mime_configurations(config))
 
         # Validate file extension configurations
-        errors.extend(cls._validate_extension_configurations())
+        errors.extend(cls._validate_extension_configurations(config))
 
         if not type_errors:
             # Validate ZIP compression settings
@@ -526,7 +533,7 @@ class FileSecurityConfig:
         errors.extend(cls._validate_enum_consistency())
 
         # Validate cross-configuration dependencies
-        errors.extend(cls._validate_cross_dependencies())
+        errors.extend(cls._validate_cross_dependencies(config))
 
         return errors
 
@@ -762,10 +769,15 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_mime_configurations(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_mime_configurations(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[ConfigValidationError]:
         """
         Validate MIME type configurations.
+
+        Args:
+            config: Class or instance to read the sets from.
 
         Returns:
             List of detected configuration issues.
@@ -773,7 +785,7 @@ class FileSecurityConfig:
         errors = []
 
         # Check image MIME types
-        if not cls.ALLOWED_IMAGE_MIMES:
+        if not config.ALLOWED_IMAGE_MIMES:
             errors.append(
                 _config_error(
                     "empty_mime_set",
@@ -784,7 +796,7 @@ class FileSecurityConfig:
             )
 
         # Validate image MIME type format
-        for mime_type in cls.ALLOWED_IMAGE_MIMES:
+        for mime_type in config.ALLOWED_IMAGE_MIMES:
             if not mime_type.startswith("image/"):
                 errors.append(
                     _config_error(
@@ -806,9 +818,13 @@ class FileSecurityConfig:
 
         # Check ZIP, activity and gzip MIME types
         for mime_set_name, mime_set, label in [
-            ("ALLOWED_ZIP_MIMES", cls.ALLOWED_ZIP_MIMES, "ZIP"),
-            ("ALLOWED_ACTIVITY_MIMES", cls.ALLOWED_ACTIVITY_MIMES, "activity"),
-            ("ALLOWED_GZIP_MIMES", cls.ALLOWED_GZIP_MIMES, "gzip"),
+            ("ALLOWED_ZIP_MIMES", config.ALLOWED_ZIP_MIMES, "ZIP"),
+            (
+                "ALLOWED_ACTIVITY_MIMES",
+                config.ALLOWED_ACTIVITY_MIMES,
+                "activity",
+            ),
+            ("ALLOWED_GZIP_MIMES", config.ALLOWED_GZIP_MIMES, "gzip"),
         ]:
             if not mime_set:
                 errors.append(
@@ -822,10 +838,10 @@ class FileSecurityConfig:
 
         # Check for duplicate MIME types
         all_mimes = (
-            list(cls.ALLOWED_IMAGE_MIMES)
-            + list(cls.ALLOWED_ZIP_MIMES)
-            + list(cls.ALLOWED_ACTIVITY_MIMES)
-            + list(cls.ALLOWED_GZIP_MIMES)
+            list(config.ALLOWED_IMAGE_MIMES)
+            + list(config.ALLOWED_ZIP_MIMES)
+            + list(config.ALLOWED_ACTIVITY_MIMES)
+            + list(config.ALLOWED_GZIP_MIMES)
         )
         duplicates = {mime for mime in all_mimes if all_mimes.count(mime) > 1}
         if duplicates:
@@ -841,10 +857,15 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_extension_configurations(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_extension_configurations(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[ConfigValidationError]:
         """
         Validate file extension configurations.
+
+        Args:
+            config: Class or instance to read the sets from.
 
         Returns:
             List of detected configuration issues.
@@ -854,18 +875,18 @@ class FileSecurityConfig:
         allowed_sets = [
             (
                 "ALLOWED_IMAGE_EXTENSIONS",
-                cls.ALLOWED_IMAGE_EXTENSIONS,
+                config.ALLOWED_IMAGE_EXTENSIONS,
                 "Image",
             ),
-            ("ALLOWED_ZIP_EXTENSIONS", cls.ALLOWED_ZIP_EXTENSIONS, "ZIP"),
+            ("ALLOWED_ZIP_EXTENSIONS", config.ALLOWED_ZIP_EXTENSIONS, "ZIP"),
             (
                 "ALLOWED_ACTIVITY_EXTENSIONS",
-                cls.ALLOWED_ACTIVITY_EXTENSIONS,
+                config.ALLOWED_ACTIVITY_EXTENSIONS,
                 "Activity",
             ),
             (
                 "ALLOWED_GZIP_EXTENSIONS",
-                cls.ALLOWED_GZIP_EXTENSIONS,
+                config.ALLOWED_GZIP_EXTENSIONS,
                 "Gzip",
             ),
         ]
@@ -898,7 +919,7 @@ class FileSecurityConfig:
                     )
 
         # Check blocked extensions
-        if not cls.BLOCKED_EXTENSIONS:
+        if not config.BLOCKED_EXTENSIONS:
             errors.append(
                 _config_error(
                     "empty_blocked_extensions",
@@ -908,9 +929,19 @@ class FileSecurityConfig:
                 )
             )
 
+        if not config.COMPOUND_BLOCKED_EXTENSIONS:
+            errors.append(
+                _config_error(
+                    "empty_compound_blocked_extensions",
+                    ("COMPOUND_BLOCKED_EXTENSIONS is empty - security risk"),
+                    "extensions",
+                    "Ensure compound extensions are properly blocked",
+                )
+            )
+
         # Check for overlap between allowed and blocked extensions
         for _ext_set_name, ext_set, label in allowed_sets:
-            blocked = ext_set.intersection(cls.BLOCKED_EXTENSIONS)
+            blocked = ext_set.intersection(config.BLOCKED_EXTENSIONS)
             if blocked:
                 errors.append(
                     _config_error(
@@ -932,10 +963,10 @@ class FileSecurityConfig:
         # with uppercase characters can never match.
         for ext_set_name, ext_set in [
             *((name, ext_set) for name, ext_set, _label in allowed_sets),
-            ("BLOCKED_EXTENSIONS", cls.BLOCKED_EXTENSIONS),
+            ("BLOCKED_EXTENSIONS", config.BLOCKED_EXTENSIONS),
             (
                 "COMPOUND_BLOCKED_EXTENSIONS",
-                cls.COMPOUND_BLOCKED_EXTENSIONS,
+                config.COMPOUND_BLOCKED_EXTENSIONS,
             ),
         ]:
             for ext in ext_set:
@@ -954,8 +985,8 @@ class FileSecurityConfig:
                     )
 
         # Check compound extension consistency
-        compound_overlap = cls.BLOCKED_EXTENSIONS.intersection(
-            cls.COMPOUND_BLOCKED_EXTENSIONS
+        compound_overlap = config.BLOCKED_EXTENSIONS.intersection(
+            config.COMPOUND_BLOCKED_EXTENSIONS
         )
         if compound_overlap:
             errors.append(
@@ -1295,39 +1326,60 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_cross_dependencies(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_cross_dependencies(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[ConfigValidationError]:
         """
         Validate cross-field configuration constraints.
+
+        Args:
+            config: Class or instance to read the sets from.
 
         Returns:
             List of detected configuration issues.
         """
         errors = []
 
-        # Check Windows reserved names format
-        for name in cls.WINDOWS_RESERVED_NAMES:
-            if not name.islower():
+        if not config.WINDOWS_RESERVED_NAMES:
+            errors.append(
+                _config_error(
+                    "empty_reserved_names",
+                    "WINDOWS_RESERVED_NAMES is empty - security risk",
+                    "reserved_names",
+                    "Ensure Windows reserved names are blocked",
+                )
+            )
+
+        # Filenames are casefolded before matching, so an entry
+        # that is not already casefolded can never match.
+        for name in config.WINDOWS_RESERVED_NAMES:
+            if name != name.casefold():
                 errors.append(
                     _config_error(
                         "case_sensitive_reserved_name",
                         (
                             "Windows reserved name"
-                            f" '{name}' should be"
-                            " lowercase"
+                            f" '{name}' is not lowercase and"
+                            " can never match"
                         ),
                         "reserved_names",
-                        (
-                            "Use lowercase for"
-                            " consistent"
-                            " case-insensitive matching"
-                        ),
-                        severity="warning",
+                        "Use lowercase reserved names only",
                     )
                 )
 
+        if not config.DANGEROUS_UNICODE_CHARS:
+            errors.append(
+                _config_error(
+                    "empty_dangerous_unicode_chars",
+                    "DANGEROUS_UNICODE_CHARS is empty - security risk",
+                    "unicode",
+                    "Ensure dangerous Unicode characters are blocked",
+                )
+            )
+
         # Validate Unicode character ranges
-        for char_code in cls.DANGEROUS_UNICODE_CHARS:
+        for char_code in config.DANGEROUS_UNICODE_CHARS:
             if not isinstance(char_code, int):
                 errors.append(
                     _config_error(

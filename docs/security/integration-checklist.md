@@ -52,7 +52,9 @@ that addresses it.
 - [ ] `FileSecurityConfigurationError` from the `FileValidator`
   constructor handled at startup: it is raised for any
   error-severity configuration issue (invalid limit types,
-  non-positive limits, empty or uppercase extension entries);
+  non-positive limits, empty or uppercase extension entries,
+  empty block lists or reserved names, reserved names that are
+  not lowercase), including sets overridden on the instance;
   warnings are only logged.
 
 ## Content Analysis

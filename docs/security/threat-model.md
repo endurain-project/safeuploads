@@ -252,7 +252,10 @@ writes hidden files.
   stream must end exactly at the declared compressed size, and
   a stored entry must be empty with a signed descriptor right
   after its header. Other descriptor entries are rejected. The
-  descriptor values must equal the central directory's.
+  descriptor values must equal the central directory's, in
+  8-byte sizes when the local header has a ZIP64 extra field and
+  in 4-byte sizes otherwise (APPNOTE 4.3.9.2), so every reader
+  parses the descriptor the same way.
 - This check runs after the size and ratio limits, so inflation
   is bounded by them, and it raises `ZIP_INVALID_STRUCTURE`.
 - With `allow_nested_archives=True`, nested archives get the

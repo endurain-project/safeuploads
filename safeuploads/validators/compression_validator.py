@@ -205,22 +205,27 @@ def _descriptor_matches(
     length: int,
     entry: zipfile.ZipInfo,
     signed: bool,
+    zip64: bool,
 ) -> bool:
     """
     Check that ``length`` bytes at ``offset`` are the entry's descriptor.
 
     A data descriptor holds an optional signature, the CRC-32 and
-    the compressed and uncompressed sizes, as 4-byte values or as
-    ZIP64 8-byte values. Each form has a distinct length, so the
-    length selects the form and its values must equal those in
-    the central directory.
+    the compressed and uncompressed sizes. Their width follows the
+    entry's local header (PKWARE APPNOTE 4.3.9.2): 8-byte values
+    when it has a ZIP64 extra field, 4-byte values otherwise. Only
+    that form matches, and the 4-byte form only when both sizes
+    fit in 32 bits. Its values must equal those in the central
+    directory.
 
     Args:
         file_obj: Seekable file containing ZIP data.
         offset: File offset where the entry's data ends.
         length: Bytes between the data and the next record.
         entry: Central-directory entry the descriptor belongs to.
-        signed: Whether only the forms with a signature match.
+        signed: Whether only the form with a signature matches.
+        zip64: Whether the entry's local header has a ZIP64
+            extra field.
 
     Returns:
         True if the bytes are a descriptor matching ``entry``.
@@ -228,15 +233,16 @@ def _descriptor_matches(
     if not 0 < length <= _DATA_DESCRIPTOR_MAX_SIZE:
         return False
     values = (entry.CRC, entry.compress_size, entry.file_size)
-    bodies = [struct.pack("<L2Q", *values)]
-    if max(entry.compress_size, entry.file_size) <= _UINT32_MAX:
-        bodies.append(struct.pack("<3L", *values))
+    if zip64:
+        body = struct.pack("<L2Q", *values)
+    elif max(entry.compress_size, entry.file_size) <= _UINT32_MAX:
+        body = struct.pack("<3L", *values)
+    else:
+        return False
     file_obj.seek(offset)
     data = file_obj.read(length)
-    return any(
-        data == _DATA_DESCRIPTOR_SIGNATURE + body
-        or (not signed and data == body)
-        for body in bodies
+    return data == _DATA_DESCRIPTOR_SIGNATURE + body or (
+        not signed and data == body
     )
 
 
@@ -329,7 +335,7 @@ def _unicode_paths_match(
 def _local_header_matches(
     fields: tuple[Any, ...],
     name: bytes,
-    extra: bytes,
+    local_extra: list[tuple[int, bytes]],
     entry: zipfile.ZipInfo,
 ) -> bool:
     """
@@ -339,16 +345,16 @@ def _local_header_matches(
     central directory, so both must name the same entry with the
     same name encoding, flag bit 3 and compression method. Every
     Unicode Path extra field, local or central, must carry the raw
-    name, and both extra fields must be well formed. Without bit 3
-    the local CRC-32 and sizes must also agree; with it, the data
-    descriptor carries them and each local value must be zero or
-    equal to the central one, so a streaming reader never ends the
-    entry at a different place.
+    name, and the central extra field must be well formed. Without
+    bit 3 the local CRC-32 and sizes must also agree; with it, the
+    data descriptor carries them and each local value must be zero
+    or equal to the central one, so a streaming reader never ends
+    the entry at a different place.
 
     Args:
         fields: Unpacked fixed local header.
         name: The local header's file name bytes.
-        extra: The local header's extra field.
+        local_extra: The local header's extra field records.
         entry: Central-directory entry for this header.
 
     Returns:
@@ -357,11 +363,9 @@ def _local_header_matches(
     # zipfile decoded the central name as cp437 or, with bit 11,
     # UTF-8; encoding it back gives the central name's bytes
     encoding = "utf-8" if entry.flag_bits & _UTF8_NAME_FLAG else "cp437"
-    local_extra = _extra_fields(extra)
     central_extra = _extra_fields(entry.extra)
     if (
-        local_extra is None
-        or central_extra is None
+        central_extra is None
         or fields[0] != _LOCAL_HEADER_SIGNATURE
         or (fields[3] ^ entry.flag_bits)
         & (_DATA_DESCRIPTOR_FLAG | _UTF8_NAME_FLAG)
@@ -446,26 +450,28 @@ def _layout_is_exact(
     """
     Check that the listed entries and end records fill the file.
 
-    Readers that walk local headers from the start of the file
-    see every entry stored there, while ``zipfile`` sees only the
+    Readers that walk local headers from the start of the file see
+    every entry stored there, while ``zipfile`` sees only the
     entries its central directory lists. The two agree only when
     the listed entries start at offset 0 and follow one another
     without gaps or overlaps up to the central directory, the
-    directory sits at its declared offset, and the end records
-    and their declared comment end the file. Each local header
-    must agree with its central-directory entry, and every
-    Unicode Path extra field must carry the entry's raw name. With
-    flag bit 3 each local CRC-32 and size must be zero or equal
-    to the central value. An entry spans
-    its local header (with the local name and extra lengths), its
-    compressed data and, when flag bit 3 is set, a data
-    descriptor matching its central-directory values. Bit 3 is
-    allowed only where a streaming reader finds the descriptor
-    without trusting it: a deflated entry whose deflate stream
-    ends exactly where the descriptor starts, or an empty stored
-    entry whose signed descriptor follows its header directly.
-    Stored data, or data of other methods this check does not
-    inflate, has no end such a reader can find.
+    directory sits at its declared offset, and the end records and
+    their declared comment end the file. Each local header must
+    agree with its central-directory entry, both extra fields must
+    be well formed, and every Unicode Path extra field must carry
+    the entry's raw name. With flag bit 3 each local CRC-32 and
+    size must be zero or equal to the central value. An entry
+    spans its local header (with the local name and extra
+    lengths), its compressed data and, when flag bit 3 is set, a
+    data descriptor matching its central-directory values, in the
+    8-byte size form when the local header has a ZIP64 extra field
+    and in the 4-byte form otherwise. Bit 3 is allowed only where
+    a streaming reader finds the descriptor without trusting it: a
+    deflated entry whose deflate stream ends exactly where the
+    descriptor starts, or an empty stored entry whose signed
+    descriptor follows its header directly. Stored data, or data
+    of other methods this check does not inflate, has no end such
+    a reader can find.
 
     ``header_offset`` already includes ``zipfile``'s ``concat``
     adjustment, so offsets compared here are file offsets.
@@ -505,9 +511,12 @@ def _layout_is_exact(
         # A short read here leaves the data running past the
         # directory, which the offset comparison below rejects
         name = file_obj.read(fields[10])
-        extra = file_obj.read(fields[11])
-        if not _local_header_matches(fields, name, extra, entry):
+        local_extra = _extra_fields(file_obj.read(fields[11]))
+        if local_extra is None or not _local_header_matches(
+            fields, name, local_extra, entry
+        ):
             return False
+        zip64 = any(tag == _ZIP64_EXTRA_ID for tag, _ in local_extra)
         data_start = entry.header_offset + _LOCAL_HEADER_SIZE
         data_start += fields[10] + fields[11]
         data_end = data_start + entry.compress_size
@@ -530,7 +539,7 @@ def _layout_is_exact(
                 )
             )
         if not delimited or not _descriptor_matches(
-            file_obj, data_end, next_offset - data_end, entry, stored
+            file_obj, data_end, next_offset - data_end, entry, stored, zip64
         ):
             return False
     return True

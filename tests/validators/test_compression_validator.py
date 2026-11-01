@@ -1665,6 +1665,30 @@ def _without_descriptor_signatures(data: bytes) -> bytes:
     return data
 
 
+def _with_descriptor_form(data: bytes, wide: bool, signed: bool) -> bytes:
+    """
+    Rewrite every data descriptor in the 4-byte or 8-byte size form.
+
+    The entry headers stay as they are, so the descriptor width no
+    longer follows the local ZIP64 extra field.
+    """
+    for index in reversed(range(len(_infos(data)))):
+        infos = sorted(_infos(data), key=lambda i: i.header_offset)
+        end = _data_end(data, infos[index])
+        following = (
+            infos[index + 1].header_offset
+            if index + 1 < len(infos)
+            else _eocd_fields(data)[6]
+        )
+        assert data[end : end + 4] == b"PK\x07\x08"
+        info = infos[index]
+        values = (info.CRC, info.compress_size, info.file_size)
+        body = struct.pack("<L2Q" if wide else "<3L", *values)
+        blob = (b"PK\x07\x08" if signed else b"") + body
+        data = _splice(data, end, blob, remove=following - end)
+    return data
+
+
 def _second_entry_offset(data: bytes) -> int:
     """Return the local-header offset of the second listed entry."""
     return _infos(data)[1].header_offset
@@ -1996,6 +2020,7 @@ _UINT32_MAX = 0xFFFF_FFFF
 _GPX = b"".join(b"<trkpt n='%d'/>" % i for i in range(5000))
 _STORED_AB = _stored_zip(["a.txt", "b.txt"])
 _DESCRIPTOR_ZIP = _descriptor_zip()
+_DESCRIPTOR_ZIP64 = _descriptor_zip(force_zip64=True)
 
 _LAYOUT_VALID = [
     pytest.param(_STORED_AB, id="stored"),
@@ -2068,11 +2093,15 @@ _LAYOUT_VALID = [
         id="descriptor-local-values-equal-central",
     ),
     pytest.param(
-        _raw_entry_zip(
-            b"ok.txt",
-            descriptor=True,
-            local_values=(0, _UINT32_MAX, _UINT32_MAX),
-            local_extra=struct.pack("<2HQQ", 1, 16, 0, 0),
+        _with_descriptor_form(
+            _raw_entry_zip(
+                b"ok.txt",
+                descriptor=True,
+                local_values=(0, _UINT32_MAX, _UINT32_MAX),
+                local_extra=struct.pack("<2HQQ", 1, 16, 0, 0),
+            ),
+            wide=True,
+            signed=True,
         ),
         id="descriptor-zip64-zero-local-sizes",
     ),
@@ -2229,6 +2258,22 @@ _LAYOUT_INVALID = [
         _descriptor_zip(compression=zipfile.ZIP_LZMA),
         id="lzma-with-descriptor",
     ),
+    pytest.param(
+        _with_descriptor_form(_DESCRIPTOR_ZIP, wide=True, signed=True),
+        id="descriptor-wide-without-local-zip64",
+    ),
+    pytest.param(
+        _with_descriptor_form(_DESCRIPTOR_ZIP, wide=True, signed=False),
+        id="descriptor-wide-unsigned-without-local-zip64",
+    ),
+    pytest.param(
+        _with_descriptor_form(_DESCRIPTOR_ZIP64, wide=False, signed=True),
+        id="descriptor-narrow-with-local-zip64",
+    ),
+    pytest.param(
+        _with_descriptor_form(_DESCRIPTOR_ZIP64, wide=False, signed=False),
+        id="descriptor-narrow-unsigned-with-local-zip64",
+    ),
     pytest.param(_deflate_ending_early(), id="deflate-ends-early"),
     pytest.param(
         _hand_built_descriptor_zip(
@@ -2289,7 +2334,17 @@ class TestZipLayout:
         descriptor = struct.pack("<L2Q", 7, 10, 1 << 32)
 
         assert compression_validator._descriptor_matches(
-            io.BytesIO(descriptor), 0, len(descriptor), entry, False
+            io.BytesIO(descriptor), 0, len(descriptor), entry, False, True
+        )
+
+    def test_wide_descriptor_without_zip64_rejected(self):
+        """Without a local ZIP64 extra no form fits a size above 4 GiB."""
+        entry = zipfile.ZipInfo("big.bin")
+        entry.CRC, entry.compress_size, entry.file_size = 7, 10, 1 << 32
+        descriptor = struct.pack("<L2Q", 7, 10, 1 << 32)
+
+        assert not compression_validator._descriptor_matches(
+            io.BytesIO(descriptor), 0, len(descriptor), entry, False, False
         )
 
     def test_truncated_descriptor_for_large_size_rejected(self):
@@ -2299,7 +2354,7 @@ class TestZipLayout:
         descriptor = struct.pack("<3L", 7, 10, 0)
 
         assert not compression_validator._descriptor_matches(
-            io.BytesIO(descriptor), 0, len(descriptor), entry, False
+            io.BytesIO(descriptor), 0, len(descriptor), entry, False, True
         )
 
     @pytest.mark.parametrize(

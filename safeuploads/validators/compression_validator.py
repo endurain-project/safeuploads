@@ -48,6 +48,7 @@ _LOCAL_HEADER_SIZE = struct.calcsize(_LOCAL_HEADER_STRUCT)
 _DATA_DESCRIPTOR_FLAG = 0x08
 _UTF8_NAME_FLAG = 0x800
 _ZIP64_EXTRA_ID = 0x0001
+_UNICODE_PATH_EXTRA_ID = 0x7075
 _DATA_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
 _DATA_DESCRIPTOR_MAX_SIZE = 24
 _UINT32_MAX = 0xFFFF_FFFF
@@ -239,8 +240,33 @@ def _descriptor_matches(
     )
 
 
+def _extra_fields(extra: bytes) -> list[tuple[int, bytes]] | None:
+    """
+    Split an extra field into its (tag, data) records.
+
+    Fewer than 4 trailing bytes cannot hold a record header and
+    are ignored, as ``zipfile`` does.
+
+    Args:
+        extra: An extra field from a local or central header.
+
+    Returns:
+        The records in order, or None if a record declares more
+        data than the extra field holds.
+    """
+    records = []
+    while len(extra) >= 4:
+        tag, length = struct.unpack_from("<2H", extra)
+        data = extra[4 : 4 + length]
+        if len(data) < length:
+            return None
+        records.append((tag, data))
+        extra = extra[4 + length :]
+    return records
+
+
 def _local_sizes(
-    fields: tuple[Any, ...], extra: bytes
+    fields: tuple[Any, ...], extra: list[tuple[int, bytes]]
 ) -> tuple[int, int] | None:
     """
     Read the sizes a local header declares.
@@ -251,7 +277,7 @@ def _local_sizes(
 
     Args:
         fields: Unpacked fixed local header.
-        extra: The local header's extra field.
+        extra: The local header's extra field records.
 
     Returns:
         The compressed and uncompressed sizes, or None if a size
@@ -261,13 +287,7 @@ def _local_sizes(
     file_size: int = fields[9]
     if _UINT32_MAX not in (compress_size, file_size):
         return compress_size, file_size
-    zip64 = b""
-    while len(extra) >= 4:
-        tag, length = struct.unpack_from("<2H", extra)
-        if tag == _ZIP64_EXTRA_ID:
-            zip64 = extra[4 : 4 + length]
-            break
-        extra = extra[4 + length :]
+    zip64 = next((data for tag, data in extra if tag == _ZIP64_EXTRA_ID), b"")
     sizes = []
     for size in (file_size, compress_size):
         if size == _UINT32_MAX:
@@ -277,6 +297,33 @@ def _local_sizes(
             zip64 = zip64[8:]
         sizes.append(size)
     return sizes[1], sizes[0]
+
+
+def _unicode_paths_match(
+    records: list[tuple[int, bytes]], name: bytes
+) -> bool:
+    """
+    Check that every Unicode Path extra field names ``name``.
+
+    ``zipfile`` replaces the entry name with the one in a central
+    Unicode Path field, while other readers keep the raw name or
+    also honour a local field, and they differ in whether they
+    check the field's version and CRC. Every such field must
+    therefore hold exactly the raw name after its version and
+    CRC-32, which are not consulted.
+
+    Args:
+        records: Extra field records to check.
+        name: The entry's raw file name bytes.
+
+    Returns:
+        True if each Unicode Path record carries ``name``.
+    """
+    return all(
+        len(data) >= 5 and data[5:] == name
+        for tag, data in records
+        if tag == _UNICODE_PATH_EXTRA_ID
+    )
 
 
 def _local_header_matches(
@@ -290,10 +337,13 @@ def _local_header_matches(
 
     Readers that walk local headers trust them instead of the
     central directory, so both must name the same entry with the
-    same name encoding, flag bit 3 and compression method. Without
-    bit 3 the local CRC-32 and sizes must also agree; with it,
-    the data descriptor carries them and the local fields, which
-    writers usually leave zero, are not compared.
+    same name encoding, flag bit 3 and compression method. Every
+    Unicode Path extra field, local or central, must carry the raw
+    name, and both extra fields must be well formed. Without bit 3
+    the local CRC-32 and sizes must also agree; with it, the data
+    descriptor carries them and each local value must be zero or
+    equal to the central one, so a streaming reader never ends the
+    entry at a different place.
 
     Args:
         fields: Unpacked fixed local header.
@@ -307,20 +357,30 @@ def _local_header_matches(
     # zipfile decoded the central name as cp437 or, with bit 11,
     # UTF-8; encoding it back gives the central name's bytes
     encoding = "utf-8" if entry.flag_bits & _UTF8_NAME_FLAG else "cp437"
+    local_extra = _extra_fields(extra)
+    central_extra = _extra_fields(entry.extra)
     if (
-        fields[0] != _LOCAL_HEADER_SIGNATURE
+        local_extra is None
+        or central_extra is None
+        or fields[0] != _LOCAL_HEADER_SIGNATURE
         or (fields[3] ^ entry.flag_bits)
         & (_DATA_DESCRIPTOR_FLAG | _UTF8_NAME_FLAG)
         or fields[4] != entry.compress_type
         or name != entry.orig_filename.encode(encoding)
+        or not _unicode_paths_match(local_extra + central_extra, name)
     ):
         return False
+    sizes = _local_sizes(fields, local_extra)
+    if sizes is None:
+        return False
+    local = (fields[7], *sizes)
+    central = (entry.CRC, entry.compress_size, entry.file_size)
     if entry.flag_bits & _DATA_DESCRIPTOR_FLAG:
-        return True
-    return fields[7] == entry.CRC and _local_sizes(fields, extra) == (
-        entry.compress_size,
-        entry.file_size,
-    )
+        return all(
+            value in (0, expected)
+            for value, expected in zip(local, central, strict=True)
+        )
+    return local == central
 
 
 def _deflate_fills_entry(
@@ -393,7 +453,10 @@ def _layout_is_exact(
     without gaps or overlaps up to the central directory, the
     directory sits at its declared offset, and the end records
     and their declared comment end the file. Each local header
-    must agree with its central-directory entry. An entry spans
+    must agree with its central-directory entry, and every
+    Unicode Path extra field must carry the entry's raw name. With
+    flag bit 3 each local CRC-32 and size must be zero or equal
+    to the central value. An entry spans
     its local header (with the local name and extra lengths), its
     compressed data and, when flag bit 3 is set, a data
     descriptor matching its central-directory values. Bit 3 is

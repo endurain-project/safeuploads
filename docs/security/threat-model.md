@@ -218,9 +218,11 @@ that walks local headers from the start of the file. Examples
 are a fake end record or a whole benign archive hidden in the
 archive comment, two concatenated archives, an unlisted entry
 between listed ones, a local header whose sizes or name differ
-from the central directory, and a deflate stream that ends
-before a data-descriptor entry's declared size. The validated
-archive then passes while the extractor writes hidden files.
+from the central directory, a Unicode Path extra field naming
+the entry differently from its raw header name, and a deflate
+stream that ends before a data-descriptor entry's declared
+size. The validated archive then passes while the extractor
+writes hidden files.
 
 **Mitigations:**
 
@@ -234,7 +236,16 @@ archive then passes while the extractor writes hidden files.
 - Each local header must agree with its central-directory
   record: name bytes, name encoding flag, compression method,
   data-descriptor flag and, without a descriptor, CRC-32 and
-  sizes (ZIP64 sizes are read from the local extra field).
+  sizes (ZIP64 sizes are read from the local extra field). With
+  a descriptor, each local CRC-32 and size must be zero or equal
+  to the central value, so a streaming reader cannot end the
+  entry early and read a hidden entry from its data.
+- Every Info-ZIP Unicode Path extra field (`0x7075`), local or
+  central, must carry exactly the raw name bytes, and both extra
+  fields must be well formed. `zipfile` names an entry by the
+  central field while other extractors use the raw name or the
+  local field, so the name checks would otherwise see a benign
+  alias of a traversal or executable name.
 - Entries with a data descriptor are accepted only when a
   streaming reader can find the descriptor unambiguously: a
   deflated entry is inflated in `chunk_size` chunks and its

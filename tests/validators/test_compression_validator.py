@@ -1893,6 +1893,106 @@ def _with_empty_entry_crc(data: bytes, crc: int) -> bytes:
     return bytes(buf)
 
 
+_ZIP_UNIX_ATTR = 0o100644 << 16
+
+
+def _unicode_path_field(
+    path: bytes, raw: bytes, version: int = 1, crc: int | None = None
+) -> bytes:
+    """Return an Info-ZIP Unicode Path extra field naming ``path``."""
+    if crc is None:
+        crc = zlib.crc32(raw)
+    body = struct.pack("<BL", version, crc) + path
+    return struct.pack("<2H", 0x7075, len(body)) + body
+
+
+def _raw_entry_zip(
+    name: bytes,
+    *,
+    descriptor: bool = False,
+    central_extra: bytes = b"",
+    local_extra: bytes = b"",
+    local_values: tuple[int, int, int] | None = None,
+    content: bytes = b"hello",
+) -> bytes:
+    """
+    Build a one-entry ZIP by hand, with chosen extras and local values.
+
+    Without ``descriptor`` the entry is stored; with it the entry is
+    deflated and followed by a signed data descriptor, and its local
+    CRC and sizes are zero. ``local_values`` overrides the local
+    CRC-32, compressed size and uncompressed size.
+    """
+    if descriptor:
+        compressed = _raw_deflate(content)
+        method, flags = zipfile.ZIP_DEFLATED, 0x08
+    else:
+        compressed, method, flags = content, zipfile.ZIP_STORED, 0
+    values = (zlib.crc32(content), len(compressed), len(content))
+    if local_values is None:
+        local_values = (0, 0, 0) if descriptor else values
+    local = (
+        struct.pack(
+            "<4s2B4HL2L2H",
+            b"PK\x03\x04",
+            20,
+            0,
+            flags,
+            method,
+            0,
+            0x21,
+            *local_values,
+            len(name),
+            len(local_extra),
+        )
+        + name
+        + local_extra
+    )
+    tail = b""
+    if descriptor:
+        tail = struct.pack("<4s3L", b"PK\x07\x08", *values)
+    central = (
+        struct.pack(
+            "<4s4B4HL2L5H2L",
+            b"PK\x01\x02",
+            20,
+            3,
+            20,
+            0,
+            flags,
+            method,
+            0,
+            0x21,
+            *values,
+            len(name),
+            len(central_extra),
+            0,
+            0,
+            0,
+            _ZIP_UNIX_ATTR,
+            0,
+        )
+        + name
+        + central_extra
+    )
+    offset = len(local) + len(compressed) + len(tail)
+    eocd = struct.pack(
+        _EOCD, b"PK\x05\x06", 0, 0, 1, 1, len(central), offset, 0
+    )
+    return local + compressed + tail + central + eocd
+
+
+def _unicode_path_zip(raw: bytes, path: bytes, where: str) -> bytes:
+    """Build a stored ZIP whose raw name is ``raw``, with a path field."""
+    field = _unicode_path_field(path, raw)
+    return _raw_entry_zip(
+        raw,
+        central_extra=field if where == "central" else b"",
+        local_extra=field if where == "local" else b"",
+    )
+
+
+_UINT32_MAX = 0xFFFF_FFFF
 _GPX = b"".join(b"<trkpt n='%d'/>" % i for i in range(5000))
 _STORED_AB = _stored_zip(["a.txt", "b.txt"])
 _DESCRIPTOR_ZIP = _descriptor_zip()
@@ -1942,6 +2042,39 @@ _LAYOUT_VALID = [
     ),
     pytest.param(
         _empty_stored_descriptor_zip(), id="empty-stored-with-descriptor"
+    ),
+    pytest.param(
+        _unicode_path_zip("café.txt".encode(), "café.txt".encode(), "central"),
+        id="unicode-path-equals-raw-name",
+    ),
+    pytest.param(
+        _unicode_path_zip(b"a.txt", b"a.txt", "local"),
+        id="unicode-path-local-equals-raw-name",
+    ),
+    pytest.param(
+        _raw_entry_zip(b"ok.txt", descriptor=True),
+        id="descriptor-zero-local-values",
+    ),
+    pytest.param(
+        _raw_entry_zip(
+            b"ok.txt",
+            descriptor=True,
+            local_values=(
+                zlib.crc32(b"hello"),
+                len(_raw_deflate(b"hello")),
+                5,
+            ),
+        ),
+        id="descriptor-local-values-equal-central",
+    ),
+    pytest.param(
+        _raw_entry_zip(
+            b"ok.txt",
+            descriptor=True,
+            local_values=(0, _UINT32_MAX, _UINT32_MAX),
+            local_extra=struct.pack("<2HQQ", 1, 16, 0, 0),
+        ),
+        id="descriptor-zip64-zero-local-sizes",
     ),
 ]
 
@@ -1998,6 +2131,59 @@ _LAYOUT_INVALID = [
     pytest.param(
         _clear_local_descriptor_flag(_DESCRIPTOR_ZIP),
         id="descriptor-flag-mismatch",
+    ),
+    pytest.param(
+        _unicode_path_zip(b"../../evil.sh", b"a.txt", "central"),
+        id="unicode-path-hides-traversal",
+    ),
+    pytest.param(
+        _unicode_path_zip(b"evil.exe", b"evil.txt", "central"),
+        id="unicode-path-hides-extension",
+    ),
+    pytest.param(
+        _unicode_path_zip(b"notes.txt", b"../../tmp/evil.txt", "local"),
+        id="unicode-path-local-only",
+    ),
+    pytest.param(
+        _raw_entry_zip(
+            b"a.txt", local_extra=struct.pack("<2H3s", 0x7075, 3, b"abc")
+        ),
+        id="unicode-path-too-short",
+    ),
+    pytest.param(
+        _raw_entry_zip(
+            b"a.txt", local_extra=struct.pack("<2H2s", 0x9999, 100, b"xx")
+        ),
+        id="local-extra-field-overruns",
+    ),
+    pytest.param(
+        _raw_entry_zip(
+            b"ok.txt",
+            descriptor=True,
+            local_values=(0, 10, 0),
+        ),
+        id="descriptor-local-compressed-size-differs",
+    ),
+    pytest.param(
+        _raw_entry_zip(
+            b"ok.txt",
+            descriptor=True,
+            local_values=(0, 0, 99),
+        ),
+        id="descriptor-local-file-size-differs",
+    ),
+    pytest.param(
+        _raw_entry_zip(b"ok.txt", descriptor=True, local_values=(1234, 0, 0)),
+        id="descriptor-local-crc-differs",
+    ),
+    pytest.param(
+        _raw_entry_zip(
+            b"ok.txt",
+            descriptor=True,
+            local_values=(0, _UINT32_MAX, _UINT32_MAX),
+            local_extra=struct.pack("<2HQQ", 1, 16, 7, 0),
+        ),
+        id="descriptor-zip64-local-size-differs",
     ),
     pytest.param(_understated_local_sizes(), id="local-sizes-understated"),
     pytest.param(
@@ -2134,6 +2320,19 @@ class TestZipLayout:
         self, mock_upload_file, data
     ):
         """FileValidator rejects an archive hiding other entries."""
+        validator = FileValidator()
+        upload = mock_upload_file(filename="track.zip", content=data)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            await validator.validate_zip_file(upload)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    async def test_unicode_path_traversal_rejected_end_to_end(
+        self, mock_upload_file
+    ):
+        """FileValidator rejects a Unicode Path field hiding a name."""
+        data = _unicode_path_zip(b"../../evil.sh", b"a.txt", "central")
         validator = FileValidator()
         upload = mock_upload_file(filename="track.zip", content=data)
 

@@ -45,6 +45,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Symlink entries in a ZIP are detected with the exact file-type bits (`stat.S_ISLNK`) instead of a bit mask that other modes also matched.
 - With `allow_nested_archives=True`, identical sibling inner archives are accepted: quine detection compares an archive only with its ancestors. `inspect_nested_archives(seen_hashes=...)` takes the hashes of ancestor archives and does not modify the set. Fan-out stays bounded by `max_total_entries_recursive`, `max_zip_depth` and the analysis timeout.
 - Image MIME detection and temp-file writes that spill to disk run in the worker thread, not on the event loop. Cancelling a validation closes its temp files after any running worker finishes and propagates `CancelledError`.
+- Every Info-ZIP Unicode Path extra field (`0x7075`), in the central or the local header, must carry the entry's raw name bytes, and both extra fields must be well formed; otherwise the archive is rejected with `ZIP_INVALID_STRUCTURE`. `zipfile` replaced the entry name with the field's name while other extractors kept the raw one, so a name such as `../../evil.sh` or `evil.exe` passed every name check under a benign alias.
+- For entries with a data descriptor (flag bit 3), the local header's CRC-32 and sizes must each be zero or equal to the central directory's, rejected with `ZIP_INVALID_STRUCTURE` otherwise. A streaming extractor ended such an entry at the local size and read a hidden entry from its data.
 
 ### Changed
 
@@ -65,6 +67,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Breaking:** the per-entry analysis timeout of `CompressionSecurityValidator` raises `ZipBombError` with `ZIP_ANALYSIS_TIMEOUT` instead of `ZIP_BOMB_DETECTED`.
 - **Breaking:** image uploads with a disallowed MIME type are rejected with `MIME_TYPE_MISMATCH` instead of `MIME_TYPE_INVALID`, like the other upload types.
 - **Breaking:** ZIP, gzip and activity uploads too small to carry a signature are rejected with `FILE_SIGNATURE_MISSING` instead of `FILE_SIGNATURE_MISMATCH`, as images already were.
+- **Breaking:** ZIP archives whose Unicode Path extra field spells a name other than the raw header name, such as a legacy code-page name with a UTF-8 alias, and data-descriptor entries whose local CRC-32 or sizes are non-zero and differ from the central directory, are rejected with `ZIP_INVALID_STRUCTURE`.
 - **Breaking:** the category enums (`DangerousExtensionCategory`, `CompoundExtensionCategory`, `UnicodeAttackCategory`, `SuspiciousFilePattern`, `BinaryFileCategory` and the other enums with set values) hold `frozenset` values. The `FileSecurityConfig` getters return mutable `set` copies.
 - The `Allowed:` extension list in the extension error message is sorted.
 

@@ -52,6 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `SecurityAuditLogger` escapes and caps the correlation ID and `source_ip` like the filename, in the message and in `extra`, and `log_extra()` adds the escaped correlation ID. A host ID taken from a request header could forge audit lines with a newline. `get_correlation_id()` still returns the ID the host set.
 - A data descriptor must use the width its local header selects: 8-byte sizes when the local header has a ZIP64 extra field, 4-byte sizes otherwise (APPNOTE 4.3.9.2). Either width was accepted, so a reader that follows the rule could misread the descriptor.
 - With `enable_content_analysis=True`, a `content_scan_max_size` smaller than `max_image_size` or `max_activity_file_size` is a configuration error (`content_scan_window_too_small`). Content past the scan window was accepted without analysis.
+- Content analysis searches for polyglot signatures from the first byte, so a ZIP, RAR or Java class right after the 3-byte JPEG header is detected; the search started at offset 8. A PE header is detected whatever its `e_lfanew`, as long as it points at `PE\0\0` in the scanned sample; offsets of 64 KiB or more were ignored.
 
 ### Changed
 
@@ -77,6 +78,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Breaking:** gzip streams with reserved header flag bits set, or a header CRC (`FHCRC`) that does not match, are rejected with `ZIP_CORRUPT`; the `gzip` module ignored both.
 - **Breaking:** a config with `enable_content_analysis=True` and a `content_scan_max_size` smaller than `max_image_size` or `max_activity_file_size` makes `FileValidator(config)` raise `FileSecurityConfigurationError`. The defaults are unaffected.
 - **Breaking:** ZIP entries whose data descriptor uses the other size width than their local header selects are rejected with `ZIP_INVALID_STRUCTURE`.
+- **Breaking:** the polyglot threat message reads `found in content` instead of `found after header`.
 - **Breaking:** the category enums (`DangerousExtensionCategory`, `CompoundExtensionCategory`, `UnicodeAttackCategory`, `SuspiciousFilePattern`, `BinaryFileCategory` and the other enums with set values) hold `frozenset` values. The `FileSecurityConfig` getters return mutable `set` copies.
 - The `Allowed:` extension list in the extension error message is sorted.
 

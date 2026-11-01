@@ -374,7 +374,10 @@ format.
   (`MalwareSignatureCategory.POLYGLOT_SIGNATURES`) that should
   not appear in image or activity files: ZIP/JAR headers,
   Java class headers, RAR headers. A Java class magic counts
-  only with a valid class-file version.
+  only with a valid class-file version. The search starts at the
+  first byte: no allowed image or activity signature begins with
+  one of these, so a ZIP right after the 3-byte JPEG header is
+  found.
 - Content analysis covers image and activity (GPX, TCX, FIT)
   uploads. ZIP uploads are not byte-scanned as a whole, because
   compressed bytes match signatures by chance; the ZIP inspector
@@ -394,12 +397,13 @@ Windows shortcuts) embedded within uploaded files.
   shortcut headers.
 - An executable signature counts only when the header structure
   verifies at that offset, because a bare 2-4 byte magic occurs
-  by chance in random data. PE needs an `e_lfanew` that points
-  at `PE\0\0`; ELF needs a valid class, byte order and
-  version; Mach-O needs a known CPU type and file type; a
-  universal Mach-O needs a plausible architecture count and CPU
-  type; a Java class needs a valid class-file version; a Windows
-  shortcut needs the Shell Link CLSID.
+  by chance in random data. PE needs an `e_lfanew` of any size
+  that points at `PE\0\0` inside the scanned sample; ELF needs
+  a valid class, byte order and version; Mach-O needs a known
+  CPU type and file type; a universal Mach-O needs a plausible
+  architecture count and CPU type; a Java class needs a valid
+  class-file version; a Windows shortcut needs the Shell Link
+  CLSID.
 - Web shell markers are `<?php`, `<script` and the ASP/JSP
   directive forms `<%@ page` and `<%@ language` (with or
   without the space). A bare `<%` is not a marker in content

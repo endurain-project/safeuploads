@@ -8,6 +8,7 @@ MIME/signature/extension checks.  Gated behind
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -59,16 +60,37 @@ _LNK_CLSID = (
 _JAVA_VERSION = rb"..\x00[\x2d-\x7f]"
 _FAT_HEADER = rb"\x00\x00\x00[\x01-\x2c]" + _CPU_BE
 # PE: the DOS header is 64 bytes and ends with the little-endian
-# u32 ``e_lfanew``. Only 16-bit offsets are considered; real
-# images use a few hundred bytes. The lookahead keeps scanning
-# in C and leaves overlapping candidates to be found.
-_PE_CANDIDATE = re.compile(
-    re.escape(next(iter(MalwareSignatureCategory.PE_EXECUTABLE.value)))
-    + rb"(?=.{58}..\x00\x00)",
-    re.DOTALL,
-)
+# u32 ``e_lfanew``. Every ``MZ`` followed by a full DOS header is
+# a candidate, except those whose ``e_lfanew`` points past the
+# content: the most significant byte of ``e_lfanew`` (the last
+# header byte) can be at most ``(len(content) - 1) >> 24``. The
+# lookahead keeps scanning in C and leaves overlapping candidates
+# to be found.
+_PE_MAGIC_BYTES = next(iter(MalwareSignatureCategory.PE_EXECUTABLE.value))
 _PE_MAGIC = b"PE\x00\x00"
 _PE_MIN_OFFSET = 4
+
+
+@functools.lru_cache(maxsize=256)
+def _pe_candidate(max_high_byte: int) -> re.Pattern[bytes]:
+    """
+    Compile the PE candidate pattern for a content-length bound.
+
+    Args:
+        max_high_byte: Largest value (0-255) the most significant
+            byte of ``e_lfanew`` may take.
+
+    Returns:
+        A pattern matching ``MZ`` followed by a full DOS header
+        whose last byte is at most ``max_high_byte``.
+    """
+    return re.compile(
+        re.escape(_PE_MAGIC_BYTES)
+        + rb"(?=.{61}[\x00-"
+        + b"\\x%02x" % max_high_byte
+        + rb"])",
+        re.DOTALL,
+    )
 
 
 def _build_executable_patterns() -> tuple[tuple[str, re.Pattern[bytes]], ...]:
@@ -136,8 +158,10 @@ def _find_pe(content: bytes) -> bool:
     """
     Return whether a structurally valid PE header is present.
 
-    A PE header is an ``MZ`` DOS header whose ``e_lfanew`` field
-    points at the PE signature inside the content.
+    A PE header is an ``MZ`` DOS header whose 32-bit ``e_lfanew``
+    field points at the PE signature inside the content. The
+    candidate pattern only drops headers whose ``e_lfanew`` points
+    past the content.
 
     Args:
         content: Raw bytes to inspect.
@@ -145,7 +169,8 @@ def _find_pe(content: bytes) -> bool:
     Returns:
         True if a structurally valid PE header is found.
     """
-    for match in _PE_CANDIDATE.finditer(content):
+    pattern = _pe_candidate(min(0xFF, max(0, len(content) - 1) >> 24))
+    for match in pattern.finditer(content):
         offset = match.start()
         e_lfanew = int.from_bytes(
             content[offset + 0x3C : offset + 0x40], "little"
@@ -321,8 +346,8 @@ class ContentSecurityInspector(BaseInspector):
         """
         Check for polyglot files (valid in multiple formats).
 
-        Looks for secondary format signatures embedded after
-        the expected header. Only runs for image and activity
+        Looks for secondary format signatures anywhere in the
+        content. Only runs for image and activity
         file types where polyglot attacks are most dangerous.
 
         Args:
@@ -336,13 +361,14 @@ class ContentSecurityInspector(BaseInspector):
         if expected_type not in ("image", "activity"):
             return []
 
-        # Skip first 8 bytes (longest common header is
-        # PNG at 8 bytes) and search rest for secondary
-        # signatures to detect polyglot files. A Java class
-        # magic counts only with a valid class-file version.
-        sig = find_embedded_signature(content, self._polyglot_sigs, 8)
+        # Search the whole content: no signed image or activity
+        # file starts with a polyglot signature, so a match at any
+        # offset, including right after a 3-byte JPEG header, is a
+        # secondary format. A Java class magic counts only with a
+        # valid class-file version.
+        sig = find_embedded_signature(content, self._polyglot_sigs, 0)
         if sig is None and any(
-            pattern.search(content, 8) for pattern in _JAVA_CLASS_PATTERNS
+            pattern.search(content) for pattern in _JAVA_CLASS_PATTERNS
         ):
             sig = next(iter(MalwareSignatureCategory.JAVA_CLASS.value))
         if sig is not None:
@@ -350,6 +376,6 @@ class ContentSecurityInspector(BaseInspector):
                 f"Polyglot file detected"
                 f" in '{filename}':"
                 f" secondary signature {sig!r}"
-                f" found after header"
+                f" found in content"
             ]
         return []

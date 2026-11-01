@@ -119,6 +119,46 @@ class TestContentSecurityInspector:
         for content in (dos_only, wrong_offset, short, b"PE\x00\x00"):
             assert inspector.scan_content(content, "f.dat", "") == []
 
+    @pytest.mark.parametrize("e_lfanew", [0x10000, 0x123456])
+    def test_detect_pe_with_large_e_lfanew(self, default_config, e_lfanew):
+        inspector = ContentSecurityInspector(default_config)
+        content = (
+            b"MZ"
+            + b"\x00" * 58
+            + struct.pack("<L", e_lfanew)
+            + b"\x00" * (e_lfanew - 64)
+            + b"PE\x00\x00"
+        )
+        threats = inspector.scan_content(content, "f.dat", "")
+        assert any("PE executable" in t for t in threats)
+
+    def test_pe_magic_ending_at_end_of_content_is_detected(
+        self, default_config
+    ):
+        inspector = ContentSecurityInspector(default_config)
+        e_lfanew = 0x10000
+        content = (
+            b"MZ"
+            + b"\x00" * 58
+            + struct.pack("<L", e_lfanew)
+            + b"\x00" * (e_lfanew - 64)
+            + b"PE\x00\x00"
+        )
+        assert len(content) == e_lfanew + 4
+        threats = inspector.scan_content(content, "f.dat", "")
+        assert any("PE executable" in t for t in threats)
+        assert inspector.scan_content(content[:-1], "f.dat", "") == []
+
+    def test_large_e_lfanew_without_pe_magic_not_detected(
+        self, default_config
+    ):
+        inspector = ContentSecurityInspector(default_config)
+        header = b"MZ" + b"\x00" * 58 + struct.pack("<L", 0x10000)
+        no_magic = header + b"\x00" * (0x10000 - 64) + b"PX\x00\x00"
+        past_end = header + _PAD
+        for content in (no_magic, past_end):
+            assert inspector.scan_content(content, "f.dat", "") == []
+
     def test_detect_elf_signature(self, default_config):
         """Test detection of ELF executable header."""
         inspector = ContentSecurityInspector(default_config)
@@ -406,6 +446,28 @@ class TestContentInspectorActivityPolyglot:
         content = _random_png(1, 8) + _zip_bytes()
         threats = inspector.scan_content(content, "a.png", "image")
         assert any("Polyglot" in t for t in threats)
+
+    @pytest.mark.parametrize("expected_type", ["image", "activity"])
+    @pytest.mark.parametrize(
+        "secondary",
+        [
+            pytest.param(b"PK\x03\x04" + _PAD, id="zip"),
+            pytest.param(b"Rar!\x1a\x07" + _PAD, id="rar"),
+            pytest.param(_HOSTILE_PAYLOADS["java"], id="java"),
+        ],
+    )
+    def test_polyglot_right_after_short_header_is_detected(
+        self, default_config, expected_type, secondary
+    ):
+        inspector = ContentSecurityInspector(default_config)
+        content = b"\xff\xd8\xff" + secondary
+        threats = inspector.scan_content(content, "a.bin", expected_type)
+        assert any("Polyglot" in t for t in threats)
+
+    def test_jpeg_without_secondary_signature_is_clean(self, default_config):
+        inspector = ContentSecurityInspector(default_config)
+        content = _JPEG + _random_bytes(7, 2000) + b"\xff\xd9"
+        assert inspector.scan_content(content, "a.jpg", "image") == []
 
     def test_java_class_in_image_needs_valid_version(self, default_config):
         inspector = ContentSecurityInspector(default_config)

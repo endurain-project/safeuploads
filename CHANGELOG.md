@@ -51,6 +51,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `FileValidator(config)` validates the instance's own MIME, extension, reserved-name and dangerous-Unicode sets, which the validators use; an instance override such as an empty `BLOCKED_EXTENSIONS` was never checked.
 - `SecurityAuditLogger` escapes and caps the correlation ID and `source_ip` like the filename, in the message and in `extra`, and `log_extra()` adds the escaped correlation ID. A host ID taken from a request header could forge audit lines with a newline. `get_correlation_id()` still returns the ID the host set.
 - A data descriptor must use the width its local header selects: 8-byte sizes when the local header has a ZIP64 extra field, 4-byte sizes otherwise (APPNOTE 4.3.9.2). Either width was accepted, so a reader that follows the rule could misread the descriptor.
+- With `enable_content_analysis=True`, a `content_scan_max_size` smaller than `max_image_size` or `max_activity_file_size` is a configuration error (`content_scan_window_too_small`). Content past the scan window was accepted without analysis.
 
 ### Changed
 
@@ -74,6 +75,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Breaking:** a Windows reserved name that differs from its casefolded form (`case_sensitive_reserved_name`) and an empty `WINDOWS_RESERVED_NAMES`, `COMPOUND_BLOCKED_EXTENSIONS` or `DANGEROUS_UNICODE_CHARS` (`empty_reserved_names`, `empty_compound_blocked_extensions`, `empty_dangerous_unicode_chars`) are error-severity configuration issues, so `FileValidator(config)` raises `FileSecurityConfigurationError`. Such a name could never match, and the uppercase case was only a warning.
 - **Breaking:** ZIP archives whose Unicode Path extra field spells a name other than the raw header name, such as a legacy code-page name with a UTF-8 alias, and data-descriptor entries whose local CRC-32 or sizes are non-zero and differ from the central directory, are rejected with `ZIP_INVALID_STRUCTURE`.
 - **Breaking:** gzip streams with reserved header flag bits set, or a header CRC (`FHCRC`) that does not match, are rejected with `ZIP_CORRUPT`; the `gzip` module ignored both.
+- **Breaking:** a config with `enable_content_analysis=True` and a `content_scan_max_size` smaller than `max_image_size` or `max_activity_file_size` makes `FileValidator(config)` raise `FileSecurityConfigurationError`. The defaults are unaffected.
 - **Breaking:** ZIP entries whose data descriptor uses the other size width than their local header selects are rejected with `ZIP_INVALID_STRUCTURE`.
 - **Breaking:** the category enums (`DangerousExtensionCategory`, `CompoundExtensionCategory`, `UnicodeAttackCategory`, `SuspiciousFilePattern`, `BinaryFileCategory` and the other enums with set values) hold `frozenset` values. The `FileSecurityConfig` getters return mutable `set` copies.
 - The `Allowed:` extension list in the extension error message is sorted.

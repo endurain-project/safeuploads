@@ -1110,3 +1110,97 @@ class TestInstanceOverrideValidation:
             e.error_type for e in config.validate_instance()
         ]
         assert FileSecurityConfig.validate_configuration() == []
+
+
+class TestContentScanWindowValidation:
+    """The content scan window must cover the largest scanned upload."""
+
+    @staticmethod
+    def _config(**limits) -> FileSecurityConfig:
+        """
+        Build a config with content analysis and the given limits.
+
+        Args:
+            **limits: SecurityLimits overrides.
+
+        Returns:
+            Configuration with content analysis enabled.
+        """
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_content_analysis=True, **limits)
+        return config
+
+    @staticmethod
+    def _window_errors(config: FileSecurityConfig) -> list:
+        """
+        Return the scan window errors reported for a config.
+
+        Args:
+            config: Configuration to validate.
+
+        Returns:
+            Errors of type ``content_scan_window_too_small``.
+        """
+        return [
+            e
+            for e in config.validate_instance()
+            if e.error_type == "content_scan_window_too_small"
+        ]
+
+    def test_default_limits_have_no_window_error(self):
+        """Default limits with content analysis on are accepted."""
+        assert self._window_errors(self._config()) == []
+
+    def test_window_equal_to_largest_limit_is_valid(self):
+        """A window equal to both file limits is accepted."""
+        size = 50 * 1024 * 1024
+        config = self._config(
+            max_image_size=size,
+            max_activity_file_size=size,
+            content_scan_max_size=size,
+        )
+        assert self._window_errors(config) == []
+
+    def test_small_window_ignored_when_analysis_disabled(self):
+        """No scan happens, so a small window is not an error."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            enable_content_analysis=False, content_scan_max_size=1024
+        )
+        assert self._window_errors(config) == []
+
+    def test_window_smaller_than_image_limit_rejected(self):
+        """A window below max_image_size is an error."""
+        config = self._config(
+            max_image_size=20 * 1024 * 1024,
+            max_activity_file_size=1024,
+            content_scan_max_size=1024 * 1024,
+        )
+        errors = self._window_errors(config)
+        assert len(errors) == 1
+        assert errors[0].severity == "error"
+        assert errors[0].component == "streaming"
+        assert "max_image_size" in errors[0].message
+
+    def test_window_smaller_than_activity_limit_rejected(self):
+        """A window below max_activity_file_size is an error."""
+        config = self._config(
+            max_image_size=1024,
+            max_activity_file_size=50 * 1024 * 1024,
+            content_scan_max_size=1024 * 1024,
+        )
+        errors = self._window_errors(config)
+        assert len(errors) == 1
+        assert "max_activity_file_size" in errors[0].message
+
+    def test_window_smaller_than_both_limits_reports_two(self):
+        """One error is reported per limit exceeding the window."""
+        config = self._config(content_scan_max_size=1024)
+        assert len(self._window_errors(config)) == 2
+
+    def test_file_validator_rejects_small_window(self):
+        """FileValidator refuses a config with a too small window."""
+        config = self._config(content_scan_max_size=1024)
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert "content_scan_window_too_small" in _error_types(exc_info)

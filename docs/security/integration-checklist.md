@@ -54,7 +54,9 @@ that addresses it.
   error-severity configuration issue (invalid limit types,
   non-positive limits, empty or uppercase extension entries,
   empty block lists or reserved names, reserved names that are
-  not lowercase), including sets overridden on the instance;
+  not lowercase, a content scan window smaller than an image or
+  activity size limit), including sets overridden on the
+  instance;
   warnings are only logged.
 
 ## Content Analysis
@@ -63,7 +65,9 @@ that addresses it.
   files from untrusted users. It covers image and activity
   uploads; ZIP contents are scanned entry by entry by the ZIP
   inspector.
-- [ ] `content_scan_max_size` set appropriately (default 50 MB).
+- [ ] `content_scan_max_size` at least `max_image_size` and
+  `max_activity_file_size` (default 50 MB). With content analysis
+  on, a smaller window is a configuration error.
 - [ ] Consider supplemental antivirus scanning (ClamAV or
   similar) for high-risk environments.
 

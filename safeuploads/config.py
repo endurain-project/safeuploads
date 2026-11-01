@@ -725,7 +725,11 @@ class FileSecurityConfig:
         A non-positive buffer or chunk size would disable the
         bounded reads (``read(-1)`` reads everything and a
         spooled buffer of 0 never spills to disk), so each is
-        required to be positive.
+        required to be positive. With content analysis enabled
+        only the first ``content_scan_max_size`` bytes of an
+        image or activity upload are scanned, so the window must
+        cover ``max_image_size`` and ``max_activity_file_size``;
+        otherwise a payload placed past the window is accepted.
 
         Args:
             limits: Security limits to validate.
@@ -750,6 +754,28 @@ class FileSecurityConfig:
                         f"Set {name} to a positive value",
                     )
                 )
+
+        if limits.enable_content_analysis:
+            for name in ("max_image_size", "max_activity_file_size"):
+                size = getattr(limits, name)
+                if limits.content_scan_max_size < size:
+                    errors.append(
+                        _config_error(
+                            "content_scan_window_too_small",
+                            (
+                                "content_scan_max_size"
+                                f" ({limits.content_scan_max_size} bytes)"
+                                f" is smaller than {name}"
+                                f" ({size} bytes), so content past"
+                                " the scan window is not analyzed"
+                            ),
+                            "streaming",
+                            (
+                                "Raise content_scan_max_size to at least"
+                                f" {name}"
+                            ),
+                        )
+                    )
 
         if (
             not math.isfinite(limits.max_validation_time_seconds)

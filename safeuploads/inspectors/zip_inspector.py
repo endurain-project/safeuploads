@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import logging
 import os
@@ -29,6 +28,7 @@ from ..exceptions import (
 from ..utils import (
     check_resource_limits,
     find_text_pattern,
+    iter_gzip_chunks,
     matches_signature_prefix,
 )
 from ..validators.compression_validator import CompressionSecurityValidator
@@ -604,6 +604,8 @@ class ZipContentInspector(BaseInspector):
                         )
                     )
 
+        except ResourceLimitError:
+            raise
         except Exception as err:
             logger.warning(
                 "Could not inspect content of '%s': %s",
@@ -639,15 +641,18 @@ class ZipContentInspector(BaseInspector):
             List of content threats.
 
         Raises:
-            gzip.BadGzipFile: If the entry is not a valid gzip stream.
-            zlib.error: If the compressed data is invalid.
+            ResourceLimitError: If the active resource monitor's time or
+                memory limit is exceeded.
+            zlib.error: If the entry is not a valid gzip stream.
             EOFError: If the stream ends before the sample is read.
         """
-        with (
-            zip_file.open(entry, "r") as file,
-            gzip.GzipFile(fileobj=file, mode="rb") as gz,
-        ):
-            sample = gz.read(512)
+        sample = b""
+        with zip_file.open(entry, "r") as file:
+            for chunk in iter_gzip_chunks(file, 512):
+                sample += chunk
+                if len(sample) >= 512:
+                    break
+        sample = sample[:512]
 
         if sample.startswith(_GZIP_MAGIC):
             return [

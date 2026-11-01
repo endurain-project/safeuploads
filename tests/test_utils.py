@@ -1,6 +1,9 @@
 """Tests for ResourceMonitor utility."""
 
+import gzip
+import io
 import time
+import zlib
 
 import pytest
 
@@ -8,7 +11,11 @@ from safeuploads.exceptions import (
     ErrorCode,
     ResourceLimitError,
 )
-from safeuploads.utils import ResourceMonitor, check_resource_limits
+from safeuploads.utils import (
+    ResourceMonitor,
+    check_resource_limits,
+    iter_gzip_chunks,
+)
 
 
 class TestResourceMonitorInit:
@@ -379,3 +386,98 @@ class TestResourceMonitorLimitBoundaries:
 
         assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
         assert exc_info.value.memory_bytes == 1024 * 1024 + 1
+
+
+def _decompress(data: bytes, chunk_size: int = 64) -> list[bytes]:
+    """Return the chunks ``iter_gzip_chunks`` yields for ``data``."""
+    return list(iter_gzip_chunks(io.BytesIO(data), chunk_size))
+
+
+class TestIterGzipChunks:
+    """``iter_gzip_chunks`` decompresses gzip data in bounded steps."""
+
+    def test_single_member(self):
+        """A single member round-trips."""
+        payload = b"hello gzip " * 50
+        chunks = _decompress(gzip.compress(payload))
+        assert b"".join(chunks) == payload
+
+    def test_chunks_never_exceed_chunk_size(self):
+        """Every yielded chunk is non-empty and at most chunk_size."""
+        payload = bytes(range(256)) * 40
+        chunks = _decompress(gzip.compress(payload), chunk_size=100)
+        assert len(chunks) > 1
+        assert all(0 < len(chunk) <= 100 for chunk in chunks)
+        assert b"".join(chunks) == payload
+
+    def test_multi_member(self):
+        """Concatenated members decompress to the joined payloads."""
+        data = gzip.compress(b"first ") + gzip.compress(b"second")
+        assert b"".join(_decompress(data)) == b"first second"
+
+    def test_zero_padding_between_and_after_members(self):
+        """Zero padding is skipped, as the gzip module does."""
+        data = (
+            gzip.compress(b"a")
+            + b"\x00" * 300
+            + gzip.compress(b"b")
+            + b"\x00" * 300
+        )
+        assert b"".join(_decompress(data)) == b"ab"
+        assert gzip.decompress(data) == b"ab"
+
+    def test_trailing_garbage_raises(self):
+        """Non-zero data after the last member is a zlib error."""
+        with pytest.raises(zlib.error):
+            _decompress(gzip.compress(b"a") + b"garbage")
+
+    def test_truncated_member_raises_eof(self):
+        """Input ending inside a member raises EOFError."""
+        data = gzip.compress(bytes(range(256)) * 100)
+        with pytest.raises(EOFError):
+            _decompress(data[: len(data) // 2])
+
+    def test_truncated_trailer_raises_eof(self):
+        """A member missing its trailer raises EOFError."""
+        with pytest.raises(EOFError):
+            _decompress(gzip.compress(b"abc" * 100)[:-4])
+
+    def test_corrupted_crc_raises(self):
+        """A wrong CRC is a zlib error."""
+        data = bytearray(gzip.compress(b"abc" * 100))
+        data[-8] ^= 0xFF
+        with pytest.raises(zlib.error):
+            _decompress(bytes(data))
+
+    def test_not_gzip_raises(self):
+        """Data without a gzip header is a zlib error."""
+        with pytest.raises(zlib.error):
+            _decompress(b"plain text, not gzip")
+
+    def test_empty_input_yields_nothing(self):
+        """An empty stream yields no chunks."""
+        assert _decompress(b"") == []
+
+    def test_leading_zeros_raise(self):
+        """Zero bytes before the first member are a zlib error."""
+        data = b"\x00" * 200 + gzip.compress(b"a")
+        with pytest.raises(zlib.error):
+            _decompress(data)
+        with pytest.raises(gzip.BadGzipFile):
+            gzip.decompress(data)
+
+    def test_many_empty_members_exceed_time_limit(self, fake_clock):
+        """Empty members cannot run past the monitor's time limit."""
+        data = gzip.compress(b"", 0) * 5000
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(lambda: _decompress(data, chunk_size=64))
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_many_empty_members_within_budget(self, fake_clock):
+        """The same stream completes when time stays in budget."""
+        data = gzip.compress(b"", 0) * 50
+        fake_clock.step = 0.001
+
+        fake_clock.run_monitored(lambda: _decompress(data, chunk_size=64))

@@ -511,9 +511,16 @@ size, similar to ZIP bombs.
 
 **Mitigations:**
 
-- `GzipContentInspector` reads gzip streams in chunks, checking
-  the compression ratio and uncompressed size against
-  `SecurityLimits` progressively.
+- `GzipContentInspector` decompresses gzip streams with `zlib`
+  member by member, reading and producing at most `chunk_size`
+  bytes per step, and checks the compression ratio and
+  uncompressed size against `SecurityLimits` progressively.
+- The active `ResourceMonitor` is checked on every step, so a
+  stream of empty members or a long header field cannot run past
+  `max_validation_time_seconds`. The same decompression samples
+  gzip ZIP entries. Zero padding between and after members is
+  accepted; other trailing data, reserved header flags and a
+  mismatched header CRC are rejected with `ZIP_CORRUPT`.
 - Exceeding either limit raises a validation error immediately,
   without reading the rest of the stream.
 - Deflate data that `zlib` cannot decode is rejected with

@@ -7,6 +7,7 @@ import zlib
 
 import pytest
 
+import safeuploads.inspectors.gzip_inspector as gzip_inspector_module
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     CompressionSecurityError,
@@ -144,10 +145,12 @@ class TestGzipContentInspector:
         """Test handling of MemoryError during decompression."""
         inspector = GzipContentInspector(default_config)
 
-        def mock_open(*args, **kwargs):
+        def failing_chunks(*args, **kwargs):
             raise MemoryError("Simulated memory error")
 
-        monkeypatch.setattr(gzip, "open", mock_open)
+        monkeypatch.setattr(
+            gzip_inspector_module, "iter_gzip_chunks", failing_chunks
+        )
 
         file_obj = io.BytesIO(b"\x1f\x8b")
         with pytest.raises(ZipBombError) as exc_info:
@@ -199,14 +202,12 @@ class TestGzipInspectorEdgeCases:
             gz.write(content)
         compressed = buf.getvalue()
 
-        import safeuploads.inspectors.gzip_inspector as _m
-
-        _original = _m.gzip.open
-
-        def _failing_open(*a, **kw):
+        def _failing_chunks(*a, **kw):
             raise OSError("disk failure")
 
-        monkeypatch.setattr(_m.gzip, "open", _failing_open)
+        monkeypatch.setattr(
+            gzip_inspector_module, "iter_gzip_chunks", _failing_chunks
+        )
 
         with pytest.raises(FileProcessingError) as exc_info:
             inspector.inspect_gzip_content(
@@ -380,3 +381,70 @@ class TestGzipLimitBoundaries:
         assert (
             exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
         )
+
+
+class TestGzipMemberHandling:
+    """Members are inspected and bounded one chunk at a time."""
+
+    def test_many_empty_members_exceed_time_limit(
+        self, default_config, fake_clock
+    ):
+        """Output-free members still hit the time limit."""
+        inspector = GzipContentInspector(default_config)
+        data = gzip.compress(b"", 0) * 5000
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_gzip_content(
+                    io.BytesIO(data), len(data)
+                )
+            )
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_valid_multi_member_passes(self, default_config):
+        """A multi-member file with padding is accepted."""
+        data = (
+            gzip.compress(b"first " * 100)
+            + b"\x00" * 16
+            + gzip.compress(b"second " * 100)
+        )
+        GzipContentInspector(default_config).inspect_gzip_content(
+            io.BytesIO(data), len(data)
+        )
+
+    def test_size_limit_counts_all_members(self):
+        """The uncompressed size is summed across members."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_uncompressed_size=1024 * 1024,
+            max_compression_ratio=100000,
+        )
+        member = gzip.compress(bytes(400 * 1024))
+        data = member * 4
+        with pytest.raises(ZipBombError):
+            GzipContentInspector(config).inspect_gzip_content(
+                io.BytesIO(data), len(data)
+            )
+
+    def test_ratio_limit_counts_all_members(self):
+        """The ratio is checked on the output summed across members."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_compression_ratio=50)
+        data = gzip.compress(bytes(100 * 1024)) * 3
+        with pytest.raises(ZipBombError) as exc_info:
+            GzipContentInspector(config).inspect_gzip_content(
+                io.BytesIO(data), len(data)
+            )
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+
+    def test_trailing_garbage_rejected(self, default_config):
+        """Non-gzip data after a member is reported as corrupted."""
+        data = gzip.compress(b"abc") + b"garbage"
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            GzipContentInspector(default_config).inspect_gzip_content(
+                io.BytesIO(data), len(data)
+            )
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT

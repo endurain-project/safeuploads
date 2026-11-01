@@ -1925,6 +1925,57 @@ class TestGzipEntryContent:
         with pytest.raises(ZipContentError, match="Executable content"):
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
 
+    def test_script_within_sample_of_long_entry_rejected(
+        self, nested_allowed_inspector
+    ):
+        """A script in the first 512 bytes of a long entry is found."""
+        payload = b"a" * 400 + b"<?php ?>" + b"b" * 2000
+        data = _build_zip({"x.txt.gz": gzip.compress(payload)})
+        with pytest.raises(ZipContentError) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Script content" in str(exc_info.value)
+
+    def test_content_after_sample_not_decompressed(
+        self, nested_allowed_inspector
+    ):
+        """Only the first 512 decompressed bytes are sampled."""
+        payload = b"a" * 600 + b"<?php ?>"
+        data = _build_zip({"x.txt.gz": gzip.compress(payload)})
+        nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_script_after_empty_members_rejected(
+        self, nested_allowed_inspector
+    ):
+        """Sampling crosses empty members to reach a script."""
+        entry = gzip.compress(b"", 0) * 200 + gzip.compress(b"<?php ?>")
+        data = _build_zip({"x.txt.gz": entry})
+        with pytest.raises(ZipContentError, match="Script content"):
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_empty_members_over_budget_raise_limit_error(
+        self, nested_allowed_inspector, fake_clock
+    ):
+        """A time-limit breach is not turned into a content threat."""
+        entry = gzip.compress(b"", 0) * 5000
+        data = _build_zip({"x.txt.gz": entry})
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: nested_allowed_inspector.inspect_zip_content(
+                    io.BytesIO(data)
+                )
+            )
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_benign_multi_member_gzip_accepted(self, nested_allowed_inspector):
+        """A benign multi-member gzip entry is accepted."""
+        entry = gzip.compress(b"<gpx>") + gzip.compress(b"</gpx>")
+        nested_allowed_inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.gpx.gz": entry}))
+        )
+
     def test_plaintext_script_named_gz_rejected(
         self, nested_allowed_inspector
     ):

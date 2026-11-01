@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Image MIME detection and temp-file writes that spill to disk run in the worker thread, not on the event loop. Cancelling a validation closes its temp files after any running worker finishes and propagates `CancelledError`.
 - Every Info-ZIP Unicode Path extra field (`0x7075`), in the central or the local header, must carry the entry's raw name bytes, and both extra fields must be well formed; otherwise the archive is rejected with `ZIP_INVALID_STRUCTURE`. `zipfile` replaced the entry name with the field's name while other extractors kept the raw one, so a name such as `../../evil.sh` or `evil.exe` passed every name check under a benign alias.
 - For entries with a data descriptor (flag bit 3), the local header's CRC-32 and sizes must each be zero or equal to the central directory's, rejected with `ZIP_INVALID_STRUCTURE` otherwise. A streaming extractor ended such an entry at the local size and read a hidden entry from its data.
+- Gzip data is decompressed with `zlib` member by member, reading and producing at most `chunk_size` bytes per step and checking the active `ResourceMonitor` on each step, for gzip uploads and for the 512-byte sample of gzip ZIP entries. A stream of empty members or a long header field ran inside one `gzip` read call, beyond `max_validation_time_seconds`.
 
 ### Changed
 
@@ -68,6 +69,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Breaking:** image uploads with a disallowed MIME type are rejected with `MIME_TYPE_MISMATCH` instead of `MIME_TYPE_INVALID`, like the other upload types.
 - **Breaking:** ZIP, gzip and activity uploads too small to carry a signature are rejected with `FILE_SIGNATURE_MISSING` instead of `FILE_SIGNATURE_MISMATCH`, as images already were.
 - **Breaking:** ZIP archives whose Unicode Path extra field spells a name other than the raw header name, such as a legacy code-page name with a UTF-8 alias, and data-descriptor entries whose local CRC-32 or sizes are non-zero and differ from the central directory, are rejected with `ZIP_INVALID_STRUCTURE`.
+- **Breaking:** gzip streams with reserved header flag bits set, or a header CRC (`FHCRC`) that does not match, are rejected with `ZIP_CORRUPT`; the `gzip` module ignored both.
 - **Breaking:** the category enums (`DangerousExtensionCategory`, `CompoundExtensionCategory`, `UnicodeAttackCategory`, `SuspiciousFilePattern`, `BinaryFileCategory` and the other enums with set values) hold `frozenset` values. The `FileSecurityConfig` getters return mutable `set` copies.
 - The `Allowed:` extension list in the extension error message is sorted.
 

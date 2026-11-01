@@ -4,10 +4,12 @@ import contextvars
 import logging
 import sys
 import time
-from collections.abc import Iterable
+import zlib
+from collections.abc import Iterable, Iterator
 from types import TracebackType
 
 from .exceptions import ErrorCode, ResourceLimitError
+from .protocols import SeekableFile
 
 try:
     # ``resource`` is a Unix-only stdlib module and is absent on
@@ -342,3 +344,62 @@ def check_resource_limits() -> None:
         return
     monitor.check_time()
     monitor.check_memory()
+
+
+def iter_gzip_chunks(stream: SeekableFile, chunk_size: int) -> Iterator[bytes]:
+    """
+    Decompress gzip data in bounded steps, yielding each output chunk.
+
+    The data is inflated with ``zlib`` instead of the ``gzip`` module,
+    whose reader loops inside a single ``read`` call over members
+    that produce no output (and over long header fields), so limits
+    cannot be enforced between steps. Here every step reads at most
+    ``chunk_size`` input bytes, produces at most ``chunk_size``
+    output bytes and calls ``check_resource_limits``. Members may be
+    concatenated and zero padded; data that does not start a gzip
+    member is an error.
+
+    Args:
+        stream: Binary file positioned at the start of the gzip data.
+        chunk_size: Bytes read, and at most inflated, per step.
+
+    Yields:
+        Non-empty chunks of decompressed data.
+
+    Raises:
+        ResourceLimitError: If the active resource monitor's time or
+            memory limit is exceeded.
+        zlib.error: If a header, deflate stream or trailer is invalid.
+        EOFError: If the input ends inside a gzip member.
+    """
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    # True while the current decompressor has been given no input,
+    # where the stream may end
+    fresh = True
+    # True once a member has ended: zero padding may follow it
+    after_member = False
+    while True:
+        check_resource_limits()
+        if decompressor.eof:
+            data = decompressor.unused_data
+            decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            fresh = after_member = True
+        else:
+            data = decompressor.unconsumed_tail
+        from_stream = not data
+        if from_stream:
+            data = stream.read(chunk_size)
+        if fresh:
+            if from_stream and not data:
+                return
+            if after_member:
+                data = data.lstrip(b"\x00")
+                if not data:
+                    continue
+            fresh = False
+        output = decompressor.decompress(data, chunk_size)
+        if output:
+            yield output
+        elif from_stream and not data and not decompressor.eof:
+            # All input is consumed and nothing was pending
+            raise EOFError("Compressed gzip data ended before the end")

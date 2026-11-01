@@ -224,8 +224,9 @@ class TestValidateActivityFileTextPlain:
         validator = FileValidator()
         self._as_text_plain(validator, monkeypatch)
         f = mock_upload_file("track.gpx", b"This is not XML")
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     async def test_xxe_gpx_still_rejected(self, mock_upload_file, monkeypatch):
         validator = FileValidator()
@@ -253,8 +254,9 @@ class TestValidateActivityFileTextPlain:
         self._as_text_plain(validator, monkeypatch)
         png = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
         f = mock_upload_file("track.gpx", png)
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_activity_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
 
 class TestValidateActivityFileSignatureErrors:
@@ -307,6 +309,14 @@ def _analysis_validator(enabled: bool) -> FileValidator:
 
 _GPX_SCRIPT = b'<?xml version="1.0"?><gpx><script>x</script></gpx>'
 _FIT_PHP = build_fit(b"<?php evil ?>" * 4)
+_TCX_SCRIPT = (
+    b'<?xml version="1.0" encoding="UTF-8"?>'
+    b"<TrainingCenterDatabase>"
+    b"<Activities>"
+    b'<Activity Sport="Running"><script>x</script></Activity>'
+    b"</Activities>"
+    b"</TrainingCenterDatabase>"
+)
 
 
 class TestValidateActivityFileContentAnalysis:
@@ -314,7 +324,11 @@ class TestValidateActivityFileContentAnalysis:
 
     @pytest.mark.parametrize(
         ("name", "content"),
-        [("a.gpx", _GPX_SCRIPT), ("a.fit", _FIT_PHP)],
+        [
+            ("a.gpx", _GPX_SCRIPT),
+            ("a.tcx", _TCX_SCRIPT),
+            ("a.fit", _FIT_PHP),
+        ],
     )
     async def test_threat_rejected_when_enabled(
         self, mock_upload_file, name, content
@@ -328,7 +342,11 @@ class TestValidateActivityFileContentAnalysis:
 
     @pytest.mark.parametrize(
         ("name", "content"),
-        [("a.gpx", _GPX_SCRIPT), ("a.fit", _FIT_PHP)],
+        [
+            ("a.gpx", _GPX_SCRIPT),
+            ("a.tcx", _TCX_SCRIPT),
+            ("a.fit", _FIT_PHP),
+        ],
     )
     async def test_threat_accepted_when_disabled(
         self, mock_upload_file, name, content

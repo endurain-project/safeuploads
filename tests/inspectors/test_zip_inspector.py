@@ -2002,14 +2002,20 @@ class TestGzipEntryContent:
         data = _build_zip(
             {"x.txt.gz": gzip.compress(b"<?php eval($_GET['x']); ?>")}
         )
-        with pytest.raises(ZipContentError, match="Script content"):
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_gzipped_executable_rejected(self, nested_allowed_inspector):
         """An executable inside a valid gzip entry is detected."""
         data = _build_zip({"x.gz": gzip.compress(b"\x7fELF" + b"\x00" * 64)})
-        with pytest.raises(ZipContentError, match="Executable content"):
+        with pytest.raises(
+            ZipContentError, match="Executable content"
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_script_within_sample_of_long_entry_rejected(
         self, nested_allowed_inspector
@@ -2036,8 +2042,11 @@ class TestGzipEntryContent:
         """Sampling crosses empty members to reach a script."""
         entry = gzip.compress(b"", 0) * 200 + gzip.compress(b"<?php ?>")
         data = _build_zip({"x.txt.gz": entry})
-        with pytest.raises(ZipContentError, match="Script content"):
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_empty_members_over_budget_raise_limit_error(
         self, nested_allowed_inspector, fake_clock
@@ -2067,14 +2076,20 @@ class TestGzipEntryContent:
     ):
         """A plaintext script named ``.fit.gz`` is still scanned."""
         data = _build_zip({"x.fit.gz": b"<?php eval($_GET['x']); ?>"})
-        with pytest.raises(ZipContentError, match="Script content"):
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_executable_named_gz_rejected(self, nested_allowed_inspector):
         """An executable named ``.fit.gz`` is still rejected."""
         data = _build_zip({"x.fit.gz": b"MZ" + b"\x00" * 64})
-        with pytest.raises(ZipContentError, match="Executable content"):
+        with pytest.raises(
+            ZipContentError, match="Executable content"
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     @pytest.mark.parametrize(
         "content",
@@ -2090,8 +2105,9 @@ class TestGzipEntryContent:
         data = _build_zip({"x.fit.gz": content})
         with pytest.raises(
             ZipContentError, match="Entry content could not be inspected"
-        ):
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_gzip_in_gzip_rejected(self, nested_allowed_inspector):
         """A gzip stream inside a gzip entry is rejected."""
@@ -2099,16 +2115,20 @@ class TestGzipEntryContent:
         data = _build_zip({"x.fit.gz": gzip.compress(inner)})
         with pytest.raises(
             ZipContentError, match="Entry content could not be inspected"
-        ):
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_script_in_txt_entry_still_rejected(
         self, nested_allowed_inspector
     ):
         """A plain ``.txt`` entry with a script is still rejected."""
         data = _build_zip({"notes.txt": b"<?php eval($_GET['x']); ?>"})
-        with pytest.raises(ZipContentError, match="Script content"):
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
             nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
 
 def _deflated_zip(entries: dict[str, bytes]) -> bytes:

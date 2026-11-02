@@ -1,9 +1,11 @@
 """Tests for exception classes and error codes."""
 
 import copy
+import importlib
+import importlib.metadata
 import inspect
 from concurrent.futures import ProcessPoolExecutor
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 import pytest
 
@@ -712,6 +714,23 @@ class TestPackageExports:
         """__version__ equals the installed distribution version."""
         assert safeuploads.__version__ == version("safeuploads")
         assert "__version__" in safeuploads.__all__
+
+    def test_version_falls_back_without_distribution_metadata(
+        self, monkeypatch
+    ):
+        """An uninstalled source tree still imports."""
+
+        def missing(name):
+            raise PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", missing)
+        try:
+            importlib.reload(safeuploads)
+            assert safeuploads.__version__ == "0+unknown"
+        finally:
+            monkeypatch.undo()
+            importlib.reload(safeuploads)
+        assert safeuploads.__version__ == version("safeuploads")
 
     @pytest.mark.parametrize(
         "name",

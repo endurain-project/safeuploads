@@ -5,7 +5,7 @@ A comprehensive file security system for
 validating uploads and preventing attacks.
 """
 
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 from .audit import (
     AuditEvent,
@@ -80,7 +80,10 @@ from .validators import (
 # callers can invoke FileSecurityConfig.validate_and_report() or
 # config.validate_instance() for an early check.
 
-__version__ = version("safeuploads")
+try:
+    __version__ = version("safeuploads")
+except PackageNotFoundError:  # uninstalled source tree or vendored copy
+    __version__ = "0+unknown"
 
 # Export all public APIs
 __all__ = [

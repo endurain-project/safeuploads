@@ -6,10 +6,14 @@ expected extension, pattern, or code point values so that regressions
 in the definitions are caught immediately.
 """
 
+import pytest
+
+from safeuploads.config import FileSecurityConfig
 from safeuploads.enums import (
     BinaryFileCategory,
     CompoundExtensionCategory,
     DangerousExtensionCategory,
+    MalwareSignatureCategory,
     SuspiciousFilePattern,
     UnicodeAttackCategory,
     ZipThreatCategory,
@@ -492,3 +496,56 @@ class TestZipThreatCategory:
             assert len(category.value) > 0, (
                 f"ZIP threat category {category.name} must not be empty"
             )
+
+
+_ALL_CATEGORY_ENUMS = (
+    BinaryFileCategory,
+    DangerousExtensionCategory,
+    CompoundExtensionCategory,
+    UnicodeAttackCategory,
+    SuspiciousFilePattern,
+    ZipThreatCategory,
+    MalwareSignatureCategory,
+)
+
+
+class TestEnumValuesAreImmutable:
+    """Enum values are frozensets, so shared state cannot change."""
+
+    @pytest.mark.parametrize(
+        "category",
+        [member for enum in _ALL_CATEGORY_ENUMS for member in enum],
+        ids=lambda member: f"{type(member).__name__}.{member.name}",
+    )
+    def test_value_is_frozenset(self, category):
+        """Each member value is a frozenset that rejects mutation."""
+        assert isinstance(category.value, frozenset)
+        with pytest.raises(AttributeError):
+            category.value.add("x")
+
+    def test_getters_return_mutable_copies(self):
+        """Config getters return sets that do not alias the enum."""
+        extensions = FileSecurityConfig.get_extensions_by_category(
+            DangerousExtensionCategory.WINDOWS_EXECUTABLES
+        )
+        compound = FileSecurityConfig.get_compound_extensions_by_category(
+            CompoundExtensionCategory.JAVASCRIPT_VARIANTS
+        )
+        code_points = FileSecurityConfig.get_unicode_chars_by_category(
+            UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS
+        )
+        for result in (extensions, compound, code_points):
+            assert type(result) is set
+        extensions.add(".zzz")
+        compound.add(".zzz.js")
+        code_points.add(0x10FFFF)
+        assert (
+            ".zzz" not in DangerousExtensionCategory.WINDOWS_EXECUTABLES.value
+        )
+        assert (
+            ".zzz.js"
+            not in CompoundExtensionCategory.JAVASCRIPT_VARIANTS.value
+        )
+        assert (
+            0x10FFFF not in UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS.value
+        )

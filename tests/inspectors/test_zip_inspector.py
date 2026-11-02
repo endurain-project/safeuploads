@@ -1,17 +1,29 @@
 """Tests for ZipContentInspector."""
 
+import gzip
+import hashlib
 import io
+import struct
+import tracemalloc
+import types
 import zipfile
 
 import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
+    CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
+    ZipBombError,
     ZipContentError,
 )
+from safeuploads.inspectors import zip_inspector
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
+from safeuploads.validators.compression_validator import (
+    CompressionSecurityValidator,
+)
 
 
 class TestZipContentInspector:
@@ -47,6 +59,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
         assert "Directory traversal" in str(exc_info.value)
         assert exc_info.value.threats is not None
@@ -62,6 +75,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -75,6 +89,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -88,6 +103,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -101,6 +117,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_ABSOLUTE_PATH
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -114,6 +131,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_ABSOLUTE_PATH
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -127,6 +145,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_ABSOLUTE_PATH
 
         assert "Absolute path" in str(exc_info.value)
 
@@ -160,6 +179,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_SYMLINK_DETECTED
 
         assert "Symbolic link" in str(exc_info.value)
 
@@ -192,6 +212,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Filename too long" in str(exc_info.value)
 
@@ -209,6 +230,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Path too long" in str(exc_info.value)
 
@@ -222,6 +244,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -235,6 +258,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -248,6 +272,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious path component" in str(exc_info.value)
 
@@ -261,6 +286,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious path component" in str(exc_info.value)
 
@@ -282,6 +308,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(outer_zip.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
         assert "Nested archive" in str(exc_info.value)
 
@@ -297,6 +324,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
 
         assert "Nested archive" in str(exc_info.value)
 
@@ -332,6 +360,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Excessive directory depth" in str(exc_info.value)
 
@@ -347,6 +376,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Excessive number" in str(exc_info.value)
 
@@ -365,6 +395,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Executable content" in str(exc_info.value)
 
@@ -379,10 +410,11 @@ class TestZipContentInspector:
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("data.bin", elf_content)
+            zf.writestr("data.dat", elf_content)
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Executable content" in str(exc_info.value)
 
@@ -400,6 +432,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Script content" in str(exc_info.value)
 
@@ -417,6 +450,21 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+        assert "Script content" in str(exc_info.value)
+
+    def test_detect_script_content_asp_delimiter(self):
+        """Test a text entry starting with ``<%`` is rejected."""
+        inspector = ZipContentInspector(FileSecurityConfig())
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr("readme.txt", b"<% Response.Write(1) %>")
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Script content" in str(exc_info.value)
 
@@ -431,7 +479,7 @@ class TestZipContentInspector:
 
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("file.bin", pe_content)
+            zf.writestr("file.dat", pe_content)
 
         # Should not raise when content scanning disabled
         inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
@@ -449,11 +497,12 @@ class TestZipContentInspector:
         with zipfile.ZipFile(
             zip_buffer, "w", compression=zipfile.ZIP_STORED
         ) as zf:
-            zf.writestr("large.bin", large_content)
+            zf.writestr("large.dat", large_content)
 
         # Should detect executable signature regardless of size
-        with pytest.raises(ZipContentError):
+        with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
     def test_handle_corrupted_zip(self, default_config):
         """Test handling of corrupted ZIP file."""
@@ -461,9 +510,10 @@ class TestZipContentInspector:
 
         corrupted_zip = b"PK\x03\x04corrupted data"
 
-        with pytest.raises(FileProcessingError) as exc_info:
+        with pytest.raises(CompressionSecurityError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(corrupted_zip))
 
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
         assert "Invalid or corrupted" in str(exc_info.value)
 
     def test_timeout_protection(self):
@@ -522,6 +572,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
         # Should detect multiple threats
         assert exc_info.value.threats is not None
@@ -551,6 +602,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         assert "Suspicious filename" in str(exc_info.value)
 
@@ -565,6 +617,7 @@ class TestZipContentInspector:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
         assert "Directory traversal" in str(exc_info.value)
 
@@ -577,8 +630,9 @@ class TestZipContentInspector:
             zf.writestr("../evil.txt", b"malicious")
 
         # Should raise ZipContentError, not FileProcessingError
-        with pytest.raises(ZipContentError):
+        with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
     def test_empty_zip_allowed(self, default_config):
         """Test that empty ZIP files are allowed."""
@@ -614,9 +668,11 @@ class TestZipContentInspector:
         )
 
         with pytest.raises(
-            FileProcessingError, match="Invalid or corrupted ZIP"
-        ):
+            CompressionSecurityError, match="Invalid or corrupted ZIP"
+        ) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(corrupted_zip))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+        assert isinstance(exc_info.value.__cause__, zipfile.BadZipFile)
 
     def test_generic_exception_during_content_inspection(
         self, default_config, monkeypatch
@@ -678,7 +734,7 @@ class TestZipContentInspector:
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             # Pure binary content with no ASCII patterns
             # Use invalid UTF-8 sequences
-            zf.writestr("data.bin", b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8")
+            zf.writestr("data.dat", b"\xff\xfe\xfd\xfc\xfb\xfa\xf9\xf8")
 
         # Should handle decode errors gracefully without raising
         # The decode error is caught and logged but doesn't cause failure
@@ -868,8 +924,8 @@ class TestRecursiveZipDetection:
                 start_time=time.monotonic() - 1.0,
             )
 
-    def test_non_zip_nested_archive_ignored(self):
-        """Test that invalid nested archives are skipped."""
+    def test_non_zip_nested_archive_rejected(self):
+        """An entry named as a ZIP that is not one is rejected."""
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
             allow_nested_archives=True,
@@ -882,7 +938,10 @@ class TestRecursiveZipDetection:
             zf.writestr("fake.zip", b"not a zip")
             zf.writestr("data.txt", b"hello")
 
-        inspector.inspect_nested_archives(io.BytesIO(outer.getvalue()))
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(outer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+        assert "fake.zip" in str(exc_info.value)
 
     def test_compute_archive_hash(self):
         """Test archive hash computation."""
@@ -915,6 +974,7 @@ class TestZipInspectorStructureGaps:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
         assert "Excessive number" in str(exc_info.value)
 
     def test_script_in_txt_entry_detected(self):
@@ -933,9 +993,10 @@ class TestZipInspectorStructureGaps:
 
         with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_buffer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
         assert "Script content" in str(exc_info.value)
 
-    def test_entry_content_read_exception_ignored(self, monkeypatch):
+    def test_entry_content_read_exception_is_threat(self, monkeypatch):
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
             scan_zip_content=True,
@@ -951,8 +1012,48 @@ class TestZipInspectorStructureGaps:
             raise RuntimeError("Cannot open entry")
 
         monkeypatch.setattr(zipfile.ZipFile, "open", _mock_open)
-        # Exception caught internally — should not raise
-        inspector.inspect_zip_content(io.BytesIO(zip_data))
+        # An unreadable entry is never scanned, so it is rejected
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(zip_data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Entry content could not be inspected" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("a\nFORGED.txt", "'a\\nFORGED.txt'"),
+            ("a.txt", "'a.txt'"),
+        ],
+    )
+    def test_content_warning_escapes_entry_name(
+        self, monkeypatch, caplog, name, expected
+    ):
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(scan_zip_content=True)
+        inspector = ZipContentInspector(config)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(name, b"plain text")
+        zip_data = zip_buffer.getvalue()
+
+        def _mock_open(self, entry, mode="r", pwd=None, **kw):
+            raise RuntimeError("Cannot open entry")
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", _mock_open)
+        caplog.set_level("WARNING", logger=zip_inspector.__name__)
+        with pytest.raises(ZipContentError):
+            inspector.inspect_zip_content(io.BytesIO(zip_data))
+
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == zip_inspector.__name__
+            and r.getMessage().startswith("Could not inspect content of")
+        ]
+        assert len(messages) == 1
+        assert "\n" not in messages[0]
+        assert f"Could not inspect content of {expected}: " in messages[0]
 
     def test_null_byte_in_entry_filename_detected(
         self,
@@ -963,28 +1064,14 @@ class TestZipInspectorStructureGaps:
         )
         inspector = ZipContentInspector(config)
 
-        # ZipInfo truncates at null on construction, so
-        # set filename directly after creating the object.
+        # ZipInfo truncates filename at null on construction; the raw
+        # name is kept in orig_filename, so set it directly.
         # scan_zip_content=False means zip_file=None is safe.
         bad_info = zipfile.ZipInfo("safe.txt")
-        bad_info.filename = "test\x00evil.txt"
+        bad_info.orig_filename = "test\x00evil.txt"
         threats = inspector._inspect_zip_entry(bad_info, None)
-        assert any("Null byte" in t for t in threats)
-
-    def test_script_pattern_decode_exception_silenced(
-        self,
-    ):
-        config = FileSecurityConfig()
-        inspector = ZipContentInspector(config)
-
-        class _BadBytes:
-            def decode(self, *args, **kwargs):
-                raise RuntimeError("decode failed")
-
-        # Passes a non-bytes object whose .decode() raises;
-        # covers the except Exception branch (lines 488-490)
-        result = inspector._contains_script_patterns(_BadBytes(), "file.txt")
-        assert result is False
+        assert any("Null byte" in t.message for t in threats)
+        assert all(t.code == ErrorCode.ZIP_CONTENT_THREAT for t in threats)
 
 
 class TestZipInspectorNestedArchives:
@@ -1137,7 +1224,7 @@ class TestZipInspectorNestedArchives:
         # Should complete without raising
         inspector.inspect_nested_archives(io.BytesIO(outer.getvalue()))
 
-    def test_oversized_archive_entry_skipped(
+    def test_oversized_archive_entry_rejected(
         self,
     ):
         config = FileSecurityConfig()
@@ -1158,10 +1245,11 @@ class TestZipInspectorNestedArchives:
         with zipfile.ZipFile(outer, "w") as zf:
             zf.writestr("inner.zip", inner.getvalue())
 
-        # inner.zip is skipped (too large) — covers line 666
-        inspector.inspect_nested_archives(io.BytesIO(outer.getvalue()))
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(outer.getvalue()))
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
-    def test_read_failure_skips_archive_entry(self, monkeypatch):
+    def test_read_failure_rejects_archive_entry(self, monkeypatch):
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
             allow_nested_archives=True,
@@ -1179,18 +1267,71 @@ class TestZipInspectorNestedArchives:
             zf.writestr("inner.zip", inner.getvalue())
         outer_bytes = outer.getvalue()
 
-        original_read = zipfile.ZipFile.read
+        original_open = zipfile.ZipFile.open
 
-        def _fail_read(self, name, pwd=None):
-            if name == "inner.zip":
+        def _fail_open(self, name, *args, **kwargs):
+            if getattr(name, "filename", name) == "inner.zip":
                 raise RuntimeError("Corrupt entry")
-            return original_read(self, name, pwd)
+            return original_open(self, name, *args, **kwargs)
 
-        monkeypatch.setattr(zipfile.ZipFile, "read", _fail_read)
-        # Read failure is caught (lines 670-676) and skipped
-        inspector.inspect_nested_archives(io.BytesIO(outer_bytes))
+        monkeypatch.setattr(zipfile.ZipFile, "open", _fail_open)
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(outer_bytes))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Nested entry could not be read: 'inner.zip'" in str(
+            exc_info.value
+        )
 
-    def test_bad_zip_file_silenced_in_nested_inspection(
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("a\nFORGED.zip", "'a\\nFORGED.zip'"),
+            ("a.zip", "'a.zip'"),
+        ],
+    )
+    def test_nested_read_warning_escapes_entry_name(
+        self, monkeypatch, caplog, name, expected
+    ):
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True,
+            max_zip_depth=5,
+            max_total_entries_recursive=50000,
+        )
+        inspector = ZipContentInspector(config)
+
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as zf:
+            zf.writestr("data.txt", b"x")
+
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as zf:
+            zf.writestr(name, inner.getvalue())
+        outer_bytes = outer.getvalue()
+
+        original_open = zipfile.ZipFile.open
+
+        def _fail_open(self, entry, *args, **kwargs):
+            if getattr(entry, "filename", entry) == name:
+                raise RuntimeError("Corrupt entry")
+            return original_open(self, entry, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", _fail_open)
+        caplog.set_level("WARNING", logger=zip_inspector.__name__)
+        with pytest.raises(ZipContentError):
+            inspector.inspect_nested_archives(io.BytesIO(outer_bytes))
+
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == zip_inspector.__name__
+            and r.getMessage().startswith("Could not read nested entry")
+        ]
+        assert len(messages) == 1
+        assert "\n" not in messages[0]
+        assert f"Could not read nested entry {expected}: " in messages[0]
+
+    def test_bad_zip_file_rejected_in_nested_inspection(
         self,
     ):
         config = FileSecurityConfig()
@@ -1201,12 +1342,14 @@ class TestZipInspectorNestedArchives:
         inspector = ZipContentInspector(config)
 
         # A non-ZIP buffer triggers BadZipFile inside
-        # inspect_nested_archives — silenced by lines 693-694
-        inspector.inspect_nested_archives(
-            io.BytesIO(b"definitely not a zip file")
-        )
+        # inspect_nested_archives
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(
+                io.BytesIO(b"definitely not a zip file")
+            )
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
 
-    def test_unexpected_exception_silenced_in_nested(self, monkeypatch):
+    def test_unexpected_exception_rejected_in_nested(self, monkeypatch):
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
             allow_nested_archives=True,
@@ -1223,5 +1366,1358 @@ class TestZipInspectorNestedArchives:
             raise RuntimeError("Unexpected IO error")
 
         monkeypatch.setattr(zipfile.ZipFile, "__init__", _failing_init)
-        # RuntimeError is caught (lines 695-696) and logged
-        inspector.inspect_nested_archives(io.BytesIO(zip_bytes))
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(zip_bytes))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def _build_zip(entries: dict[str, bytes]) -> bytes:
+    """
+    Build an in-memory ZIP_STORED archive.
+
+    Args:
+        entries: Mapping of entry name to content.
+
+    Returns:
+        Raw archive bytes.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _patch_headers(
+    data: bytes, local: tuple[int, bytes], central: tuple[int, bytes]
+) -> bytes:
+    """
+    Overwrite bytes in the first local and central header.
+
+    Args:
+        data: Single-entry archive bytes.
+        local: Offset from the local header start and the new bytes.
+        central: Offset from the central header start and the new bytes.
+
+    Returns:
+        Patched archive bytes.
+    """
+    out = bytearray(data)
+    lpos = data.find(b"PK\x03\x04")
+    cpos = data.find(b"PK\x01\x02")
+    out[lpos + local[0] : lpos + local[0] + len(local[1])] = local[1]
+    out[cpos + central[0] : cpos + central[0] + len(central[1])] = central[1]
+    return bytes(out)
+
+
+def _assert_threat(
+    data: bytes,
+    config,
+    message: str,
+    code: ErrorCode = ErrorCode.ZIP_CONTENT_THREAT,
+) -> None:
+    """
+    Assert the inspector rejects the archive with the given message.
+
+    Args:
+        data: Archive bytes.
+        config: Security configuration.
+        message: Substring expected in the error message.
+        code: Expected error code.
+    """
+    inspector = ZipContentInspector(config)
+    with pytest.raises(ZipContentError) as exc_info:
+        inspector.inspect_zip_content(io.BytesIO(data))
+    assert type(exc_info.value) is ZipContentError
+    assert exc_info.value.error_code == code
+    assert message in str(exc_info.value)
+
+
+class TestUnreadableEntriesFailClosed:
+    """Entries whose content cannot be read are rejected."""
+
+    def test_valid_archives_accepted(self, default_config):
+        """Unpatched control archives are accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.txt": b"hello world"}))
+        )
+
+    def test_encrypted_entry_rejected(self, default_config):
+        """Encrypted entry (flag bit 0) cannot be scanned."""
+        data = _build_zip({"a.txt": b"\x7fELF" + b"\x00" * 64})
+        patched = _patch_headers(data, (6, b"\x01\x00"), (8, b"\x01\x00"))
+        with (
+            pytest.raises(RuntimeError),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched, default_config, "Entry content could not be inspected"
+        )
+
+    def test_bad_crc_entry_rejected(self, default_config):
+        """Short stored entry with a corrupt CRC is rejected."""
+        data = _build_zip({"a.txt": b"hello world"})
+        bad = struct.pack("<I", 0xDEADBEEF)
+        patched = _patch_headers(data, (14, bad), (16, bad))
+        with (
+            pytest.raises(zipfile.BadZipFile),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched, default_config, "Entry content could not be inspected"
+        )
+
+    def test_name_mismatch_entry_rejected(self, default_config):
+        """Local header name differing from central name is rejected."""
+        data = _build_zip({"aaaaaa/x.sh": b"hello world"})
+        patched = _patch_headers(
+            data, (30, b"../../.x.sh"), (46, b"aaaaaa/x.sh")
+        )
+        with (
+            pytest.raises(zipfile.BadZipFile),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched,
+            default_config,
+            "Entry content could not be inspected: 'aaaaaa/x.sh'",
+        )
+
+    def test_unsupported_method_entry_rejected(self, default_config):
+        """Entry with unsupported compression method 9 is rejected."""
+        data = _build_zip({"a.txt": b"hello world"})
+        patched = _patch_headers(data, (8, b"\x09\x00"), (10, b"\x09\x00"))
+        with (
+            pytest.raises(NotImplementedError),
+            zipfile.ZipFile(io.BytesIO(patched)) as zf,
+        ):
+            zf.open(zf.infolist()[0]).read()
+        _assert_threat(
+            patched, default_config, "Entry content could not be inspected"
+        )
+
+
+class TestNestedArchiveSignatures:
+    """Nested archives are detected by magic bytes, not only by name."""
+
+    @pytest.mark.parametrize("name", ["inner.dat", "report.docx", "inner.jar"])
+    def test_inner_zip_under_any_name_rejected(self, default_config, name):
+        """A real ZIP is rejected regardless of its entry name."""
+        data = _build_zip({name: _build_zip({"a.txt": b"x"})})
+        _assert_threat(
+            data,
+            default_config,
+            "Nested archive detected",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    def test_gzip_content_rejected(self, default_config):
+        """Gzip bytes under a neutral name are rejected."""
+        data = _build_zip({"data.dat": gzip.compress(b"x")})
+        _assert_threat(
+            data,
+            default_config,
+            "Nested archive detected",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    @pytest.mark.parametrize(
+        "magic",
+        [b"BZh9", b"\xfd7zXZ\x00", b"7z\xbc\xaf\x27\x1c", b"Rar!\x1a\x07"],
+    )
+    def test_other_formats_rejected(self, default_config, magic):
+        """Bzip2, xz, 7z and RAR signatures are rejected."""
+        data = _build_zip({"data.dat": magic + b"\x00" * 16})
+        _assert_threat(
+            data,
+            default_config,
+            "Nested archive detected",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    def test_pk_prefix_without_signature_accepted(self, default_config):
+        """Content starting with PK but not a signature is accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.dat": b"PKxx hello"}))
+        )
+
+    def test_plain_text_accepted(self, default_config):
+        """Plain text content is accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.txt": b"just text"}))
+        )
+
+    def test_name_flagged_entry_not_duplicated(self, default_config):
+        """An entry already flagged by name gets a single message."""
+        inspector = ZipContentInspector(default_config)
+        data = _build_zip({"inner.zip": _build_zip({"a.txt": b"x"})})
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            threats = inspector._inspect_zip_entry(zf.infolist()[0], zf)
+        assert [t.message for t in threats] == [
+            "Nested archive detected: 'inner.zip'"
+        ]
+        assert threats[0].code == ErrorCode.ZIP_NESTED_ARCHIVE
+
+    def test_allowed_nested_archives_skip_content_check(self):
+        """allow_nested_archives=True disables the signature threat."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        inspector = ZipContentInspector(config)
+        data = _build_zip({"inner.dat": _build_zip({"a.txt": b"x"})})
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            threats = inspector._inspect_zip_entry(zf.infolist()[0], zf)
+        assert not any("Nested archive detected" in t.message for t in threats)
+
+    @pytest.mark.parametrize("name", ["inner.zip ", "inner.zip."])
+    def test_trailing_dot_or_space_name_rejected(self, default_config, name):
+        """Trailing dots and spaces do not hide a nested archive name."""
+        data = _build_zip({name: b"hello"})
+        _assert_threat(
+            data,
+            default_config,
+            "Nested archive detected",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+
+class TestDangerousEntryExtensions:
+    """Entry extensions are checked against the threat categories."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "run.bat",
+            "RUN.BAT",
+            "run.bat.",
+            "run.bat ",
+            "a.ps1",
+            "x.php",
+            "lib.dll",
+            "settings.ini",
+            "data.bin",
+            "dir/sub/script.sh",
+        ],
+    )
+    def test_dangerous_extension_rejected(self, default_config, name):
+        """Executable, script and system extensions are rejected."""
+        _assert_threat(
+            _build_zip({name: b"hello"}),
+            default_config,
+            "Dangerous file type detected",
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "track.gpx",
+            "notes.txt",
+            "data.csv",
+            "photo.jpg",
+            "activity.fit",
+        ],
+    )
+    def test_benign_extension_accepted(self, default_config, name):
+        """Ordinary data extensions are accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(io.BytesIO(_build_zip({name: b"hello"})))
+
+    def test_directory_entry_accepted(self, default_config):
+        """A directory entry has no extension and is accepted."""
+        inspector = ZipContentInspector(default_config)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("tools.exe/", b"")
+        inspector.inspect_zip_content(io.BytesIO(buf.getvalue()))
+
+    def test_checked_without_content_scan(self):
+        """The extension check does not depend on scan_zip_content."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(scan_zip_content=False)
+        _assert_threat(
+            _build_zip({"run.bat": b"hello"}),
+            config,
+            "Dangerous file type detected",
+        )
+
+
+class TestNullByteInEntryName:
+    """NUL bytes in raw entry names are detected."""
+
+    @pytest.mark.parametrize(
+        ("template", "offset", "expected"),
+        [
+            ("evil.shQQQQ.txt", 7, "evil.sh\x00QQQ.txt"),
+            ("ok.txtQ/../../../etc/x", 6, "ok.txt\x00/../../../etc/x"),
+        ],
+    )
+    def test_null_byte_rejected(
+        self, default_config, template, offset, expected
+    ):
+        """A NUL in the raw name is rejected without echoing it."""
+        data = _build_zip({template: b"hello"})
+        patched = _patch_headers(
+            data, (30 + offset, b"\x00"), (46 + offset, b"\x00")
+        )
+        with zipfile.ZipFile(io.BytesIO(patched)) as zf:
+            assert zf.infolist()[0].orig_filename == expected
+            assert "\x00" not in zf.infolist()[0].filename
+        inspector = ZipContentInspector(default_config)
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(patched))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Null byte in filename" in str(exc_info.value)
+        assert "\x00" not in str(exc_info.value)
+
+    def test_clean_name_accepted(self, default_config):
+        """The unpatched name is accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"evil.shQQQQ.txt": b"hello"}))
+        )
+
+
+class TestZipInspectorResourceLimits:
+    """Tests that the active resource monitor stops ZIP inspection."""
+
+    @staticmethod
+    def _flat_zip(count: int) -> bytes:
+        """Build a ZIP with ``count`` small text entries."""
+        return _build_zip({f"f{i}.txt": b"hello" for i in range(count)})
+
+    @staticmethod
+    def _nested_zip(inner_count: int) -> bytes:
+        """Build a ZIP whose single entry is a ZIP of many entries."""
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(inner_count)})
+        return _build_zip({"inner.zip": inner})
+
+    @staticmethod
+    def _nested_config() -> FileSecurityConfig:
+        """Return a config that recurses into nested archives."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        return config
+
+    def test_entry_loop_within_budget_passes(self, default_config, fake_clock):
+        """Inspection that stays in budget is accepted."""
+        inspector = ZipContentInspector(default_config)
+        data = self._flat_zip(50)
+        fake_clock.step = 0.01
+
+        fake_clock.run_monitored(
+            lambda: inspector.inspect_zip_content(io.BytesIO(data))
+        )
+
+    def test_entry_loop_over_budget_raises(self, default_config, fake_clock):
+        """A slow entry loop raises ResourceLimitError unchanged."""
+        inspector = ZipContentInspector(default_config)
+        data = self._flat_zip(50)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_zip_content(io.BytesIO(data))
+            )
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_nested_loop_within_budget_passes(self, fake_clock):
+        """Recursive inspection that stays in budget is accepted."""
+        inspector = ZipContentInspector(self._nested_config())
+        data = self._nested_zip(50)
+        fake_clock.step = 0.01
+
+        fake_clock.run_monitored(
+            lambda: inspector.inspect_zip_content(io.BytesIO(data))
+        )
+
+    def test_nested_loop_over_budget_raises(self, fake_clock):
+        """A slow recursion raises instead of being logged and skipped."""
+        inspector = ZipContentInspector(self._nested_config())
+        data = self._nested_zip(50)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_zip_content(io.BytesIO(data))
+            )
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "inspect_nested_archives" in {
+            entry.name for entry in exc_info.traceback
+        }
+
+
+def _limits_inspector(**limits) -> ZipContentInspector:
+    """Return an inspector with the given limit overrides."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(scan_zip_content=False, **limits)
+    return ZipContentInspector(config)
+
+
+class TestZipInspectorLimitBoundaries:
+    """Tests that each limit accepts its value and rejects the next."""
+
+    @staticmethod
+    def _inspect(inspector: ZipContentInspector, names: list[str]) -> None:
+        data = _build_zip(dict.fromkeys(names, b"x"))
+        inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_filename_length_at_limit_accepted(self):
+        """A 10-character basename passes a limit of 10."""
+        self._inspect(
+            _limits_inspector(max_filename_length=10), ["a" * 6 + ".txt"]
+        )
+
+    def test_filename_length_over_limit_rejected(self):
+        """An 11-character basename is rejected at a limit of 10."""
+        inspector = _limits_inspector(max_filename_length=10)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a" * 7 + ".txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.threats == [
+            "Filename too long: 'aaaaaaa.txt' (11 chars)"
+        ]
+
+    def test_path_length_at_limit_accepted(self):
+        """A 20-character path passes a limit of 20."""
+        self._inspect(
+            _limits_inspector(max_path_length=20), ["dir/" + "a" * 12 + ".txt"]
+        )
+
+    def test_path_length_over_limit_rejected(self):
+        """A 21-character path is rejected at a limit of 20."""
+        inspector = _limits_inspector(max_path_length=20)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["dir/" + "a" * 13 + ".txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert len(exc_info.value.threats) == 1
+        assert exc_info.value.threats[0].startswith("Path too long")
+
+    def test_directory_depth_at_limit_accepted(self):
+        """Two separators pass a depth limit of 2."""
+        self._inspect(_limits_inspector(max_zip_depth=2), ["a/b/c.txt"])
+
+    def test_directory_depth_over_limit_rejected(self):
+        """Three separators are rejected at a depth limit of 2."""
+        inspector = _limits_inspector(max_zip_depth=2)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a/b/c/d.txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.threats == [
+            "Excessive directory depth: 3 (max: 2)"
+        ]
+
+    def test_same_type_count_at_limit_accepted(self):
+        """Three .txt files pass a limit of 3."""
+        self._inspect(
+            _limits_inspector(max_number_files_same_type=3),
+            ["a.txt", "b.txt", "c.txt"],
+        )
+
+    def test_same_type_count_over_limit_rejected(self):
+        """Four .txt files are rejected at a limit of 3."""
+        inspector = _limits_inspector(max_number_files_same_type=3)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a.txt", "b.txt", "c.txt", "d.txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert exc_info.value.threats == [
+            "Excessive number of .txt files: 4 (max: 3)"
+        ]
+
+    def test_nested_depth_at_limit_accepted(self):
+        """Nesting at depth 2 passes a depth limit of 2."""
+        inspector = _limits_inspector(max_zip_depth=2)
+        data = _build_zip({"a.txt": b"x"})
+
+        inspector.inspect_nested_archives(io.BytesIO(data), depth=2)
+
+    def test_nested_depth_over_limit_rejected(self):
+        """Nesting at depth 3 is rejected at a depth limit of 2."""
+        inspector = _limits_inspector(max_zip_depth=2)
+        data = _build_zip({"a.txt": b"x"})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(data), depth=3)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_RECURSIVE_STRUCTURE
+
+    def test_nested_entry_total_at_limit_accepted(self):
+        """Three entries pass a recursive entry limit of 3."""
+        inspector = _limits_inspector(max_total_entries_recursive=3)
+        data = _build_zip({f"f{i}.txt": b"x" for i in range(3)})
+
+        inspector.inspect_nested_archives(io.BytesIO(data))
+
+    def test_nested_entry_total_over_limit_rejected(self):
+        """Four entries are rejected at a recursive entry limit of 3."""
+        inspector = _limits_inspector(max_total_entries_recursive=3)
+        data = _build_zip({f"f{i}.txt": b"x" for i in range(4)})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
+    def test_nested_archive_at_size_limit_is_inspected(self):
+        """An inner ZIP of exactly the size limit is recursed into."""
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(4)})
+        outer = _build_zip({"inner.zip": inner})
+        inspector = _limits_inspector(
+            max_individual_file_size=len(inner),
+            max_total_entries_recursive=3,
+        )
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(outer))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
+    def test_nested_archive_over_size_limit_rejected(self):
+        """An inner ZIP one byte over the size limit is rejected."""
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(4)})
+        outer = _build_zip({"inner.zip": inner})
+        inspector = _limits_inspector(
+            max_individual_file_size=len(inner) - 1,
+            max_total_entries_recursive=3,
+        )
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(outer))
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+
+    @staticmethod
+    def _clock(monkeypatch, elapsed: float) -> None:
+        """Make the second clock reading ``elapsed`` seconds late."""
+        readings = iter([100.0, 100.0 + elapsed])
+        monkeypatch.setattr(
+            zip_inspector,
+            "time",
+            types.SimpleNamespace(
+                monotonic=lambda: next(readings, 100.0 + elapsed)
+            ),
+        )
+
+    def test_content_timeout_at_limit_accepted(self, monkeypatch):
+        """An entry reached exactly at the timeout is still inspected."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.0)
+
+        self._inspect(inspector, ["a.txt"])
+
+    def test_content_timeout_over_limit_rejected(self, monkeypatch):
+        """An entry reached after the timeout aborts the inspection."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.5)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            self._inspect(inspector, ["a.txt"])
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
+
+    def test_nested_timeout_at_limit_accepted(self, monkeypatch):
+        """A nested entry reached exactly at the timeout is inspected."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.0)
+
+        inspector.inspect_nested_archives(
+            io.BytesIO(_build_zip({"a.txt": b"x"}))
+        )
+
+    def test_nested_timeout_over_limit_rejected(self, monkeypatch):
+        """A nested entry reached after the timeout aborts recursion."""
+        inspector = _limits_inspector(zip_analysis_timeout=5.0)
+        self._clock(monkeypatch, 5.5)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(
+                io.BytesIO(_build_zip({"a.txt": b"x"}))
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
+
+
+def _gzip_with_name(content: bytes, name: str) -> bytes:
+    """
+    Build a gzip stream whose header stores the given filename.
+
+    Args:
+        content: Data to compress.
+        name: Filename written to the gzip header (FNAME field).
+
+    Returns:
+        Raw gzip bytes.
+    """
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename=name, mode="wb", fileobj=buf, mtime=0) as gz:
+        gz.write(content)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def nested_allowed_inspector() -> ZipContentInspector:
+    """Return an inspector that permits nested archives."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(allow_nested_archives=True)
+    return ZipContentInspector(config)
+
+
+class TestGzipEntryContent:
+    """Gzip entries are scanned by their decompressed start."""
+
+    def test_compressed_bytes_matching_pattern_accepted(
+        self, nested_allowed_inspector
+    ):
+        """A valid gzip whose raw bytes contain ``<%`` is accepted."""
+        entry = _gzip_with_name(b".FIT" + b"\x00" * 64, "a<%b.fit")
+        assert b"<%" in entry[:512]
+        nested_allowed_inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"activities/1.fit.gz": entry}))
+        )
+
+    def test_benign_text_gzip_accepted(self, nested_allowed_inspector):
+        """A gzip of benign text with ``<%`` in its header is accepted."""
+        entry = _gzip_with_name(b"<gpx></gpx>", "a<%b.gpx")
+        nested_allowed_inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"activities/1.gpx.gz": entry}))
+        )
+
+    def test_gzipped_script_rejected(self, nested_allowed_inspector):
+        """A script inside a valid gzip entry is detected."""
+        data = _build_zip(
+            {"x.txt.gz": gzip.compress(b"<?php eval($_GET['x']); ?>")}
+        )
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    def test_gzipped_executable_rejected(self, nested_allowed_inspector):
+        """An executable inside a valid gzip entry is detected."""
+        data = _build_zip({"x.gz": gzip.compress(b"\x7fELF" + b"\x00" * 64)})
+        with pytest.raises(
+            ZipContentError, match="Executable content"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    def test_script_within_sample_of_long_entry_rejected(
+        self, nested_allowed_inspector
+    ):
+        """A script in the first 512 bytes of a long entry is found."""
+        payload = b"a" * 400 + b"<?php ?>" + b"b" * 2000
+        data = _build_zip({"x.txt.gz": gzip.compress(payload)})
+        with pytest.raises(ZipContentError) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Script content" in str(exc_info.value)
+
+    def test_content_after_sample_not_decompressed(
+        self, nested_allowed_inspector
+    ):
+        """Only the first 512 decompressed bytes are sampled."""
+        payload = b"a" * 600 + b"<?php ?>"
+        data = _build_zip({"x.txt.gz": gzip.compress(payload)})
+        nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+
+    def test_script_after_empty_members_rejected(
+        self, nested_allowed_inspector
+    ):
+        """Sampling crosses empty members to reach a script."""
+        entry = gzip.compress(b"", 0) * 200 + gzip.compress(b"<?php ?>")
+        data = _build_zip({"x.txt.gz": entry})
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    def test_empty_members_over_budget_raise_limit_error(
+        self, nested_allowed_inspector, fake_clock
+    ):
+        """A time-limit breach is not turned into a content threat."""
+        entry = gzip.compress(b"", 0) * 5000
+        data = _build_zip({"x.txt.gz": entry})
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: nested_allowed_inspector.inspect_zip_content(
+                    io.BytesIO(data)
+                )
+            )
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    def test_benign_multi_member_gzip_accepted(self, nested_allowed_inspector):
+        """A benign multi-member gzip entry is accepted."""
+        entry = gzip.compress(b"<gpx>") + gzip.compress(b"</gpx>")
+        nested_allowed_inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({"a.gpx.gz": entry}))
+        )
+
+    def test_plaintext_script_named_gz_rejected(
+        self, nested_allowed_inspector
+    ):
+        """A plaintext script named ``.fit.gz`` is still scanned."""
+        data = _build_zip({"x.fit.gz": b"<?php eval($_GET['x']); ?>"})
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    def test_executable_named_gz_rejected(self, nested_allowed_inspector):
+        """An executable named ``.fit.gz`` is still rejected."""
+        data = _build_zip({"x.fit.gz": b"MZ" + b"\x00" * 64})
+        with pytest.raises(
+            ZipContentError, match="Executable content"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"\x1f\x8b<?php eval($_GET['x']); ?>",
+            gzip.compress(b"x" * 4096)[:12] + b"<?php eval(1); ?>" * 30,
+            gzip.compress(bytes(range(256)) * 16)[:40],
+        ],
+        ids=["magic-only", "header-then-plaintext", "truncated"],
+    )
+    def test_invalid_gzip_rejected(self, nested_allowed_inspector, content):
+        """Gzip magic without a readable stream is rejected."""
+        data = _build_zip({"x.fit.gz": content})
+        with pytest.raises(
+            ZipContentError, match="Entry content could not be inspected"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    def test_gzip_in_gzip_rejected(self, nested_allowed_inspector):
+        """A gzip stream inside a gzip entry is rejected."""
+        inner = gzip.compress(b"<?php eval($_GET['x']); ?>")
+        data = _build_zip({"x.fit.gz": gzip.compress(inner)})
+        with pytest.raises(
+            ZipContentError, match="Entry content could not be inspected"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    def test_script_in_txt_entry_still_rejected(
+        self, nested_allowed_inspector
+    ):
+        """A plain ``.txt`` entry with a script is still rejected."""
+        data = _build_zip({"notes.txt": b"<?php eval($_GET['x']); ?>"})
+        with pytest.raises(
+            ZipContentError, match="Script content"
+        ) as exc_info:
+            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+
+def _deflated_zip(entries: dict[str, bytes]) -> bytes:
+    """
+    Build an in-memory ZIP_DEFLATED archive.
+
+    Args:
+        entries: Mapping of entry name to content.
+
+    Returns:
+        Raw archive bytes.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _encrypted_entry_zip(name: str, content: bytes) -> bytes:
+    """
+    Build a one-entry archive whose entry is flagged as encrypted.
+
+    Args:
+        name: Entry name.
+        content: Entry content.
+
+    Returns:
+        Raw archive bytes that ``zipfile`` refuses to read.
+    """
+    return _patch_headers(
+        _build_zip({name: content}), (6, b"\x01\x00"), (8, b"\x01\x00")
+    )
+
+
+def _nested_inspector(**limits) -> ZipContentInspector:
+    """Return an inspector that recurses, with limit overrides."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(allow_nested_archives=True, **limits)
+    return ZipContentInspector(config)
+
+
+def _assert_nested_rejected(
+    inspector: ZipContentInspector,
+    data: bytes,
+    code: ErrorCode,
+    text: str,
+) -> ZipContentError:
+    """
+    Assert ``inspect_zip_content`` rejects ``data`` with ``code``.
+
+    Args:
+        inspector: Inspector to run.
+        data: Outer archive bytes.
+        code: Expected error code.
+        text: Substring expected in the error message.
+
+    Returns:
+        The raised error.
+    """
+    with pytest.raises(ZipContentError) as exc_info:
+        inspector.inspect_zip_content(io.BytesIO(data))
+    assert type(exc_info.value) is ZipContentError
+    assert exc_info.value.error_code == code
+    assert text in str(exc_info.value)
+    return exc_info.value
+
+
+class TestNestedArchivesCheckedPerLevel:
+    """Each nested archive gets the checks the top level gets."""
+
+    def test_clean_inner_archive_accepted(self):
+        """A clean inner archive with ordinary files is accepted."""
+        inner = _deflated_zip({"a.txt": b"hello", "dir/b.csv": b"1,2"})
+        data = _build_zip({"inner.zip": inner, "readme.txt": b"hi"})
+        _nested_inspector().inspect_zip_content(io.BytesIO(data))
+
+    def test_two_levels_accepted(self):
+        """A clean archive two levels deep is accepted."""
+        inner = _build_zip({"a.txt": b"hello"})
+        mid = _build_zip({"inner.zip": inner, "b.txt": b"x"})
+        data = _build_zip({"mid.zip": mid})
+        _nested_inspector().inspect_zip_content(io.BytesIO(data))
+
+    def test_inner_ratio_bomb_rejected(self):
+        """An inner archive over the compression ratio is a ZipBombError."""
+        inner = _deflated_zip({"zeros.dat": b"\x00" * (2 * 1024 * 1024)})
+        data = _build_zip({"inner.zip": inner})
+        with pytest.raises(ZipBombError) as exc_info:
+            _nested_inspector().inspect_zip_content(io.BytesIO(data))
+        err = exc_info.value
+        assert type(err) is ZipBombError
+        assert err.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        assert "inner.zip: Excessive compression ratio" in str(err)
+        assert err.compression_ratio > 100
+        assert isinstance(err.__cause__, ZipBombError)
+
+    def test_two_levels_down_ratio_bomb_shows_full_path(self):
+        """A bomb two levels down names the whole nesting path."""
+        inner = _deflated_zip({"zeros.dat": b"\x00" * (2 * 1024 * 1024)})
+        mid = _build_zip({"inner.zip": inner})
+        data = _build_zip({"mid.zip": mid})
+        with pytest.raises(ZipBombError) as exc_info:
+            _nested_inspector().inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == (
+            ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert "mid.zip/inner.zip: Excessive compression ratio" in str(
+            exc_info.value
+        )
+
+    def test_top_level_ratio_bomb_unchanged(self):
+        """A top-level bomb keeps its unprefixed message."""
+        data = _deflated_zip({"zeros.dat": b"\x00" * (2 * 1024 * 1024)})
+        compression = CompressionSecurityValidator(FileSecurityConfig())
+        with pytest.raises(ZipBombError) as exc_info:
+            compression.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert str(exc_info.value).startswith("Excessive compression ratio")
+
+    @pytest.mark.parametrize(
+        ("name", "threat", "code"),
+        [
+            (
+                "../evil.txt",
+                "Directory traversal attack in '../evil.txt'",
+                ErrorCode.ZIP_DIRECTORY_TRAVERSAL,
+            ),
+            (
+                "/etc/passwd",
+                "Absolute path detected in '/etc/passwd'",
+                ErrorCode.ZIP_ABSOLUTE_PATH,
+            ),
+            (
+                "payload.exe",
+                "Dangerous file type detected: 'payload.exe'",
+                ErrorCode.ZIP_CONTENT_THREAT,
+            ),
+            (
+                "payload.sh",
+                "Dangerous file type detected: 'payload.sh'",
+                ErrorCode.ZIP_CONTENT_THREAT,
+            ),
+        ],
+    )
+    def test_inner_entry_name_threat_rejected(self, name, threat, code):
+        """Inner entry names get the top-level name checks."""
+        data = _build_zip({"inner.zip": _build_zip({name: b"x"})})
+        err = _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            code,
+            threat,
+        )
+        assert f"inner.zip: {threat}" in err.threats
+
+    def test_inner_entry_benign_name_accepted(self):
+        """The same inner archive with a benign name is accepted."""
+        data = _build_zip({"inner.zip": _build_zip({"payload.txt": b"x"})})
+        _nested_inspector().inspect_zip_content(io.BytesIO(data))
+
+    def test_inner_symlink_rejected(self):
+        """An inner symlink entry is rejected."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            info = zipfile.ZipInfo("link")
+            info.external_attr = 0o120777 << 16
+            zf.writestr(info, b"/etc/passwd")
+        data = _build_zip({"inner.zip": buf.getvalue()})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_SYMLINK_DETECTED,
+            "inner.zip: Symbolic link detected: 'link'",
+        )
+
+    def test_inner_null_byte_name_rejected(self):
+        """A NUL in an inner raw entry name is rejected."""
+        inner = _patch_headers(
+            _build_zip({"evil.shQQQQ.txt": b"x"}),
+            (37, b"\x00"),
+            (53, b"\x00"),
+        )
+        data = _build_zip({"inner.zip": inner})
+        err = _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "inner.zip: Null byte in filename",
+        )
+        assert "\x00" not in str(err)
+
+    def test_inner_script_content_rejected(self):
+        """Inner entry content gets the top-level content scan."""
+        inner = _deflated_zip({"notes.txt": b"<?php eval($_GET['x']); ?>"})
+        data = _build_zip({"inner.zip": inner})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "inner.zip: Script content detected in 'notes.txt'",
+        )
+
+    def test_inner_encrypted_entry_rejected(self):
+        """An unreadable entry inside an inner archive is rejected."""
+        inner = _encrypted_entry_zip("a.txt", b"hello")
+        data = _build_zip({"inner.zip": inner})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "inner.zip: Entry content could not be inspected: 'a.txt'",
+        )
+
+    def test_inner_layout_gap_rejected(self):
+        """An inner archive with bytes outside its entries is rejected."""
+        inner = b"\x00" * 16 + _build_zip({"a.txt": b"hello"})
+        with zipfile.ZipFile(io.BytesIO(inner)) as zf:
+            assert zf.read("a.txt") == b"hello"
+        data = _build_zip({"inner.zip": inner})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_INVALID_STRUCTURE,
+            "inner.zip: ZIP archive contains data outside",
+        )
+
+    def test_inner_too_many_entries_rejected(self):
+        """An inner archive over max_zip_entries is rejected."""
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(4)})
+        data = _build_zip({"inner.zip": inner})
+        _assert_nested_rejected(
+            _nested_inspector(max_zip_entries=3),
+            data,
+            ErrorCode.ZIP_TOO_MANY_ENTRIES,
+            "inner.zip: ZIP contains too many files",
+        )
+
+    def test_inner_entries_at_limit_accepted(self):
+        """An inner archive at max_zip_entries is accepted."""
+        inner = _build_zip({f"f{i}.txt": b"x" for i in range(3)})
+        data = _build_zip({"inner.zip": inner})
+        _nested_inspector(max_zip_entries=3).inspect_zip_content(
+            io.BytesIO(data)
+        )
+
+    def test_inner_archive_over_size_limit_rejected(self):
+        """An inner archive over max_individual_file_size is rejected."""
+        inner = _build_zip({"a.txt": b"hello"})
+        data = _build_zip({"inner.zip": inner})
+        _assert_nested_rejected(
+            _nested_inspector(max_individual_file_size=len(inner) - 1),
+            data,
+            ErrorCode.FILE_TOO_LARGE,
+            "'inner.zip'",
+        )
+
+    def test_inner_archive_at_size_limit_accepted(self):
+        """An inner archive of exactly max_individual_file_size passes."""
+        inner = _build_zip({"a.txt": b"hello"})
+        data = _build_zip({"inner.zip": inner})
+        _nested_inspector(
+            max_individual_file_size=len(inner)
+        ).inspect_zip_content(io.BytesIO(data))
+
+    def test_inner_truncated_archive_rejected(self):
+        """A truncated inner archive starting with PK\\x03\\x04 fails."""
+        inner = _build_zip({"a.txt": b"hello" * 20})
+        truncated = inner[: len(inner) // 2]
+        assert truncated.startswith(b"PK\x03\x04")
+        data = _build_zip({"inner.zip": truncated})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_CORRUPT,
+            "inner.zip: Invalid or corrupted ZIP file",
+        )
+
+    def test_unreadable_inner_archive_entry_rejected(self):
+        """An inner archive entry that cannot be read is rejected."""
+        inner = _build_zip({"a.txt": b"hello"})
+        data = _encrypted_entry_zip("inner.zip", inner)
+        inspector = _nested_inspector(scan_zip_content=False)
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_nested_archives(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "'inner.zip'" in str(exc_info.value)
+
+    def test_renamed_inner_archive_inspected(self):
+        """A ZIP under a non-archive name is recursed into by content."""
+        inner = _build_zip({"../evil.txt": b"x"})
+        data = _build_zip({"inner.dat": inner})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_DIRECTORY_TRAVERSAL,
+            "inner.dat: Directory traversal attack",
+        )
+
+    def test_second_level_threat_names_full_path(self):
+        """A threat two levels down names the whole nesting path."""
+        inner = _build_zip({"payload.sh": b"x"})
+        mid = _build_zip({"inner.zip": inner})
+        data = _build_zip({"mid.zip": mid})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "mid.zip/inner.zip: Dangerous file type detected: 'payload.sh'",
+        )
+
+    def test_depth_limit_enforced_through_content_inspection(self):
+        """Nesting past max_zip_depth is still rejected."""
+        inner = _build_zip({"a.txt": b"x"})
+        mid = _build_zip({"inner.zip": inner})
+        data = _build_zip({"mid.zip": mid})
+        _assert_nested_rejected(
+            _nested_inspector(max_zip_depth=1),
+            data,
+            ErrorCode.ZIP_RECURSIVE_STRUCTURE,
+            "nesting depth",
+        )
+
+    def test_repeated_archive_still_detected(self):
+        """An archive whose hash was already seen is a quine."""
+        inner = _build_zip({"a.txt": b"x"})
+        data = _build_zip({"inner.zip": inner})
+        seen = {hashlib.sha256(inner).hexdigest()}
+        with pytest.raises(ZipContentError) as exc_info:
+            _nested_inspector().inspect_nested_archives(
+                io.BytesIO(data), seen_hashes=seen
+            )
+        assert exc_info.value.error_code == ErrorCode.ZIP_QUINE_DETECTED
+
+    def test_identical_siblings_accepted(self):
+        """Identical sibling archives are not a quine."""
+        inner = _build_zip({"a.txt": b"x"})
+        data = _build_zip({"a/x.zip": inner, "b/x.zip": inner})
+        _nested_inspector().inspect_nested_archives(io.BytesIO(data))
+
+    def test_identical_siblings_at_depth_accepted(self):
+        """Identical siblings below another archive are accepted."""
+        inner = _build_zip({"a.txt": b"x"})
+        mid = _build_zip({"one.zip": inner, "two.zip": inner})
+        data = _build_zip({"mid.zip": mid, "other.zip": mid})
+        _nested_inspector().inspect_nested_archives(io.BytesIO(data))
+
+    def test_seen_hashes_argument_not_modified(self):
+        """The caller's ancestor set is left untouched."""
+        data = _build_zip({"inner.zip": _build_zip({"a.txt": b"x"})})
+        seen: set[str] = set()
+        _nested_inspector().inspect_nested_archives(
+            io.BytesIO(data), seen_hashes=seen
+        )
+        assert seen == set()
+
+    def test_ancestor_hash_deep_in_tree_detected(self):
+        """A passed ancestor hash matches an archive at any depth."""
+        leaf = _build_zip({"a.txt": b"x"})
+        mid = _build_zip({"leaf.zip": leaf})
+        data = _build_zip({"mid.zip": mid, "ok.zip": _build_zip({"b": b"y"})})
+        seen = {hashlib.sha256(leaf).hexdigest()}
+        with pytest.raises(ZipContentError) as exc_info:
+            _nested_inspector().inspect_nested_archives(
+                io.BytesIO(data), seen_hashes=seen
+            )
+        assert exc_info.value.error_code == ErrorCode.ZIP_QUINE_DETECTED
+
+    def test_identical_sibling_fan_out_bounded_by_total_entries(self):
+        """Many identical siblings hit the cumulative entry limit."""
+        leaf = _build_zip({"a.txt": b"x"})
+        mid = _build_zip({f"l{i}.zip": leaf for i in range(10)})
+        data = _build_zip({f"m{i}.zip": mid for i in range(10)})
+        _assert_nested_rejected(
+            _nested_inspector(max_total_entries_recursive=50),
+            data,
+            ErrorCode.ZIP_COMPLEXITY_ATTACK,
+            "Total recursive entries",
+        )
+
+    def test_chain_memory_bounded(self):
+        """
+        A four-level chain does not hold every level in memory.
+
+        Each level stores about 4 MiB; with a small spool buffer
+        the peak stays well below a single level, where reading
+        each inner archive into memory would hold all of them.
+        The spooled files that are open at each level keep I/O
+        buffers whose size depends on the Python version (about
+        128 KiB each on 3.14 and later), so a level must be large
+        enough for them to stay far below half of it.
+        """
+        payload = b"DATA" + b"".join(
+            hashlib.sha256(i.to_bytes(4)).digest() for i in range(131072)
+        )
+        level = _build_zip({"data.dat": payload})
+        for depth in (3, 2, 1):
+            level = _build_zip({f"level{depth}.zip": level})
+        inspector = _nested_inspector(max_memory_buffer_size=64 * 1024)
+        source = io.BytesIO(level)
+
+        tracemalloc.start()
+        try:
+            inspector.inspect_zip_content(source)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert peak < len(payload) // 2
+
+
+def _entry_with_mode(mode: int) -> zipfile.ZipInfo:
+    """Return a ZIP entry whose Unix mode bits are ``mode``."""
+    info = zipfile.ZipInfo("entry")
+    info.external_attr = mode << 16
+    return info
+
+
+class TestThreatErrorCodes:
+    """Each entry threat is raised with its own error code."""
+
+    def test_benign_entries_accepted(self, default_config):
+        """Control archive with clean entries raises nothing."""
+        ZipContentInspector(default_config).inspect_zip_content(
+            io.BytesIO(_build_zip({"a.txt": b"x", "dir/b.txt": b"y"}))
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "code"),
+        [
+            ("../evil.txt", ErrorCode.ZIP_DIRECTORY_TRAVERSAL),
+            ("/etc/cfg.txt", ErrorCode.ZIP_ABSOLUTE_PATH),
+            ("inner.zip", ErrorCode.ZIP_NESTED_ARCHIVE),
+            ("run.exe", ErrorCode.ZIP_CONTENT_THREAT),
+            ("n" * 300 + ".txt", ErrorCode.ZIP_CONTENT_THREAT),
+        ],
+    )
+    def test_entry_threat_code(self, default_config, name, code):
+        """Name threats map to traversal, absolute, nested, content."""
+        err = _expect_rejection(default_config, _build_zip({name: b"x"}))
+        assert err.error_code == code
+
+    def test_symlink_entry_code(self, default_config):
+        """A symlink entry raises ZIP_SYMLINK_DETECTED."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(_entry_with_mode(0o120777), b"/etc/passwd")
+        err = _expect_rejection(default_config, buf.getvalue())
+        assert err.error_code == ErrorCode.ZIP_SYMLINK_DETECTED
+
+    def test_content_threat_codes(self, default_config):
+        """Content-scan threats stay ZIP_CONTENT_THREAT except nested."""
+        script = _expect_rejection(
+            default_config, _build_zip({"n.txt": b"<?php eval($_GET[1]); ?>"})
+        )
+        assert script.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        elf = _expect_rejection(
+            default_config, _build_zip({"n.dat": b"\x7fELF" + b"\x00" * 64})
+        )
+        assert elf.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        nested = _expect_rejection(
+            default_config,
+            _build_zip({"n.dat": _build_zip({"a.txt": b"x"})}),
+        )
+        assert nested.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
+
+    def test_structure_threat_code(self):
+        """Structure-only threats are ZIP_CONTENT_THREAT."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_zip_depth=2)
+        err = _expect_rejection(config, _build_zip({"a/b/c/d/e.txt": b"x"}))
+        assert err.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Excessive directory depth" in str(err)
+
+    def test_first_entry_threat_decides_code(self, default_config):
+        """The first threat found sets the code; all are listed."""
+        entries = {"run.exe": b"x", "../evil.txt": b"y", "/abs.txt": b"z"}
+        err = _expect_rejection(default_config, _build_zip(entries))
+        assert err.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert any("Directory traversal" in t for t in err.threats)
+        assert any("Absolute path" in t for t in err.threats)
+
+        reordered = dict(reversed(list(entries.items())))
+        err = _expect_rejection(default_config, _build_zip(reordered))
+        assert err.error_code == ErrorCode.ZIP_ABSOLUTE_PATH
+        assert len(err.threats) >= 3
+
+    def test_entry_threat_precedes_structure_threat(self):
+        """Structure threats come after every entry threat."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_zip_depth=1)
+        err = _expect_rejection(
+            config, _build_zip({"/a/b/c/d.txt": b"x", "e.txt": b"y"})
+        )
+        assert err.error_code == ErrorCode.ZIP_ABSOLUTE_PATH
+        assert any("Excessive directory depth" in t for t in err.threats)
+
+    def test_nested_level_keeps_inner_code(self):
+        """A nested-level threat keeps the inner threat's code."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        inner = _build_zip({"../evil.txt": b"x"})
+        err = _expect_rejection(config, _build_zip({"inner.zip": inner}))
+        assert err.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
+        assert "inner.zip: Directory traversal attack" in str(err)
+
+
+def _expect_rejection(config, data: bytes) -> ZipContentError:
+    """Return the ZipContentError the inspector raises for ``data``."""
+    with pytest.raises(ZipContentError) as exc_info:
+        ZipContentInspector(config).inspect_zip_content(io.BytesIO(data))
+    assert type(exc_info.value) is ZipContentError
+    return exc_info.value
+
+
+class TestIsSymlink:
+    """_is_symlink matches the symlink file type exactly."""
+
+    def test_symlink_flagged(self, default_config):
+        inspector = ZipContentInspector(default_config)
+        assert inspector._is_symlink(_entry_with_mode(0o120777))
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            0o100644,
+            0o040755,
+            0o140755,
+            0o060660,
+            0o020660,
+            0o010644,
+            0o130000,
+            0o170000,
+            0,
+        ],
+        ids=[
+            "file",
+            "dir",
+            "socket",
+            "block",
+            "char",
+            "fifo",
+            "superset_of_symlink_bits",
+            "all_type_bits",
+            "none",
+        ],
+    )
+    def test_other_types_not_flagged(self, default_config, mode):
+        inspector = ZipContentInspector(default_config)
+        assert not inspector._is_symlink(_entry_with_mode(mode))
+
+
+def _invalid_utf8_name_zip() -> bytes:
+    """Build an archive whose UTF-8-flagged name is not UTF-8."""
+    data = _patch_headers(
+        _build_zip({"bad_.txt": b"hello"}),
+        (6, b"\x00\x08"),
+        (8, b"\x00\x08"),
+    )
+    return data.replace(b"bad_.txt", b"bad\xff.txt")
+
+
+class TestUnparsableArchivesAreCorrupt:
+    """zipfile errors other than BadZipFile map to ZIP_CORRUPT."""
+
+    def test_invalid_utf8_name_is_corrupt(self, default_config):
+        inspector = ZipContentInspector(default_config)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(_invalid_utf8_name_zip()))
+
+        assert type(exc_info.value) is CompressionSecurityError
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+    def test_nested_invalid_utf8_name_is_corrupt(self):
+        outer = _build_zip({"inner.zip": _invalid_utf8_name_zip()})
+
+        _assert_nested_rejected(
+            _nested_inspector(),
+            outer,
+            ErrorCode.ZIP_CORRUPT,
+            "Invalid or corrupted",
+        )
+
+    def test_nested_valid_utf8_name_accepted(self):
+        outer = _build_zip({"inner.zip": _build_zip({"café.txt": b"hello"})})
+
+        _nested_inspector().inspect_zip_content(io.BytesIO(outer))

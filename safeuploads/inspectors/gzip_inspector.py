@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import gzip
 import logging
+import zlib
 from typing import TYPE_CHECKING
 
 from ..audit import get_correlation_id, log_extra
@@ -11,9 +11,10 @@ from ..exceptions import (
     CompressionSecurityError,
     ErrorCode,
     FileProcessingError,
+    ResourceLimitError,
     ZipBombError,
 )
-from ..utils import bytes_to_mb
+from ..utils import bytes_to_mb, iter_gzip_chunks
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ class GzipContentInspector(BaseInspector):
                 size exceeds configured limits.
             CompressionSecurityError: If the gzip structure is
                 invalid or corrupted.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
             FileProcessingError: If an unexpected error occurs.
         """
         file_obj.seek(0)
@@ -65,19 +68,45 @@ class GzipContentInspector(BaseInspector):
         )
 
         try:
-            with gzip.open(file_obj, "rb") as gz:
-                while True:
-                    chunk = gz.read(chunk_size)
-                    if not chunk:
-                        break
-                    total_uncompressed += len(chunk)
+            for chunk in iter_gzip_chunks(file_obj, chunk_size):
+                total_uncompressed += len(chunk)
 
-                    # Check uncompressed size limit
-                    if total_uncompressed > max_uncompressed:
+                # Check uncompressed size limit
+                if total_uncompressed > max_uncompressed:
+                    logger.error(
+                        "Gzip uncompressed size exceeded: %dMB > %dMB",
+                        bytes_to_mb(total_uncompressed),
+                        bytes_to_mb(max_uncompressed),
+                        extra=log_extra(),
+                    )
+                    cid = get_correlation_id()
+                    if cid:
+                        self._audit.threat(
+                            "",
+                            cid,
+                            "Gzip decompression bomb — size exceeded",
+                        )
+                    raise ZipBombError(
+                        message=(
+                            "Gzip uncompressed size too"
+                            " large:"
+                            f" {bytes_to_mb(total_uncompressed)}MB."
+                            " Maximum:"
+                            f" {bytes_to_mb(max_uncompressed)}MB"
+                        ),
+                        compression_ratio=0,
+                        uncompressed_size=(total_uncompressed),
+                        max_size=max_uncompressed,
+                    )
+
+                # Check ratio progressively
+                if compressed_size > 0:
+                    ratio = total_uncompressed / compressed_size
+                    if ratio > max_ratio:
                         logger.error(
-                            "Gzip uncompressed size exceeded: %dMB > %dMB",
-                            bytes_to_mb(total_uncompressed),
-                            bytes_to_mb(max_uncompressed),
+                            "Gzip compression ratio exceeded: %.1f:1 > %d:1",
+                            ratio,
+                            max_ratio,
                             extra=log_extra(),
                         )
                         cid = get_correlation_id()
@@ -85,58 +114,24 @@ class GzipContentInspector(BaseInspector):
                             self._audit.threat(
                                 "",
                                 cid,
-                                "Gzip decompression bomb — size exceeded",
+                                "Gzip decompression bomb — ratio exceeded",
                             )
                         raise ZipBombError(
                             message=(
-                                "Gzip uncompressed size too"
-                                " large:"
-                                f" {bytes_to_mb(total_uncompressed)}MB."
+                                "Gzip compression ratio"
+                                " too high:"
+                                f" {ratio:.1f}:1."
                                 " Maximum:"
-                                f" {bytes_to_mb(max_uncompressed)}MB"
+                                f" {max_ratio}:1"
                             ),
-                            compression_ratio=0,
-                            uncompressed_size=(total_uncompressed),
-                            max_size=max_uncompressed,
+                            compression_ratio=ratio,
+                            max_ratio=float(max_ratio),
+                            error_code=(ErrorCode.COMPRESSION_RATIO_EXCEEDED),
                         )
 
-                    # Check ratio progressively
-                    if compressed_size > 0:
-                        ratio = total_uncompressed / compressed_size
-                        if ratio > max_ratio:
-                            logger.error(
-                                "Gzip compression ratio"
-                                " exceeded:"
-                                " %.1f:1 > %d:1",
-                                ratio,
-                                max_ratio,
-                                extra=log_extra(),
-                            )
-                            cid = get_correlation_id()
-                            if cid:
-                                self._audit.threat(
-                                    "",
-                                    cid,
-                                    "Gzip decompression bomb — ratio exceeded",
-                                )
-                            raise ZipBombError(
-                                message=(
-                                    "Gzip compression ratio"
-                                    " too high:"
-                                    f" {ratio:.1f}:1."
-                                    " Maximum:"
-                                    f" {max_ratio}:1"
-                                ),
-                                compression_ratio=ratio,
-                                max_ratio=float(max_ratio),
-                                error_code=(
-                                    ErrorCode.COMPRESSION_RATIO_EXCEEDED
-                                ),
-                            )
-
-        except ZipBombError:
+        except (ZipBombError, ResourceLimitError):
             raise
-        except gzip.BadGzipFile as err:
+        except zlib.error as err:
             logger.error(
                 "Invalid or corrupted gzip file",
                 exc_info=True,

@@ -1,8 +1,20 @@
 """Tests for exception classes and error codes."""
 
+import copy
+import importlib
+import importlib.metadata
+import inspect
+from concurrent.futures import ProcessPoolExecutor
+from importlib.metadata import PackageNotFoundError, version
+
+import pytest
+
+import safeuploads
+from safeuploads import exceptions as exceptions_module
 from safeuploads.exceptions import (
     CompressionSecurityError,
     ConfigValidationError,
+    ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
@@ -13,8 +25,10 @@ from safeuploads.exceptions import (
     FileSizeError,
     FileValidationError,
     MimeTypeError,
+    ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
+    XmlSecurityError,
     ZipBombError,
     ZipContentError,
 )
@@ -28,10 +42,8 @@ class TestErrorCode:
         # Filename errors
         assert hasattr(ErrorCode, "FILENAME_EMPTY")
         assert hasattr(ErrorCode, "FILENAME_INVALID")
-        assert hasattr(ErrorCode, "FILENAME_TOO_LONG")
 
         # Unicode errors
-        assert hasattr(ErrorCode, "UNICODE_SECURITY")
         assert hasattr(ErrorCode, "UNICODE_DANGEROUS_CHARS")
         assert hasattr(ErrorCode, "UNICODE_NORMALIZATION_ERROR")
 
@@ -47,7 +59,6 @@ class TestErrorCode:
         # File size errors
         assert hasattr(ErrorCode, "FILE_TOO_LARGE")
         assert hasattr(ErrorCode, "FILE_EMPTY")
-        assert hasattr(ErrorCode, "FILE_SIZE_UNKNOWN")
 
         # MIME type errors
         assert hasattr(ErrorCode, "MIME_TYPE_INVALID")
@@ -55,7 +66,6 @@ class TestErrorCode:
         assert hasattr(ErrorCode, "MIME_DETECTION_FAILED")
 
         # File signature errors
-        assert hasattr(ErrorCode, "FILE_SIGNATURE_INVALID")
         assert hasattr(ErrorCode, "FILE_SIGNATURE_MISSING")
         assert hasattr(ErrorCode, "FILE_SIGNATURE_MISMATCH")
 
@@ -69,8 +79,6 @@ class TestErrorCode:
 
         # Processing errors
         assert hasattr(ErrorCode, "PROCESSING_ERROR")
-        assert hasattr(ErrorCode, "IO_ERROR")
-        assert hasattr(ErrorCode, "MEMORY_ERROR")
 
     def test_error_codes_are_strings(self):
         """Verify error codes are string values."""
@@ -93,7 +101,7 @@ class TestFileSecurityError:
         error = FileSecurityError("Test error")
         assert str(error) == "Test error"
         assert error.message == "Test error"
-        assert error.error_code is None
+        assert error.error_code == ErrorCode.PROCESSING_ERROR
 
     def test_initialization_with_error_code(self):
         """Test initialization with error code."""
@@ -520,3 +528,225 @@ class TestFileSecurityConfigurationError:
         errors = []
         error = FileSecurityConfigurationError(errors)
         assert isinstance(error, Exception)
+
+
+_DEFAULT_CODES = {
+    FileSecurityError: ErrorCode.PROCESSING_ERROR,
+    FileValidationError: ErrorCode.VALIDATION_FAILED,
+    FilenameSecurityError: ErrorCode.FILENAME_INVALID,
+    UnicodeSecurityError: ErrorCode.UNICODE_DANGEROUS_CHARS,
+    ExtensionSecurityError: ErrorCode.EXTENSION_BLOCKED,
+    WindowsReservedNameError: ErrorCode.WINDOWS_RESERVED_NAME,
+    FileSizeError: ErrorCode.FILE_TOO_LARGE,
+    MimeTypeError: ErrorCode.MIME_TYPE_INVALID,
+    FileSignatureError: ErrorCode.FILE_SIGNATURE_MISMATCH,
+    CompressionSecurityError: ErrorCode.ZIP_INVALID_STRUCTURE,
+    ZipBombError: ErrorCode.ZIP_BOMB_DETECTED,
+    ZipContentError: ErrorCode.ZIP_CONTENT_THREAT,
+    XmlSecurityError: ErrorCode.XML_MALFORMED,
+    ContentThreatError: ErrorCode.CONTENT_THREAT_DETECTED,
+    FileProcessingError: ErrorCode.PROCESSING_ERROR,
+    ResourceLimitError: ErrorCode.RESOURCE_LIMIT_EXCEEDED,
+}
+
+
+def _file_exception_classes() -> list[type[FileSecurityError]]:
+    """Return every FileSecurityError subclass in the module."""
+    return [
+        cls
+        for _, cls in inspect.getmembers(exceptions_module, inspect.isclass)
+        if issubclass(cls, FileSecurityError)
+    ]
+
+
+class TestDefaultErrorCodes:
+    """Every exception class has a default ErrorCode."""
+
+    def test_table_covers_every_exception_class(self):
+        """The expected-defaults table lists all classes."""
+        assert set(_file_exception_classes()) == set(_DEFAULT_CODES)
+
+    @pytest.mark.parametrize(
+        ("cls", "code"),
+        list(_DEFAULT_CODES.items()),
+        ids=lambda v: getattr(v, "__name__", str(v)),
+    )
+    def test_message_only_construction_has_default_code(self, cls, code):
+        """A message-only instance has its class's default code."""
+        error = cls("boom")
+        assert isinstance(error.error_code, ErrorCode)
+        assert error.error_code == code
+
+    def test_explicit_code_overrides_default(self):
+        """An explicit code is kept."""
+        error = FileValidationError("x", error_code=ErrorCode.FILE_EMPTY)
+        assert error.error_code == ErrorCode.FILE_EMPTY
+
+
+class TestXmlAndContentThreatErrors:
+    """XmlSecurityError and ContentThreatError."""
+
+    def test_xml_security_error_attributes(self):
+        """Filename and code are stored."""
+        error = XmlSecurityError(
+            "bad",
+            filename="a.gpx",
+            error_code=ErrorCode.XML_DTD_FORBIDDEN,
+        )
+        assert isinstance(error, FileValidationError)
+        assert error.filename == "a.gpx"
+        assert error.error_code == ErrorCode.XML_DTD_FORBIDDEN
+
+    def test_content_threat_error_attributes(self):
+        """Threats list and filename are stored."""
+        error = ContentThreatError("bad", filename="a.jpg", threats=["x"])
+        assert isinstance(error, FileValidationError)
+        assert error.threats == ["x"]
+        assert error.filename == "a.jpg"
+
+    def test_content_threat_error_threats_default_empty(self):
+        """Threats default to an empty list."""
+        assert ContentThreatError("bad").threats == []
+
+
+class TestResourceLimitErrorKeywordOnly:
+    """ResourceLimitError parameters after message are keyword-only."""
+
+    def test_positional_extra_argument_rejected(self):
+        """A second positional argument is a TypeError."""
+        with pytest.raises(TypeError):
+            ResourceLimitError("m", ErrorCode.RESOURCE_TIME_EXCEEDED)
+
+    def test_keywords_accepted(self):
+        """All options work as keywords."""
+        original = ValueError("o")
+        error = ResourceLimitError(
+            "m",
+            error_code=ErrorCode.RESOURCE_MEMORY_EXCEEDED,
+            elapsed_seconds=1.5,
+            memory_bytes=10,
+            original_error=original,
+        )
+        assert error.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+        assert error.elapsed_seconds == 1.5
+        assert error.memory_bytes == 10
+        assert error.original_error is original
+
+
+def _sample_instances() -> list[FileSecurityError]:
+    """Build one fully populated instance of each exception."""
+    return [
+        FileSecurityError("m", error_code=ErrorCode.PROCESSING_ERROR),
+        FileValidationError("m", "f.txt", ErrorCode.FILE_EMPTY),
+        FilenameSecurityError("m", "f.txt"),
+        UnicodeSecurityError("m", "f.txt", [("\u202e", 8238, 0)]),
+        ExtensionSecurityError("m", "f.exe", ".exe"),
+        WindowsReservedNameError("m", "con.txt", "CON"),
+        FileSizeError("m", "f", 10, 5),
+        MimeTypeError("m", "f", "text/plain", ["image/png"]),
+        FileSignatureError("m", "f", "png"),
+        CompressionSecurityError("m", "f.zip"),
+        ZipBombError("m", "f.zip", 99.5, 1000, 50.0, 500),
+        ZipContentError("m", "f.zip", ["t1", "t2"]),
+        XmlSecurityError("m", "f.gpx", ErrorCode.XML_DTD_FORBIDDEN),
+        ContentThreatError("m", "f.jpg", ["t1"]),
+        FileProcessingError("m", original_error=None),
+        ResourceLimitError(
+            "m",
+            error_code=ErrorCode.RESOURCE_TIME_EXCEEDED,
+            elapsed_seconds=2.5,
+            memory_bytes=7,
+        ),
+    ]
+
+
+@pytest.fixture(scope="module")
+def round_trip():
+    """Send objects through a process pool and return the copies."""
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        yield lambda *objs: list(pool.map(copy.copy, objs))
+
+
+class TestPickling:
+    """Exceptions survive pickling (process-pool executors)."""
+
+    def test_samples_cover_every_exception_class(self):
+        """The sample list has one instance per class."""
+        assert {type(e) for e in _sample_instances()} == set(
+            _file_exception_classes()
+        )
+
+    def test_round_trip_keeps_attributes(self, round_trip):
+        """Type, message, code and attributes survive."""
+        errors = _sample_instances()
+        for clone, error in zip(round_trip(*errors), errors, strict=True):
+            assert type(clone) is type(error)
+            assert clone.error_code == error.error_code
+            assert str(clone) == str(error)
+            assert vars(clone) == vars(error)
+
+    def test_configuration_error_round_trip(self, round_trip):
+        """FileSecurityConfigurationError keeps its errors."""
+        errors = [
+            ConfigValidationError("t", "msg", "error", "comp", "fix"),
+            ConfigValidationError("t2", "msg2", "warning", "comp2"),
+        ]
+        (clone,) = round_trip(FileSecurityConfigurationError(errors))
+        assert isinstance(clone, FileSecurityConfigurationError)
+        assert clone.errors == errors
+        assert str(clone) == str(FileSecurityConfigurationError(errors))
+
+    def test_empty_configuration_error_round_trip(self, round_trip):
+        """An empty error list also round-trips."""
+        (clone,) = round_trip(FileSecurityConfigurationError([]))
+        assert clone.errors == []
+
+    def test_config_validation_error_round_trip(self, round_trip):
+        """The ConfigValidationError dataclass pickles."""
+        item = ConfigValidationError("t", "msg", "info", "comp", "fix")
+        assert round_trip(item) == [item]
+
+
+class TestPackageExports:
+    """Public package attributes."""
+
+    def test_version_matches_distribution_metadata(self):
+        """__version__ equals the installed distribution version."""
+        assert safeuploads.__version__ == version("safeuploads")
+        assert "__version__" in safeuploads.__all__
+
+    def test_version_falls_back_without_distribution_metadata(
+        self, monkeypatch
+    ):
+        """An uninstalled source tree still imports."""
+
+        def missing(name):
+            raise PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", missing)
+        try:
+            importlib.reload(safeuploads)
+            assert safeuploads.__version__ == "0+unknown"
+        finally:
+            monkeypatch.undo()
+            importlib.reload(safeuploads)
+        assert safeuploads.__version__ == version("safeuploads")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "XmlSecurityError",
+            "ContentThreatError",
+            "UploadFileProtocol",
+            "SeekableFile",
+        ],
+    )
+    def test_names_exported(self, name):
+        """New public names are importable and listed."""
+        assert name in safeuploads.__all__
+        assert getattr(safeuploads, name) is not None
+
+    @pytest.mark.parametrize("name", ["log_extra", "reset_correlation_id"])
+    def test_internal_names_not_exported(self, name):
+        """Internal helpers stay out of ``__all__``."""
+        assert name not in safeuploads.__all__

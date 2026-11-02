@@ -16,7 +16,9 @@ from safeuploads.enums import (
 )
 from safeuploads.exceptions import (
     FileSecurityConfigurationError,
+    WindowsReservedNameError,
 )
+from safeuploads.file_validator import FileValidator
 
 
 class TestFileSizeLimitValidation:
@@ -503,8 +505,11 @@ class TestValidateAndReport:
             "limits",
             SecurityLimits(max_compression_ratio=5),
         )
-        with pytest.raises(FileSecurityConfigurationError):
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileSecurityConfig.validate_and_report(strict=True)
+        assert [(e.error_type, e.severity) for e in exc_info.value.errors] == [
+            ("too_strict_compression", "warning")
+        ]
 
     def test_non_strict_does_not_raise_on_errors(self, monkeypatch):
         """
@@ -686,9 +691,9 @@ class TestConfigClassMethods:
 class TestCrossDependencyValidation:
     """Tests for _validate_cross_dependencies branches."""
 
-    def test_non_lowercase_reserved_name_generates_warning(self, monkeypatch):
+    def test_non_lowercase_reserved_name_generates_error(self, monkeypatch):
         """
-        Test that an uppercase reserved name generates a warning.
+        Test that an uppercase reserved name generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
@@ -699,10 +704,12 @@ class TestCrossDependencyValidation:
             {"con", "PRN"},
         )
         errors = FileSecurityConfig.validate_configuration()
-        warnings = [
+        matches = [
             e for e in errors if e.error_type == "case_sensitive_reserved_name"
         ]
-        assert len(warnings) >= 1
+        assert len(matches) == 1
+        assert matches[0].severity == "error"
+        assert "never match" in matches[0].message
 
     def test_non_integer_unicode_char_generates_error(self, monkeypatch):
         """
@@ -868,20 +875,27 @@ class TestValidateAndReportStrictMode:
             "limits",
             SecurityLimits(max_image_size=-1),
         )
-        with pytest.raises(FileSecurityConfigurationError):
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileSecurityConfig.validate_and_report(strict=True)
+        assert [(e.error_type, e.severity) for e in exc_info.value.errors] == [
+            ("invalid_size_limit", "error")
+        ]
 
 
 class TestCrossDependencyValidationExtra:
-    def test_uppercase_reserved_name_generates_warning(self, monkeypatch):
+    def test_uppercase_reserved_name_generates_error(self, monkeypatch):
         monkeypatch.setattr(
             FileSecurityConfig,
             "WINDOWS_RESERVED_NAMES",
             frozenset({"con", "PRN"}),
         )
         errors = FileSecurityConfig.validate_configuration()
-        types = [e.error_type for e in errors]
-        assert "case_sensitive_reserved_name" in types
+        found = [
+            (e.error_type, e.severity)
+            for e in errors
+            if e.error_type == "case_sensitive_reserved_name"
+        ]
+        assert found == [("case_sensitive_reserved_name", "error")]
 
     def test_non_integer_unicode_char(self, monkeypatch):
         monkeypatch.setattr(
@@ -947,8 +961,11 @@ class TestInstanceValidation:
         config = FileSecurityConfig()
         config.limits = SecurityLimits(max_image_size=-1)
 
-        with pytest.raises(FileSecurityConfigurationError):
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
             config.validate_and_report_instance(strict=True)
+        assert [(e.error_type, e.severity) for e in exc_info.value.errors] == [
+            ("invalid_size_limit", "error")
+        ]
 
     def test_validate_and_report_instance_non_strict_logs(self, caplog):
         """Non-strict instance reporting logs without raising."""
@@ -960,3 +977,230 @@ class TestInstanceValidation:
         with caplog.at_level(logging.ERROR, logger="safeuploads.config"):
             config.validate_and_report_instance(strict=False)
         assert "configuration error" in caplog.text.lower()
+
+
+def _error_types(exc_info) -> list[str]:
+    """
+    Return the error types carried by a configuration exception.
+
+    Args:
+        exc_info: pytest ExceptionInfo for the raised exception.
+
+    Returns:
+        Error types of the reported issues.
+    """
+    return [e.error_type for e in exc_info.value.errors]
+
+
+class TestInstanceOverrideValidation:
+    """Instance attribute overrides are validated like class ones."""
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "error_type"),
+        [
+            ("BLOCKED_EXTENSIONS", frozenset(), "empty_blocked_extensions"),
+            ("WINDOWS_RESERVED_NAMES", frozenset(), "empty_reserved_names"),
+            (
+                "COMPOUND_BLOCKED_EXTENSIONS",
+                frozenset(),
+                "empty_compound_blocked_extensions",
+            ),
+            (
+                "DANGEROUS_UNICODE_CHARS",
+                frozenset(),
+                "empty_dangerous_unicode_chars",
+            ),
+            ("ALLOWED_IMAGE_MIMES", frozenset(), "empty_mime_set"),
+            (
+                "ALLOWED_IMAGE_EXTENSIONS",
+                frozenset({".jpg", ".php"}),
+                "extension_conflict",
+            ),
+            (
+                "WINDOWS_RESERVED_NAMES",
+                frozenset({"con", "CON"}),
+                "case_sensitive_reserved_name",
+            ),
+        ],
+    )
+    def test_instance_override_rejected(self, attr, value, error_type):
+        """A hostile instance override fails FileValidator creation."""
+        config = FileSecurityConfig()
+        setattr(config, attr, value)
+
+        assert error_type in [e.error_type for e in config.validate_instance()]
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert error_type in _error_types(exc_info)
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "error_type"),
+        [
+            ("BLOCKED_EXTENSIONS", frozenset(), "empty_blocked_extensions"),
+            ("WINDOWS_RESERVED_NAMES", frozenset(), "empty_reserved_names"),
+            (
+                "COMPOUND_BLOCKED_EXTENSIONS",
+                frozenset(),
+                "empty_compound_blocked_extensions",
+            ),
+            (
+                "DANGEROUS_UNICODE_CHARS",
+                frozenset(),
+                "empty_dangerous_unicode_chars",
+            ),
+            (
+                "WINDOWS_RESERVED_NAMES",
+                frozenset({"CON"}),
+                "case_sensitive_reserved_name",
+            ),
+        ],
+    )
+    def test_subclass_override_rejected(self, attr, value, error_type):
+        """A subclass override is reported by class validation."""
+
+        class _Sub(FileSecurityConfig):
+            pass
+
+        setattr(_Sub, attr, value)
+
+        assert error_type in [
+            e.error_type for e in _Sub.validate_configuration()
+        ]
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=_Sub())
+        assert error_type in _error_types(exc_info)
+
+    def test_default_instance_constructs(self):
+        """The default configuration has no instance issues."""
+        config = FileSecurityConfig()
+
+        assert config.validate_instance() == []
+        FileValidator(config=config)
+
+    def test_valid_instance_override_is_used(self):
+        """A valid lowercase reserved name override is enforced."""
+        config = FileSecurityConfig()
+        config.WINDOWS_RESERVED_NAMES = frozenset({"con"})
+        config.ALLOWED_IMAGE_EXTENSIONS = frozenset({".png"})
+
+        assert config.validate_instance() == []
+        validator = FileValidator(config=config)
+
+        with pytest.raises(WindowsReservedNameError):
+            validator._sanitize_filename("con.png")
+        assert validator._sanitize_filename("photo.png") == "photo.png"
+
+    def test_class_validation_still_reports_class_problems(self, monkeypatch):
+        """validate_configuration reads the class attributes."""
+        monkeypatch.setattr(
+            FileSecurityConfig, "WINDOWS_RESERVED_NAMES", frozenset()
+        )
+
+        types = [
+            e.error_type for e in FileSecurityConfig.validate_configuration()
+        ]
+        assert "empty_reserved_names" in types
+
+    def test_instance_override_does_not_leak_to_class(self):
+        """An invalid instance override leaves class validation clean."""
+        config = FileSecurityConfig()
+        config.BLOCKED_EXTENSIONS = frozenset()
+
+        assert "empty_blocked_extensions" in [
+            e.error_type for e in config.validate_instance()
+        ]
+        assert FileSecurityConfig.validate_configuration() == []
+
+
+class TestContentScanWindowValidation:
+    """The content scan window must cover the largest scanned upload."""
+
+    @staticmethod
+    def _config(**limits) -> FileSecurityConfig:
+        """
+        Build a config with content analysis and the given limits.
+
+        Args:
+            **limits: SecurityLimits overrides.
+
+        Returns:
+            Configuration with content analysis enabled.
+        """
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_content_analysis=True, **limits)
+        return config
+
+    @staticmethod
+    def _window_errors(config: FileSecurityConfig) -> list:
+        """
+        Return the scan window errors reported for a config.
+
+        Args:
+            config: Configuration to validate.
+
+        Returns:
+            Errors of type ``content_scan_window_too_small``.
+        """
+        return [
+            e
+            for e in config.validate_instance()
+            if e.error_type == "content_scan_window_too_small"
+        ]
+
+    def test_default_limits_have_no_window_error(self):
+        """Default limits with content analysis on are accepted."""
+        assert self._window_errors(self._config()) == []
+
+    def test_window_equal_to_largest_limit_is_valid(self):
+        """A window equal to both file limits is accepted."""
+        size = 50 * 1024 * 1024
+        config = self._config(
+            max_image_size=size,
+            max_activity_file_size=size,
+            content_scan_max_size=size,
+        )
+        assert self._window_errors(config) == []
+
+    def test_small_window_ignored_when_analysis_disabled(self):
+        """No scan happens, so a small window is not an error."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            enable_content_analysis=False, content_scan_max_size=1024
+        )
+        assert self._window_errors(config) == []
+
+    def test_window_smaller_than_image_limit_rejected(self):
+        """A window below max_image_size is an error."""
+        config = self._config(
+            max_image_size=20 * 1024 * 1024,
+            max_activity_file_size=1024,
+            content_scan_max_size=1024 * 1024,
+        )
+        errors = self._window_errors(config)
+        assert len(errors) == 1
+        assert errors[0].severity == "error"
+        assert errors[0].component == "streaming"
+        assert "max_image_size" in errors[0].message
+
+    def test_window_smaller_than_activity_limit_rejected(self):
+        """A window below max_activity_file_size is an error."""
+        config = self._config(
+            max_image_size=1024,
+            max_activity_file_size=50 * 1024 * 1024,
+            content_scan_max_size=1024 * 1024,
+        )
+        errors = self._window_errors(config)
+        assert len(errors) == 1
+        assert "max_activity_file_size" in errors[0].message
+
+    def test_window_smaller_than_both_limits_reports_two(self):
+        """One error is reported per limit exceeding the window."""
+        config = self._config(content_scan_max_size=1024)
+        assert len(self._window_errors(config)) == 2
+
+    def test_file_validator_rejects_small_window(self):
+        """FileValidator refuses a config with a too small window."""
+        config = self._config(content_scan_max_size=1024)
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert "content_scan_window_too_small" in _error_types(exc_info)

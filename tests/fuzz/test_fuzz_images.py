@@ -1,39 +1,22 @@
 """Fuzz tests for image validation."""
 
-import contextlib
-
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from safeuploads.exceptions import (
-    FileProcessingError,
-    FileValidationError,
-)
 from safeuploads.file_validator import FileValidator
+from tests.fuzz.helpers import MockFile, accepted_async
+
+_IMAGE_SIGNATURES = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")
 
 
-class _MockFile:
-    """Minimal mock upload file for fuzz tests."""
-
-    def __init__(self, filename, content):
-        self.filename = filename
-        self.content = content
-        self.size = len(content)
-        self._pos = 0
-
-    async def read(self, size=-1):
-        if size == -1:
-            data = self.content[self._pos :]
-            self._pos = len(self.content)
-        else:
-            data = self.content[self._pos : self._pos + size]
-            self._pos += len(data)
-        return data
-
-    async def seek(self, offset):
-        self._pos = offset
-        return self._pos
+async def _assert_accepts_only_images(filename, content):
+    """Validate and check the accepted upload is a known image."""
+    validator = FileValidator()
+    file = MockFile(filename, content)
+    if await accepted_async(validator.validate_image_file(file)):
+        assert content.startswith(_IMAGE_SIGNATURES)
+        assert len(content) <= validator.config.limits.max_image_size
 
 
 # JPEG header prefix
@@ -54,32 +37,23 @@ class TestFuzzImageValidation:
     @pytest.mark.asyncio
     async def test_mutated_jpeg_never_crashes(self, padding):
         """Mutated JPEG content must not crash."""
-        validator = FileValidator()
         content = _JPEG_HDR + padding + b"\xff\xd9"
-        file = _MockFile("fuzz.jpg", content)
-        with contextlib.suppress(FileValidationError, FileProcessingError):
-            await validator.validate_image_file(file)
+        await _assert_accepts_only_images("fuzz.jpg", content)
 
     @given(padding=st.binary(min_size=0, max_size=2000))
     @settings(max_examples=200, deadline=3000)
     @pytest.mark.asyncio
     async def test_mutated_png_never_crashes(self, padding):
         """Mutated PNG content must not crash."""
-        validator = FileValidator()
         content = _PNG_HDR + padding
-        file = _MockFile("fuzz.png", content)
-        with contextlib.suppress(FileValidationError, FileProcessingError):
-            await validator.validate_image_file(file)
+        await _assert_accepts_only_images("fuzz.png", content)
 
     @given(data=st.binary(min_size=1, max_size=500))
     @settings(max_examples=200, deadline=3000)
     @pytest.mark.asyncio
     async def test_random_bytes_as_image(self, data):
         """Arbitrary bytes as .jpg must not crash."""
-        validator = FileValidator()
-        file = _MockFile("random.jpg", data)
-        with contextlib.suppress(FileValidationError, FileProcessingError):
-            await validator.validate_image_file(file)
+        await _assert_accepts_only_images("random.jpg", data)
 
     @given(
         width=st.integers(min_value=0, max_value=65535),
@@ -89,7 +63,6 @@ class TestFuzzImageValidation:
     @pytest.mark.asyncio
     async def test_png_extreme_dimensions(self, width, height):
         """PNG with extreme dimensions must not crash."""
-        validator = FileValidator()
         # Construct PNG IHDR with given dimensions
         w = width.to_bytes(4, "big")
         h = height.to_bytes(4, "big")
@@ -110,6 +83,4 @@ class TestFuzzImageValidation:
             + b"IEND"
             + b"\x00\x00\x00\x00"
         )
-        file = _MockFile("dims.png", content)
-        with contextlib.suppress(FileValidationError, FileProcessingError):
-            await validator.validate_image_file(file)
+        await _assert_accepts_only_images("dims.png", content)

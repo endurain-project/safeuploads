@@ -8,6 +8,7 @@ import pytest
 from safeuploads.audit import get_correlation_id
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
+    ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
     FileProcessingError,
@@ -45,8 +46,9 @@ class TestValidateGzipFileFilenameErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file(None, _VALID_GZIP)
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
 
 class TestValidateGzipFileExtensionErrors:
@@ -57,8 +59,9 @@ class TestValidateGzipFileExtensionErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file("archive.zip", _VALID_GZIP)
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
 
 
 class TestValidateGzipFileSizeErrors:
@@ -69,8 +72,9 @@ class TestValidateGzipFileSizeErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file("archive.gz", b"", size=0)
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
     async def test_validate_gzip_file_exceeds_max_size_raises(
         self, mock_upload_file
@@ -83,8 +87,9 @@ class TestValidateGzipFileSizeErrors:
         raw = bytes(range(256)) * 8  # 2048 bytes
         oversized = gzip.compress(raw, compresslevel=0)
         f = mock_upload_file("archive.gz", oversized)
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
 
 class TestValidateGzipFileMimeErrors:
@@ -95,13 +100,14 @@ class TestValidateGzipFileMimeErrors:
     ):
         validator = FileValidator()
         monkeypatch.setattr(
-            validator,
-            "_detect_mime_type",
+            validator.mime_validator,
+            "detect",
             lambda content, filename: "text/plain",
         )
         f = mock_upload_file("archive.gz", _VALID_GZIP)
-        with pytest.raises(MimeTypeError):
+        with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
 
 class TestValidateGzipFileSignatureErrors:
@@ -112,8 +118,9 @@ class TestValidateGzipFileSignatureErrors:
     ):
         validator = FileValidator()
         f = mock_upload_file("archive.gz", b"Hello World")
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
 
 class TestValidateGzipFileDecompressionBomb:
@@ -128,8 +135,11 @@ class TestValidateGzipFileDecompressionBomb:
         # 1MB of zeros compresses to ~1KB — ratio far exceeds 5
         bomb = gzip.compress(b"\x00" * 1024 * 1024)
         f = mock_upload_file("archive.gz", bomb)
-        with pytest.raises(ZipBombError):
+        with pytest.raises(ZipBombError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
 
 
 class TestValidateGzipFileExceptionWrapping:
@@ -145,8 +155,9 @@ class TestValidateGzipFileExceptionWrapping:
 
         monkeypatch.setattr(validator, "_stream_to_temp_file", _raise_runtime)
         f = mock_upload_file("archive.gz", _VALID_GZIP)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
 
 class TestValidateGzipFileAuditEvents:
@@ -203,8 +214,9 @@ class TestValidateGzipFileAuditEvents:
     ):
         validator = FileValidator()
         f = mock_upload_file(None, _VALID_GZIP)
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
         assert get_correlation_id() is None
 
 
@@ -216,8 +228,8 @@ class TestValidateGzipFileOctetStream:
     ):
         validator = FileValidator()
         monkeypatch.setattr(
-            validator,
-            "_detect_mime_type",
+            validator.mime_validator,
+            "detect",
             lambda content, filename: "application/octet-stream",
         )
         f = mock_upload_file("archive.gz", _VALID_GZIP)
@@ -231,8 +243,9 @@ class TestValidateGzipFileResourceLimit:
         self, mock_upload_file
     ):
         config = FileSecurityConfig()
-        config.limits = SecurityLimits(max_validation_time_seconds=-1.0)
+        config.limits = SecurityLimits(max_validation_time_seconds=1e-9)
         validator = FileValidator(config=config)
         f = mock_upload_file("archive.gz", _VALID_GZIP)
-        with pytest.raises(ResourceLimitError):
+        with pytest.raises(ResourceLimitError) as exc_info:
             await validator.validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED

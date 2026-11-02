@@ -14,6 +14,7 @@ import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
+    ErrorCode,
     ExtensionSecurityError,
     FileSizeError,
     UnicodeSecurityError,
@@ -84,16 +85,18 @@ class TestRealUploadFile:
         validator = FileValidator()
         upload = _make_upload("photo\u202e.jpg", valid_jpeg_bytes)
 
-        with pytest.raises(UnicodeSecurityError):
+        with pytest.raises(UnicodeSecurityError) as exc_info:
             await validator.validate_image_file(upload)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
     async def test_wrong_extension_rejected(self, valid_jpeg_bytes):
         """A non-image extension is rejected for image validation."""
         validator = FileValidator()
         upload = _make_upload("photo.txt", valid_jpeg_bytes)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_image_file(upload)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
 
     async def test_filename_sanitized_in_place(self, valid_jpeg_bytes):
         """Dangerous filename characters are sanitized on the object."""
@@ -115,8 +118,9 @@ class TestRealUploadFile:
         content = b"\xff\xd8\xff\xe0" + b"\x00" * 4096  # ~4 KB > cap
         upload = _make_upload("big.jpg", content, "image/jpeg")
 
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_image_file(upload)
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
 
 @pytest.mark.integration

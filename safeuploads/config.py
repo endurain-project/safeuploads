@@ -2,7 +2,8 @@
 
 import itertools
 import logging
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass, fields, replace
 from typing import Any, ClassVar
 
 from .enums import (
@@ -211,6 +212,9 @@ class FileSecurityConfig:
             "application/xml",
             "text/xml",
             "application/octet-stream",  # FIT files detected as binary
+            # libmagic cannot tell some valid GPX/TCX from plain text;
+            # the signature check and the XML parse decide.
+            "text/plain",
         }
     )
 
@@ -313,6 +317,10 @@ class FileSecurityConfig:
             "prn",
             "aux",
             "nul",
+            "conin$",
+            "conout$",
+            "clock$",
+            "com0",
             "com1",
             "com2",
             "com3",
@@ -322,6 +330,7 @@ class FileSecurityConfig:
             "com7",
             "com8",
             "com9",
+            "lpt0",
             "lpt1",
             "lpt2",
             "lpt3",
@@ -372,9 +381,9 @@ class FileSecurityConfig:
             category: The dangerous extension category.
 
         Returns:
-            Copy of extensions in the specified category.
+            Mutable copy of extensions in the specified category.
         """
-        return category.value.copy()
+        return set(category.value)
 
     @classmethod
     def get_compound_extensions_by_category(
@@ -387,9 +396,9 @@ class FileSecurityConfig:
             category: The compound extension category.
 
         Returns:
-            Copy of compound extensions in the specified category.
+            Mutable copy of compound extensions in the specified category.
         """
-        return category.value.copy()
+        return set(category.value)
 
     @classmethod
     def get_unicode_chars_by_category(
@@ -402,9 +411,9 @@ class FileSecurityConfig:
             category: The Unicode attack category.
 
         Returns:
-            Copy of code points in the specified category.
+            Mutable copy of code points in the specified category.
         """
-        return category.value.copy()
+        return set(category.value)
 
     @classmethod
     def is_extension_in_category(
@@ -442,48 +451,45 @@ class FileSecurityConfig:
         return None
 
     @classmethod
-    def validate_configuration(
-        cls, strict: bool = True
-    ) -> list[ConfigValidationError]:
+    def validate_configuration(cls) -> list[ConfigValidationError]:
         """
         Validate the class-level default configuration.
 
-        Args:
-            strict: Reserved for future behavior adjustments.
-
         Returns:
             List of detected validation errors.
         """
-        return cls._collect_errors(cls.limits)
+        return cls._collect_errors(cls, cls.limits)
 
-    def validate_instance(
-        self, strict: bool = True
-    ) -> list[ConfigValidationError]:
+    def validate_instance(self) -> list[ConfigValidationError]:
         """
         Validate this instance's configuration.
 
-        Validates the per-instance ``limits`` so a customized
-        instance is checked instead of the class default.
-
-        Args:
-            strict: Reserved for future behavior adjustments.
+        Validates the per-instance ``limits`` and the instance's
+        MIME, extension, reserved-name and Unicode sets, so a
+        customized instance is checked instead of the class
+        default.
 
         Returns:
             List of detected validation errors.
         """
-        return type(self)._collect_errors(self.limits)
+        return self._collect_errors(self, self.limits)
 
     @classmethod
     def _collect_errors(
-        cls, limits: SecurityLimits
+        cls,
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+        limits: SecurityLimits,
     ) -> list[ConfigValidationError]:
         """
-        Run all validation routines for the given limits.
+        Run all validation routines for the given configuration.
 
-        Class-level MIME, extension, and enum checks are
-        instance-independent and always validated as-is.
+        The MIME, extension, reserved-name and Unicode sets are
+        read from ``config`` so an instance override is validated
+        the same way as a class attribute.
 
         Args:
+            config: Class or instance whose attribute sets are
+                validated.
             limits: Security limits to validate.
 
         Returns:
@@ -491,23 +497,80 @@ class FileSecurityConfig:
         """
         errors: list[ConfigValidationError] = []
 
-        # Validate file size limits
-        errors.extend(cls._validate_file_size_limits(limits))
+        # Validate limit types first so the range checks below
+        # never compare a wrongly typed value.
+        type_errors = cls._validate_limit_types(limits)
+        errors.extend(type_errors)
+
+        if not type_errors:
+            # Validate file size limits
+            errors.extend(cls._validate_file_size_limits(limits))
+
+            # Validate streaming and resource limits
+            errors.extend(cls._validate_streaming_limits(limits))
 
         # Validate MIME type configurations
-        errors.extend(cls._validate_mime_configurations())
+        errors.extend(cls._validate_mime_configurations(config))
 
         # Validate file extension configurations
-        errors.extend(cls._validate_extension_configurations())
+        errors.extend(cls._validate_extension_configurations(config))
 
-        # Validate ZIP compression settings
-        errors.extend(cls._validate_compression_settings(limits))
+        if not type_errors:
+            # Validate ZIP compression settings
+            errors.extend(cls._validate_compression_settings(limits))
 
         # Validate enum consistency
         errors.extend(cls._validate_enum_consistency())
 
         # Validate cross-configuration dependencies
-        errors.extend(cls._validate_cross_dependencies())
+        errors.extend(cls._validate_cross_dependencies(config))
+
+        return errors
+
+    @staticmethod
+    def _validate_limit_types(
+        limits: SecurityLimits,
+    ) -> list[ConfigValidationError]:
+        """
+        Validate that every limit holds a value of its declared type.
+
+        Integer fields must be ``int`` (not ``bool``), float
+        fields accept ``int`` or ``float`` (not ``bool``) and
+        boolean fields must be ``bool``.
+
+        Args:
+            limits: Security limits to validate.
+
+        Returns:
+            List of detected configuration issues.
+        """
+        errors = []
+
+        for limit in fields(SecurityLimits):
+            value = getattr(limits, limit.name)
+            if limit.type is bool:
+                valid = isinstance(value, bool)
+                expected = "a bool"
+            elif limit.type is float:
+                valid = isinstance(value, int | float) and not isinstance(
+                    value, bool
+                )
+                expected = "an int or float"
+            else:
+                valid = isinstance(value, int) and not isinstance(value, bool)
+                expected = "an int"
+            if not valid:
+                errors.append(
+                    _config_error(
+                        "invalid_limit_type",
+                        (
+                            f"{limit.name} must be {expected},"
+                            f" got {type(value).__name__}"
+                        ),
+                        "limits",
+                        f"Set {limit.name} to {expected} value",
+                    )
+                )
 
         return errors
 
@@ -605,6 +668,30 @@ class FileSecurityConfig:
                 )
             )
 
+        # Check activity and gzip size limits
+        if limits.max_activity_file_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_size_limit",
+                    "max_activity_file_size must be greater than 0",
+                    "file_sizes",
+                    (
+                        "Set max_activity_file_size to a positive"
+                        " value (e.g., 50MB)"
+                    ),
+                )
+            )
+
+        if limits.max_gzip_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_size_limit",
+                    "max_gzip_size must be greater than 0",
+                    "file_sizes",
+                    "Set max_gzip_size to a positive value (e.g., 500MB)",
+                )
+            )
+
         # Validate sanitized filename length
         if limits.max_sanitized_name_length <= 0:
             errors.append(
@@ -618,10 +705,95 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_mime_configurations(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_streaming_limits(
+        limits: SecurityLimits,
+    ) -> list[ConfigValidationError]:
+        """
+        Validate streaming, resource and content scan limits.
+
+        A non-positive buffer or chunk size would disable the
+        bounded reads (``read(-1)`` reads everything and a
+        spooled buffer of 0 never spills to disk), so each is
+        required to be positive. With content analysis enabled
+        only the first ``content_scan_max_size`` bytes of an
+        image or activity upload are scanned, so the window must
+        cover ``max_image_size`` and ``max_activity_file_size``;
+        otherwise a payload placed past the window is accepted.
+
+        Args:
+            limits: Security limits to validate.
+
+        Returns:
+            List of detected configuration issues.
+        """
+        errors = []
+
+        for name in (
+            "max_memory_buffer_size",
+            "chunk_size",
+            "max_validation_memory_mb",
+            "content_scan_max_size",
+        ):
+            if getattr(limits, name) <= 0:
+                errors.append(
+                    _config_error(
+                        "invalid_streaming_limit",
+                        f"{name} must be greater than 0",
+                        "streaming",
+                        f"Set {name} to a positive value",
+                    )
+                )
+
+        if limits.enable_content_analysis:
+            for name in ("max_image_size", "max_activity_file_size"):
+                size = getattr(limits, name)
+                if limits.content_scan_max_size < size:
+                    errors.append(
+                        _config_error(
+                            "content_scan_window_too_small",
+                            (
+                                "content_scan_max_size"
+                                f" ({limits.content_scan_max_size} bytes)"
+                                f" is smaller than {name}"
+                                f" ({size} bytes), so content past"
+                                " the scan window is not analyzed"
+                            ),
+                            "streaming",
+                            (
+                                "Raise content_scan_max_size to at least"
+                                f" {name}"
+                            ),
+                        )
+                    )
+
+        if (
+            not math.isfinite(limits.max_validation_time_seconds)
+            or limits.max_validation_time_seconds <= 0
+        ):
+            errors.append(
+                _config_error(
+                    "invalid_timeout",
+                    (
+                        "max_validation_time_seconds must be a finite"
+                        " value greater than 0"
+                    ),
+                    "streaming",
+                    "Set a reasonable overall validation timeout",
+                )
+            )
+
+        return errors
+
+    @staticmethod
+    def _validate_mime_configurations(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[ConfigValidationError]:
         """
         Validate MIME type configurations.
+
+        Args:
+            config: Class or instance to read the sets from.
 
         Returns:
             List of detected configuration issues.
@@ -629,7 +801,7 @@ class FileSecurityConfig:
         errors = []
 
         # Check image MIME types
-        if not cls.ALLOWED_IMAGE_MIMES:
+        if not config.ALLOWED_IMAGE_MIMES:
             errors.append(
                 _config_error(
                     "empty_mime_set",
@@ -640,7 +812,7 @@ class FileSecurityConfig:
             )
 
         # Validate image MIME type format
-        for mime_type in cls.ALLOWED_IMAGE_MIMES:
+        for mime_type in config.ALLOWED_IMAGE_MIMES:
             if not mime_type.startswith("image/"):
                 errors.append(
                     _config_error(
@@ -660,19 +832,33 @@ class FileSecurityConfig:
                     )
                 )
 
-        # Check ZIP MIME types
-        if not cls.ALLOWED_ZIP_MIMES:
-            errors.append(
-                _config_error(
-                    "empty_mime_set",
-                    "ALLOWED_ZIP_MIMES cannot be empty",
-                    "mime_types",
-                    "Add at least one allowed ZIP MIME type",
+        # Check ZIP, activity and gzip MIME types
+        for mime_set_name, mime_set, label in [
+            ("ALLOWED_ZIP_MIMES", config.ALLOWED_ZIP_MIMES, "ZIP"),
+            (
+                "ALLOWED_ACTIVITY_MIMES",
+                config.ALLOWED_ACTIVITY_MIMES,
+                "activity",
+            ),
+            ("ALLOWED_GZIP_MIMES", config.ALLOWED_GZIP_MIMES, "gzip"),
+        ]:
+            if not mime_set:
+                errors.append(
+                    _config_error(
+                        "empty_mime_set",
+                        f"{mime_set_name} cannot be empty",
+                        "mime_types",
+                        f"Add at least one allowed {label} MIME type",
+                    )
                 )
-            )
 
         # Check for duplicate MIME types
-        all_mimes = list(cls.ALLOWED_IMAGE_MIMES) + list(cls.ALLOWED_ZIP_MIMES)
+        all_mimes = (
+            list(config.ALLOWED_IMAGE_MIMES)
+            + list(config.ALLOWED_ZIP_MIMES)
+            + list(config.ALLOWED_ACTIVITY_MIMES)
+            + list(config.ALLOWED_GZIP_MIMES)
+        )
         duplicates = {mime for mime in all_mimes if all_mimes.count(mime) > 1}
         if duplicates:
             errors.append(
@@ -687,21 +873,42 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_extension_configurations(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_extension_configurations(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[ConfigValidationError]:
         """
         Validate file extension configurations.
+
+        Args:
+            config: Class or instance to read the sets from.
 
         Returns:
             List of detected configuration issues.
         """
         errors = []
 
+        allowed_sets = [
+            (
+                "ALLOWED_IMAGE_EXTENSIONS",
+                config.ALLOWED_IMAGE_EXTENSIONS,
+                "Image",
+            ),
+            ("ALLOWED_ZIP_EXTENSIONS", config.ALLOWED_ZIP_EXTENSIONS, "ZIP"),
+            (
+                "ALLOWED_ACTIVITY_EXTENSIONS",
+                config.ALLOWED_ACTIVITY_EXTENSIONS,
+                "Activity",
+            ),
+            (
+                "ALLOWED_GZIP_EXTENSIONS",
+                config.ALLOWED_GZIP_EXTENSIONS,
+                "Gzip",
+            ),
+        ]
+
         # Check extension format
-        for ext_set_name, ext_set in [
-            ("ALLOWED_IMAGE_EXTENSIONS", cls.ALLOWED_IMAGE_EXTENSIONS),
-            ("ALLOWED_ZIP_EXTENSIONS", cls.ALLOWED_ZIP_EXTENSIONS),
-        ]:
+        for ext_set_name, ext_set, _label in allowed_sets:
             if not ext_set:
                 errors.append(
                     _config_error(
@@ -728,7 +935,7 @@ class FileSecurityConfig:
                     )
 
         # Check blocked extensions
-        if not cls.BLOCKED_EXTENSIONS:
+        if not config.BLOCKED_EXTENSIONS:
             errors.append(
                 _config_error(
                     "empty_blocked_extensions",
@@ -738,50 +945,64 @@ class FileSecurityConfig:
                 )
             )
 
-        # Check for overlap between allowed and blocked extensions
-        image_blocked = cls.ALLOWED_IMAGE_EXTENSIONS.intersection(
-            cls.BLOCKED_EXTENSIONS
-        )
-        if image_blocked:
+        if not config.COMPOUND_BLOCKED_EXTENSIONS:
             errors.append(
                 _config_error(
-                    "extension_conflict",
-                    (
-                        f"Image extensions {image_blocked}"
-                        " are both allowed and blocked"
-                    ),
+                    "empty_compound_blocked_extensions",
+                    ("COMPOUND_BLOCKED_EXTENSIONS is empty - security risk"),
                     "extensions",
-                    (
-                        "Remove conflicts between"
-                        " allowed and blocked"
-                        " extensions"
-                    ),
+                    "Ensure compound extensions are properly blocked",
                 )
             )
 
-        zip_blocked = cls.ALLOWED_ZIP_EXTENSIONS.intersection(
-            cls.BLOCKED_EXTENSIONS
-        )
-        if zip_blocked:
-            errors.append(
-                _config_error(
-                    "extension_conflict",
-                    (
-                        f"ZIP extensions {zip_blocked}"
-                        " are both allowed and blocked"
-                    ),
-                    "extensions",
-                    (
-                        "Remove conflicts between"
-                        " allowed and blocked"
-                        " extensions"
-                    ),
+        # Check for overlap between allowed and blocked extensions
+        for _ext_set_name, ext_set, label in allowed_sets:
+            blocked = ext_set.intersection(config.BLOCKED_EXTENSIONS)
+            if blocked:
+                errors.append(
+                    _config_error(
+                        "extension_conflict",
+                        (
+                            f"{label} extensions {blocked}"
+                            " are both allowed and blocked"
+                        ),
+                        "extensions",
+                        (
+                            "Remove conflicts between"
+                            " allowed and blocked"
+                            " extensions"
+                        ),
+                    )
                 )
-            )
+
+        # Filenames are lowercased before matching, so an entry
+        # with uppercase characters can never match.
+        for ext_set_name, ext_set in [
+            *((name, ext_set) for name, ext_set, _label in allowed_sets),
+            ("BLOCKED_EXTENSIONS", config.BLOCKED_EXTENSIONS),
+            (
+                "COMPOUND_BLOCKED_EXTENSIONS",
+                config.COMPOUND_BLOCKED_EXTENSIONS,
+            ),
+        ]:
+            for ext in ext_set:
+                if ext != ext.lower():
+                    errors.append(
+                        _config_error(
+                            "uppercase_extension",
+                            (
+                                f"Extension '{ext}' in {ext_set_name}"
+                                " contains uppercase characters and"
+                                " can never match"
+                            ),
+                            "extensions",
+                            "Use lowercase extensions only",
+                        )
+                    )
 
         # Check compound extension consistency
-        compound_overlap = cls.BLOCKED_EXTENSIONS.intersection(
-            cls.COMPOUND_BLOCKED_EXTENSIONS
+        compound_overlap = config.BLOCKED_EXTENSIONS.intersection(
+            config.COMPOUND_BLOCKED_EXTENSIONS
         )
         if compound_overlap:
             errors.append(
@@ -939,12 +1160,45 @@ class FileSecurityConfig:
                 )
             )
 
+        # Validate ZIP content inspection limits
+        if limits.max_zip_depth < 0:
+            errors.append(
+                _config_error(
+                    "invalid_zip_depth",
+                    "max_zip_depth must be 0 or greater",
+                    "compression",
+                    "Set max_zip_depth to 0 (root files only) or more",
+                )
+            )
+
+        for name, error_type in [
+            ("max_filename_length", "invalid_name_length"),
+            ("max_path_length", "invalid_path_length"),
+            ("max_number_files_same_type", "invalid_zip_entries"),
+            ("max_total_entries_recursive", "invalid_zip_entries"),
+        ]:
+            if getattr(limits, name) <= 0:
+                errors.append(
+                    _config_error(
+                        error_type,
+                        f"{name} must be greater than 0",
+                        "compression",
+                        f"Set {name} to a positive value",
+                    )
+                )
+
         # Validate timeout settings
-        if limits.zip_analysis_timeout <= 0:
+        if (
+            not math.isfinite(limits.zip_analysis_timeout)
+            or limits.zip_analysis_timeout <= 0
+        ):
             errors.append(
                 _config_error(
                     "invalid_timeout",
-                    "zip_analysis_timeout must be greater than 0",
+                    (
+                        "zip_analysis_timeout must be a finite value"
+                        " greater than 0"
+                    ),
                     "compression",
                     "Set a reasonable timeout for ZIP analysis",
                 )
@@ -962,6 +1216,24 @@ class FileSecurityConfig:
                     "compression",
                     "Long timeouts may impact user experience",
                     severity="warning",
+                )
+            )
+
+        # Nested archives are only inspected by the content scan
+        if limits.allow_nested_archives and not limits.scan_zip_content:
+            errors.append(
+                _config_error(
+                    "nested_archives_require_scan",
+                    (
+                        "allow_nested_archives requires"
+                        " scan_zip_content; nested archives would"
+                        " not be inspected"
+                    ),
+                    "compression",
+                    (
+                        "Enable scan_zip_content or disable"
+                        " allow_nested_archives"
+                    ),
                 )
             )
 
@@ -1070,39 +1342,60 @@ class FileSecurityConfig:
 
         return errors
 
-    @classmethod
-    def _validate_cross_dependencies(cls) -> list[ConfigValidationError]:
+    @staticmethod
+    def _validate_cross_dependencies(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[ConfigValidationError]:
         """
         Validate cross-field configuration constraints.
+
+        Args:
+            config: Class or instance to read the sets from.
 
         Returns:
             List of detected configuration issues.
         """
         errors = []
 
-        # Check Windows reserved names format
-        for name in cls.WINDOWS_RESERVED_NAMES:
-            if not name.islower():
+        if not config.WINDOWS_RESERVED_NAMES:
+            errors.append(
+                _config_error(
+                    "empty_reserved_names",
+                    "WINDOWS_RESERVED_NAMES is empty - security risk",
+                    "reserved_names",
+                    "Ensure Windows reserved names are blocked",
+                )
+            )
+
+        # Filenames are casefolded before matching, so an entry
+        # that is not already casefolded can never match.
+        for name in config.WINDOWS_RESERVED_NAMES:
+            if name != name.casefold():
                 errors.append(
                     _config_error(
                         "case_sensitive_reserved_name",
                         (
                             "Windows reserved name"
-                            f" '{name}' should be"
-                            " lowercase"
+                            f" '{name}' is not lowercase and"
+                            " can never match"
                         ),
                         "reserved_names",
-                        (
-                            "Use lowercase for"
-                            " consistent"
-                            " case-insensitive matching"
-                        ),
-                        severity="warning",
+                        "Use lowercase reserved names only",
                     )
                 )
 
+        if not config.DANGEROUS_UNICODE_CHARS:
+            errors.append(
+                _config_error(
+                    "empty_dangerous_unicode_chars",
+                    "DANGEROUS_UNICODE_CHARS is empty - security risk",
+                    "unicode",
+                    "Ensure dangerous Unicode characters are blocked",
+                )
+            )
+
         # Validate Unicode character ranges
-        for char_code in cls.DANGEROUS_UNICODE_CHARS:
+        for char_code in config.DANGEROUS_UNICODE_CHARS:
             if not isinstance(char_code, int):
                 errors.append(
                     _config_error(
@@ -1143,7 +1436,7 @@ class FileSecurityConfig:
         Raises:
             FileSecurityConfigurationError: If strict and issues found.
         """
-        cls._report_errors(cls.validate_configuration(strict=strict), strict)
+        cls._report_errors(cls.validate_configuration(), strict)
 
     def validate_and_report_instance(self, strict: bool = True) -> None:
         """
@@ -1155,9 +1448,7 @@ class FileSecurityConfig:
         Raises:
             FileSecurityConfigurationError: If strict and issues found.
         """
-        type(self)._report_errors(
-            self.validate_instance(strict=strict), strict
-        )
+        type(self)._report_errors(self.validate_instance(), strict)
 
     @staticmethod
     def _report_errors(

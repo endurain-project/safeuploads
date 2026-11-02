@@ -6,7 +6,7 @@ import logging
 import unicodedata
 from typing import TYPE_CHECKING
 
-from ..exceptions import ErrorCode, UnicodeSecurityError
+from ..exceptions import ErrorCode, FilenameSecurityError, UnicodeSecurityError
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -14,6 +14,13 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# Unicode general categories rejected outright: controls (Cc), format
+# characters (Cf), private use (Co), unassigned (Cn), surrogates (Cs),
+# line separators (Zl) and paragraph separators (Zp).
+_REJECTED_CATEGORIES: frozenset[str] = frozenset(
+    {"Cc", "Cf", "Co", "Cn", "Cs", "Zl", "Zp"}
+)
 
 
 class UnicodeSecurityValidator(BaseValidator):
@@ -61,7 +68,10 @@ class UnicodeSecurityValidator(BaseValidator):
         dangerous_chars_found = []
         for i, char in enumerate(filename):
             char_code = ord(char)
-            if char_code in self._dangerous_chars:
+            if (
+                char_code in self._dangerous_chars
+                or unicodedata.category(char) in _REJECTED_CATEGORIES
+            ):
                 dangerous_chars_found.append((char, char_code, i))
 
         # If dangerous characters found, reject the file entirely
@@ -70,7 +80,7 @@ class UnicodeSecurityValidator(BaseValidator):
             for char, code, pos in dangerous_chars_found:
                 char_name = unicodedata.name(char, f"U+{code:04X}")
                 char_details.append(
-                    f"'{char}' (U+{code:04X}: {char_name}) at position {pos}"
+                    f"{char!r} (U+{code:04X}: {char_name}) at position {pos}"
                 )
 
             logger.warning(
@@ -108,7 +118,7 @@ class UnicodeSecurityValidator(BaseValidator):
         # Check if normalization changed the filename significantly
         if normalized_filename != filename:
             logger.info(
-                "Unicode normalization applied: '%s' -> '%s'",
+                "Unicode normalization applied: %r -> %r",
                 filename,
                 normalized_filename,
             )
@@ -145,6 +155,51 @@ class UnicodeSecurityValidator(BaseValidator):
 
         logger.debug("Unicode validation passed")
         return normalized_filename
+
+    def compatibility_form(self, filename: str) -> str:
+        """
+        Return the NFKC form of a filename for security checks.
+
+        The NFKC form folds compatibility characters (fullwidth
+        letters, superscript digits) onto the ASCII text they
+        impersonate. It is only used to run name checks; callers keep
+        the NFC name.
+
+        Args:
+            filename: The NFC-normalized filename.
+
+        Returns:
+            The NFKC-normalized filename.
+
+        Raises:
+            FilenameSecurityError: If NFKC folding introduces a path
+                separator or ``..`` that the NFC form does not
+                contain.
+        """
+        folded = unicodedata.normalize("NFKC", filename)
+        hidden = [
+            token
+            for token in ("/", "\\", "..")
+            if token in folded and token not in filename
+        ]
+        if hidden:
+            logger.warning(
+                "Compatibility characters hide a path component",
+                extra={
+                    "error_type": "unicode_path_hiding",
+                    "file_name": filename,
+                },
+            )
+            raise FilenameSecurityError(
+                message=(
+                    "Filename contains compatibility characters that"
+                    " normalize to a path separator or parent"
+                    " directory reference."
+                ),
+                filename=filename,
+                error_code=ErrorCode.FILENAME_INVALID,
+            )
+        return folded
 
     def validate(self, filename: str) -> str:
         """

@@ -32,21 +32,42 @@ that addresses it.
     - `max_image_size` — appropriate for expected upload sizes.
     - `max_zip_size` — set to the maximum acceptable ZIP size.
     - `max_activity_file_size` — set if accepting GPX/TCX/FIT.
+      FIT uploads must be structurally valid (headers, CRCs,
+      sections covering the file exactly) or are rejected with
+      `FIT_INVALID_STRUCTURE`.
     - `max_gzip_size` — set if accepting gzip files.
     - `max_compression_ratio` — default 100:1 is reasonable
       for most workloads; lower for stricter environments.
-    - `max_validation_time_seconds` — default 30 s; lower in
-      latency-sensitive services.
-    - `max_validation_memory_mb` — default 512 MB; adjust based
-      on container memory limits.
+    - `max_validation_time_seconds` — default 30 s wall-clock;
+      lower in latency-sensitive services.
+    - `max_validation_memory_mb` — default 512 MB of peak-RSS
+      growth; adjust based on container memory limits.
+- [ ] `allow_nested_archives` left `False` unless needed. When
+  enabled it requires `scan_zip_content=True` (the constructor
+  raises `FileSecurityConfigurationError` otherwise), and every
+  inner ZIP is inspected like the top level; one that is
+  oversized, corrupt or uninspectable is rejected.
 - [ ] Allowed extensions and MIME types reviewed and narrowed
   to only what your application accepts.
+- [ ] `FileSecurityConfigurationError` from the `FileValidator`
+  constructor handled at startup: it is raised for any
+  error-severity configuration issue (invalid limit types,
+  non-positive limits, empty or uppercase extension entries,
+  empty block lists or reserved names, reserved names that are
+  not lowercase, a content scan window smaller than an image or
+  activity size limit), including sets overridden on the
+  instance;
+  warnings are only logged.
 
 ## Content Analysis
 
 - [ ] `enable_content_analysis` set to `True` if accepting
-  files from untrusted users.
-- [ ] `content_scan_max_size` set appropriately (default 50 MB).
+  files from untrusted users. It covers image and activity
+  uploads; ZIP contents are scanned entry by entry by the ZIP
+  inspector.
+- [ ] `content_scan_max_size` at least `max_image_size` and
+  `max_activity_file_size` (default 50 MB). With content analysis
+  on, a smaller window is a configuration error.
 - [ ] Consider supplemental antivirus scanning (ClamAV or
   similar) for high-risk environments.
 
@@ -66,11 +87,19 @@ that addresses it.
 
 - [ ] Application catches specific exception types
   (`FileSizeError`, `ExtensionSecurityError`, etc.) and
-  returns user-appropriate messages.
+  returns user-appropriate messages. Malformed or forbidden XML
+  (`XmlSecurityError`) and content threats
+  (`ContentThreatError`) are `FileValidationError` subclasses.
+- [ ] `FileProcessingError` (including `ResourceLimitError`) is
+  caught as well: it is not a `FileValidationError`, and it is
+  raised only for internal errors and exceeded resource limits.
 - [ ] Internal error details from exceptions are **not**
   forwarded to API responses.
 - [ ] `ErrorCode` values used for machine-readable API error
-  responses, not raw exception messages.
+  responses, not raw exception messages. A `ZipContentError`
+  carries the code of the first threat found (for example
+  `ZIP_DIRECTORY_TRAVERSAL`), not always `ZIP_CONTENT_THREAT`,
+  and `threats` lists all messages.
 - [ ] Generic 500 errors for unexpected failures — no stack
   traces in production responses.
 
@@ -100,7 +129,19 @@ that addresses it.
 
 - [ ] Container or process memory limits set — safeuploads
   `max_validation_memory_mb` should be below the container
-  limit.
+  limit. The monitor measures the increase in process-wide peak
+  RSS, so it cannot bound validation memory by itself (an
+  earlier, higher peak hides later allocations) and other work in
+  the same process can also trip it; the container limit stays
+  the hard bound. On Windows memory accounting is disabled and
+  only the time limit applies.
+- [ ] Both limits are checked at loop boundaries (upload
+  streaming, ZIP entry loops, gzip decompression, each XML
+  chunk) and on exit; a single blocking call, such as one
+  `zipfile` central-directory parse or one libmagic call, is
+  not interrupted mid-call. A `ResourceLimitError` keeps its
+  own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED`
+  code.
 - [ ] Request timeout configured at the reverse proxy and
   application level — should be above
   `max_validation_time_seconds`.
@@ -118,7 +159,10 @@ that addresses it.
 - [ ] `defusedxml` and `python-magic` dependencies kept
   up to date.
 - [ ] `libmagic` system library installed and up to date
-  on the deployment target.
+  on the deployment target. Without it `import safeuploads`
+  fails with `ImportError`. If the detector fails to initialize,
+  every upload is rejected with `MIME_DETECTION_FAILED`; there is
+  no extension-based fallback.
 
 ## Testing
 

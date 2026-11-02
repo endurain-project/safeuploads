@@ -1,12 +1,15 @@
 """Utility helpers for resource monitoring and content scanning."""
 
+import contextvars
 import logging
 import sys
 import time
-from collections.abc import Iterable
+import zlib
+from collections.abc import Iterable, Iterator
 from types import TracebackType
 
 from .exceptions import ErrorCode, ResourceLimitError
+from .protocols import SeekableFile
 
 try:
     # ``resource`` is a Unix-only stdlib module and is absent on
@@ -60,7 +63,7 @@ def matches_signature_prefix(
 
 
 def find_embedded_signature(
-    content: bytes, signatures: Iterable[bytes]
+    content: bytes, signatures: Iterable[bytes], start: int = 0
 ) -> bytes | None:
     """
     Return the first signature found anywhere in the content.
@@ -71,37 +74,36 @@ def find_embedded_signature(
     Args:
         content: Raw bytes to scan.
         signatures: Candidate byte signatures.
+        start: Offset at which the search begins; bytes before it
+            are skipped without copying the content.
 
     Returns:
         The first matching signature, or None if none present.
     """
     for sig in signatures:
-        if sig in content:
+        if content.find(sig, start) != -1:
             return sig
     return None
 
 
 def find_text_pattern(content: bytes, patterns: Iterable[str]) -> str | None:
     """
-    Return the first text pattern present in decoded content.
+    Return the first text pattern present in the content.
 
-    Content is decoded as UTF-8 with errors ignored and lower-
-    cased so binary data degrades gracefully. Any decoding
-    failure is treated as "no match".
+    The content is matched as bytes, lower-cased in ASCII, with
+    no decoding: invalid bytes never join the text around them,
+    and the only copy made is the lower-cased one.
 
     Args:
         content: Raw bytes to scan.
-        patterns: Lower-case substrings to search for.
+        patterns: Lower-case ASCII substrings to search for.
 
     Returns:
         The first matching pattern, or None if none present.
     """
-    try:
-        text = content.decode("utf-8", errors="ignore").lower()
-    except Exception:
-        return None
+    lowered = content.lower()
     for pattern in patterns:
-        if pattern in text:
+        if pattern.encode("ascii") in lowered:
             return pattern
     return None
 
@@ -110,14 +112,15 @@ class ResourceMonitor:
     """
     Context manager that enforces wall-clock and memory limits.
 
-    Tracks elapsed time continuously and samples memory usage
-    via ``resource.getrusage``. Memory accounting uses the
-    process peak RSS (``ru_maxrss``), a monotonic high-water
-    mark for the whole process, so the reported delta is a
-    coarse, best-effort upper bound rather than the exact
-    memory used by this validation. Call ``check_time`` and
-    ``check_memory`` inside long loops for early enforcement;
-    otherwise limits are checked on context exit.
+    While the block runs the monitor is the active one for the
+    current context (and worker threads that copy it), so
+    ``check_resource_limits`` enforces both limits at the loop
+    boundaries of long-running work; they are checked again on
+    exit. A single blocking call, such as one ``zipfile`` parse,
+    is not interrupted mid-call. Memory is the process-wide peak
+    RSS (``ru_maxrss``), a high-water mark, so the delta is not an
+    upper bound: an earlier, higher peak hides later allocations,
+    and concurrent work can also trip it.
 
     Attributes:
         max_time_seconds: Maximum allowed wall-clock seconds.
@@ -125,6 +128,9 @@ class ResourceMonitor:
         start_time: Timestamp when the context was entered.
         start_memory: Peak process RSS in bytes at context entry.
     """
+
+    # Restores the previously active monitor on exit
+    _token: contextvars.Token["ResourceMonitor | None"]
 
     def __init__(
         self,
@@ -147,13 +153,14 @@ class ResourceMonitor:
 
     def __enter__(self) -> "ResourceMonitor":
         """
-        Record baseline time and memory on context entry.
+        Record baseline time and memory and become the active monitor.
 
         Returns:
             Self for use in ``with`` statements.
         """
         self.start_time = time.monotonic()
         self.start_memory = self._get_peak_rss_bytes()
+        self._token = _active_monitor.set(self)
         return self
 
     def __exit__(
@@ -163,7 +170,11 @@ class ResourceMonitor:
         exc_tb: TracebackType | None,
     ) -> None:
         """
-        Check resource usage on context exit.
+        Restore the previous active monitor and check usage.
+
+        The previous monitor is restored even when the block
+        raised; the limits are checked only on a clean exit so
+        an exception from the block is not masked.
 
         Args:
             exc_type: Exception type if raised inside block.
@@ -174,6 +185,7 @@ class ResourceMonitor:
             ResourceLimitError: If time or memory limits were
                 exceeded during the monitored block.
         """
+        _active_monitor.reset(self._token)
         if exc_type is not None:
             return
 
@@ -200,9 +212,8 @@ class ResourceMonitor:
         """
         Check peak memory growth mid-operation.
 
-        Enables early enforcement inside long-running loops
-        instead of waiting for context exit. Uses the process
-        peak RSS high-water mark, so it is a coarse upper bound.
+        Uses the process peak RSS high-water mark, so an earlier,
+        higher peak hides later growth.
 
         Raises:
             ResourceLimitError: If peak-RSS growth since context
@@ -309,3 +320,87 @@ class ResourceMonitor:
             return 0
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return usage.ru_maxrss * _RSS_UNIT_BYTES
+
+
+_active_monitor: contextvars.ContextVar[ResourceMonitor | None] = (
+    contextvars.ContextVar("safeuploads_resource_monitor", default=None)
+)
+
+
+def check_resource_limits() -> None:
+    """
+    Enforce the active ``ResourceMonitor`` limits, if any.
+
+    Called at the loop boundaries of long-running work; returns
+    at once when no monitor is active. The active monitor is held
+    in a context variable, so a worker thread started with a copy
+    of the caller's context sees the caller's monitor.
+
+    Raises:
+        ResourceLimitError: If the active monitor's time or
+            memory limit has been exceeded.
+    """
+    monitor = _active_monitor.get()
+    if monitor is None:
+        return
+    monitor.check_time()
+    monitor.check_memory()
+
+
+def iter_gzip_chunks(stream: SeekableFile, chunk_size: int) -> Iterator[bytes]:
+    """
+    Decompress gzip data in bounded steps, yielding each output chunk.
+
+    The data is inflated with ``zlib`` instead of the ``gzip`` module,
+    whose reader loops inside a single ``read`` call over members
+    that produce no output (and over long header fields), so limits
+    cannot be enforced between steps. Here every step reads at most
+    ``chunk_size`` input bytes, produces at most ``chunk_size``
+    output bytes and calls ``check_resource_limits``. Members may be
+    concatenated and zero padded; data that does not start a gzip
+    member is an error.
+
+    Args:
+        stream: Binary file positioned at the start of the gzip data.
+        chunk_size: Bytes read, and at most inflated, per step.
+
+    Yields:
+        Non-empty chunks of decompressed data.
+
+    Raises:
+        ResourceLimitError: If the active resource monitor's time or
+            memory limit is exceeded.
+        zlib.error: If a header, deflate stream or trailer is invalid.
+        EOFError: If the input ends inside a gzip member.
+    """
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    # True while the current decompressor has been given no input,
+    # where the stream may end
+    fresh = True
+    # True once a member has ended: zero padding may follow it
+    after_member = False
+    while True:
+        check_resource_limits()
+        if decompressor.eof:
+            data = decompressor.unused_data
+            decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            fresh = after_member = True
+        else:
+            data = decompressor.unconsumed_tail
+        from_stream = not data
+        if from_stream:
+            data = stream.read(chunk_size)
+        if fresh:
+            if from_stream and not data:
+                return
+            if after_member:
+                data = data.lstrip(b"\x00")
+                if not data:
+                    continue
+            fresh = False
+        output = decompressor.decompress(data, chunk_size)
+        if output:
+            yield output
+        elif from_stream and not data and not decompressor.eof:
+            # All input is consumed and nothing was pending
+            raise EOFError("Compressed gzip data ended before the end")

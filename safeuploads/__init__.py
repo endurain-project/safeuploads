@@ -5,6 +5,8 @@ A comprehensive file security system for
 validating uploads and preventing attacks.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .audit import (
     AuditEvent,
     AuditEventType,
@@ -27,6 +29,7 @@ from .enums import (
 from .exceptions import (
     CompressionSecurityError,
     ConfigValidationError,
+    ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
@@ -40,6 +43,7 @@ from .exceptions import (
     ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
+    XmlSecurityError,
     ZipBombError,
     ZipContentError,
 )
@@ -54,7 +58,7 @@ from .inspectors import (
     GzipContentInspector,
     ZipContentInspector,
 )
-from .protocols import SeekableFile
+from .protocols import SeekableFile, UploadFileProtocol
 from .utils import ResourceMonitor
 
 # Specialized validators
@@ -62,6 +66,10 @@ from .validators import (
     BaseValidator,
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
+    FilenameSecurityValidator,
+    FileSignatureValidator,
+    FitSecurityValidator,
+    MimeTypeValidator,
     UnicodeSecurityValidator,
     WindowsSecurityValidator,
     XmlSecurityValidator,
@@ -72,13 +80,20 @@ from .validators import (
 # callers can invoke FileSecurityConfig.validate_and_report() or
 # config.validate_instance() for an early check.
 
+try:
+    __version__ = version("safeuploads")
+except PackageNotFoundError:  # uninstalled source tree or vendored copy
+    __version__ = "0+unknown"
+
 # Export all public APIs
 __all__ = [
+    "__version__",
     # Core configuration
     "SecurityLimits",
     "FileSecurityConfig",
     # Protocols
     "SeekableFile",
+    "UploadFileProtocol",
     # Exceptions
     "ConfigValidationError",
     "FileSecurityConfigurationError",
@@ -95,6 +110,8 @@ __all__ = [
     "CompressionSecurityError",
     "ZipBombError",
     "ZipContentError",
+    "XmlSecurityError",
+    "ContentThreatError",
     "FileProcessingError",
     "ResourceLimitError",
     # Enums
@@ -113,6 +130,10 @@ __all__ = [
     "ExtensionSecurityValidator",
     "WindowsSecurityValidator",
     "CompressionSecurityValidator",
+    "FitSecurityValidator",
+    "FilenameSecurityValidator",
+    "FileSignatureValidator",
+    "MimeTypeValidator",
     "XmlSecurityValidator",
     # Inspectors
     "BaseInspector",

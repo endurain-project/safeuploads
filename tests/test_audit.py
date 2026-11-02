@@ -1,6 +1,8 @@
 """Tests for audit logging module."""
 
+import asyncio
 import logging
+import unicodedata
 
 import pytest
 
@@ -8,16 +10,21 @@ from safeuploads.audit import (
     AuditEvent,
     AuditEventType,
     SecurityAuditLogger,
+    _sanitize_field,
     get_correlation_id,
     reset_correlation_id,
     set_correlation_id,
 )
+from safeuploads.config import FileSecurityConfig
 from safeuploads.exceptions import (
     CompressionSecurityError,
+    ErrorCode,
     FileSizeError,
+    UnicodeSecurityError,
     ZipBombError,
     ZipContentError,
 )
+from safeuploads.file_validator import FileValidator
 
 
 class TestCorrelationId:
@@ -159,6 +166,19 @@ class TestSecurityAuditLogger:
         assert "threat_detected" in record.message
         assert record.levelno == logging.WARNING
 
+    def test_enabled_logs_resource_limit(self, caplog):
+        """Test enabled logger logs resource limit event."""
+        audit = SecurityAuditLogger(enabled=True)
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            audit.resource_limit("big.zip", "cid-rl", 12.5, "time limit")
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.audit_event_type == "resource_limit"
+        assert record.audit_filename == "big.zip"
+        assert record.audit_result == "time limit"
+        assert record.audit_duration_ms == 12.5
+        assert record.levelno == logging.WARNING
+
     def test_log_event_with_full_audit_event(self, caplog):
         """Test log_event with direct AuditEvent."""
         audit = SecurityAuditLogger(enabled=True)
@@ -245,6 +265,45 @@ class TestAuditIntegration:
         assert len(audit_records) == 2
         assert "validation_start" in audit_records[0].message
         assert "validation_failure" in audit_records[1].message
+
+    @pytest.mark.asyncio
+    async def test_resource_limit_emits_single_resource_limit_event(
+        self, mock_upload_file, valid_jpeg_bytes, fake_clock, caplog
+    ):
+        """Test a time limit emits start+resource_limit, no failure."""
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.exceptions import ResourceLimitError
+        from safeuploads.file_validator import FileValidator
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        validator = FileValidator(config=config)
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
+        fake_clock.step = 1000.0
+        fake_clock.advancing = True
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        audit_records = [
+            r for r in caplog.records if r.name == "safeuploads.audit"
+        ]
+        assert [r.audit_event_type for r in audit_records] == [
+            "validation_start",
+            "resource_limit",
+        ]
+        limit_record = audit_records[1]
+        assert limit_record.audit_filename == "photo.jpg"
+        assert limit_record.audit_result == str(exc_info.value)
+        assert limit_record.levelno == logging.WARNING
+        assert (
+            limit_record.audit_correlation_id
+            == audit_records[0].audit_correlation_id
+        )
 
     @pytest.mark.asyncio
     async def test_zip_validation_produces_audit_events(
@@ -470,3 +529,298 @@ class TestLogExtraCorrelationId:
         extra = log_extra()
         assert extra["correlation_id"] == "cid-abc"
         reset_correlation_id()
+
+
+_FORGED = (
+    "a.jpg\nsafeuploads.audit: [forged] validation_success"
+    " file=evil.exe result=passed"
+)
+
+
+def _log_one(caplog, **fields) -> logging.LogRecord:
+    """
+    Emit one audit event and return the single captured record.
+
+    Args:
+        caplog: pytest log capture fixture.
+        **fields: ``AuditEvent`` fields to override.
+
+    Returns:
+        The only record captured on ``safeuploads.audit``.
+    """
+    audit = SecurityAuditLogger(enabled=True)
+    event = AuditEvent(
+        event_type=AuditEventType.VALIDATION_FAILURE,
+        correlation_id="cid-1234567890abcdef",
+        **fields,
+    )
+    with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+        audit.log_event(event)
+    assert len(caplog.records) == 1
+    return caplog.records[0]
+
+
+class TestAuditLogInjection:
+    """Attacker-controlled audit fields cannot forge or flood records."""
+
+    @pytest.mark.parametrize("field", ["filename", "result", "details"])
+    def test_newline_does_not_forge_record(self, caplog, field):
+        """A newline in any field stays one escaped log record."""
+        record = _log_one(caplog, **{field: _FORGED})
+        assert "\n" not in record.getMessage()
+        value = getattr(record, f"audit_{field}")
+        assert "\n" not in value
+        assert value.startswith("a.jpg\\nsafeuploads.audit: [forged]")
+
+    def test_legitimate_filename_unchanged(self, caplog):
+        """Ordinary non-ASCII letters are kept as-is."""
+        record = _log_one(caplog, filename="résumé_日本.jpg")
+        assert "file=résumé_日本.jpg" in record.getMessage()
+        assert record.audit_filename == "résumé_日本.jpg"
+
+    def test_control_and_format_chars_escaped(self, caplog):
+        """Tabs, ESC, bidi overrides and tag chars are escaped."""
+        name = "a\t\r\x1b\u202e\U000e0041\u2028.jpg"
+        record = _log_one(caplog, filename=name)
+        assert record.audit_filename == (
+            "a\\t\\r\\x1b\\u202e\\U000e0041\\u2028.jpg"
+        )
+        assert "\u202e" not in record.getMessage()
+
+    def test_length_boundary(self, caplog):
+        """1,024 characters pass; 1,025 are truncated and marked."""
+        exact = "a" * 1024
+        record = _log_one(caplog, filename=exact)
+        assert record.audit_filename == exact
+
+        caplog.clear()
+        record = _log_one(caplog, filename="a" * 1025)
+        assert len(record.audit_filename) == 1024
+        assert record.audit_filename.endswith("...[truncated]")
+
+    def test_details_are_bounded(self, caplog):
+        """Oversized threat details cannot flood the record."""
+        record = _log_one(caplog, details="x" * 1_000_000)
+        assert len(record.audit_details) == 1024
+
+    def test_only_the_kept_prefix_is_examined(self, monkeypatch):
+        """Characters past the cap are never classified, same result."""
+        value = "a\n" * 600 + "\u202e" * 100_000
+        escaped = "".join(
+            repr(char)[1:-1]
+            if unicodedata.category(char) in ("Zl", "Zp")
+            or unicodedata.category(char).startswith("C")
+            else char
+            for char in value
+        )
+        expected = escaped[: 1024 - len("...[truncated]")] + "...[truncated]"
+
+        examined = []
+        real_category = unicodedata.category
+
+        def counting_category(char):
+            examined.append(char)
+            return real_category(char)
+
+        monkeypatch.setattr(unicodedata, "category", counting_category)
+        assert _sanitize_field(value) == expected
+        assert len(examined) <= 2 * 1025
+
+
+class TestAuditLogInjectionEndToEnd:
+    """A hostile upload filename cannot forge an audit line."""
+
+    async def test_forged_filename_cannot_forge_audit_line(
+        self, caplog, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Every audit record is one line; no forged line appears."""
+        cfg = FileSecurityConfig()
+        cfg.limits.enable_audit_logging = True
+        validator = FileValidator(cfg)
+        file = mock_upload_file(_FORGED + ".jpg", valid_jpeg_bytes)
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
+            pytest.raises(UnicodeSecurityError),
+        ):
+            await validator.validate_image_file(file)
+
+        records = [r for r in caplog.records if r.name == "safeuploads.audit"]
+        assert len(records) == 2  # start + failure
+        for record in records:
+            assert "\n" not in record.getMessage()
+        assert "\nsafeuploads.audit: [forged]" not in caplog.text
+
+
+class TestCorrelationIdPreservedByValidation:
+    """Validation keeps a host-set correlation ID."""
+
+    @staticmethod
+    def _validator():
+        from safeuploads.config import FileSecurityConfig, SecurityLimits
+        from safeuploads.file_validator import FileValidator
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        return FileValidator(config=config)
+
+    @pytest.mark.asyncio
+    async def test_host_id_is_used_and_restored(
+        self, mock_upload_file, valid_jpeg_bytes, caplog
+    ):
+        """Audit records carry the host ID and it survives."""
+        set_correlation_id("host-123")
+        try:
+            file = mock_upload_file(
+                filename="photo.jpg", content=valid_jpeg_bytes
+            )
+            with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+                await self._validator().validate_image_file(file)
+            records = [
+                r for r in caplog.records if r.name == "safeuploads.audit"
+            ]
+            assert len(records) == 2
+            assert {r.audit_correlation_id for r in records} == {"host-123"}
+            assert get_correlation_id() == "host-123"
+        finally:
+            reset_correlation_id()
+
+    @pytest.mark.asyncio
+    async def test_fresh_id_during_and_none_after(
+        self, mock_upload_file, valid_jpeg_bytes, caplog
+    ):
+        """Without a host ID a fresh one is used, then cleared."""
+        reset_correlation_id()
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
+        with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+            await self._validator().validate_image_file(file)
+        records = [r for r in caplog.records if r.name == "safeuploads.audit"]
+        assert len({r.audit_correlation_id for r in records}) == 1
+        assert records[0].audit_correlation_id
+        assert get_correlation_id() is None
+
+    @pytest.mark.asyncio
+    async def test_id_restored_after_failed_validation(self, mock_upload_file):
+        """A rejected upload still restores the host ID."""
+        from safeuploads.exceptions import FileValidationError
+
+        set_correlation_id("host-err")
+        try:
+            file = mock_upload_file(filename="photo.jpg", content=b"")
+            with pytest.raises(FileValidationError) as exc_info:
+                await self._validator().validate_image_file(file)
+            assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
+            assert get_correlation_id() == "host-err"
+        finally:
+            reset_correlation_id()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_validations_restore_their_own_ids(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Gathered tasks each keep and restore their own ID."""
+        validator = self._validator()
+
+        async def _run(cid: str | None) -> str | None:
+            if cid is not None:
+                set_correlation_id(cid)
+            file = mock_upload_file(
+                filename="photo.jpg", content=valid_jpeg_bytes
+            )
+            await validator.validate_image_file(file)
+            return get_correlation_id()
+
+        results = await asyncio.gather(_run("a"), _run("b"), _run(None))
+        assert results == ["a", "b", None]
+        assert get_correlation_id() is None
+
+
+_FORGED_CID = "abc\nsafeuploads.audit: [forged] validation_success‮"
+_ESCAPED_CID = "abc\\nsafeuploads.audit: [forged] validation_success\\u202e"
+
+
+def _log_cid(caplog, correlation_id, **fields) -> logging.LogRecord:
+    """
+    Emit one audit event with a given ID and return its record.
+
+    Args:
+        caplog: pytest log capture fixture.
+        correlation_id: Correlation ID of the event.
+        **fields: Other ``AuditEvent`` fields to set.
+
+    Returns:
+        The only record captured on ``safeuploads.audit``.
+    """
+    audit = SecurityAuditLogger(enabled=True)
+    event = AuditEvent(
+        event_type=AuditEventType.VALIDATION_FAILURE,
+        correlation_id=correlation_id,
+        **fields,
+    )
+    with caplog.at_level(logging.DEBUG, logger="safeuploads.audit"):
+        audit.log_event(event)
+    assert len(caplog.records) == 1
+    return caplog.records[0]
+
+
+class TestAuditCorrelationIdAndSourceIpInjection:
+    """Host-supplied correlation IDs and IPs cannot forge records."""
+
+    def test_normal_correlation_id_unchanged(self, caplog):
+        """A hex ID appears as-is in the message and extra."""
+        cid = "0123456789abcdef0123456789abcdef"
+        record = _log_cid(caplog, cid)
+        assert record.audit_correlation_id == cid
+        assert record.getMessage().startswith(f"[{cid[:12]}] ")
+
+    def test_malicious_correlation_id_escaped(self, caplog):
+        """Newline and bidi override are escaped everywhere."""
+        record = _log_cid(caplog, _FORGED_CID)
+        assert record.audit_correlation_id == _ESCAPED_CID
+        message = record.getMessage()
+        assert "\n" not in message
+        assert "‮" not in message
+        assert message.startswith("[abc\\nsafeupl]")
+
+    def test_malicious_source_ip_escaped(self, caplog):
+        """A newline in the source IP is escaped."""
+        record = _log_cid(caplog, "cid", source_ip="1.2.3.4\nforged")
+        assert record.audit_source_ip == "1.2.3.4\\nforged"
+
+    def test_normal_source_ip_unchanged(self, caplog):
+        """An ordinary IP is kept."""
+        record = _log_cid(caplog, "cid", source_ip="203.0.113.7")
+        assert record.audit_source_ip == "203.0.113.7"
+
+    def test_missing_source_ip_is_empty(self, caplog):
+        """A None source IP becomes an empty string."""
+        record = _log_cid(caplog, "cid", source_ip=None)
+        assert record.audit_source_ip == ""
+
+    def test_log_extra_escapes_malicious_id(self):
+        """log_extra puts the escaped ID in the extra dict."""
+        from safeuploads.audit import log_extra
+
+        set_correlation_id(_FORGED_CID)
+        try:
+            assert log_extra()["correlation_id"] == _ESCAPED_CID
+        finally:
+            reset_correlation_id()
+
+    def test_log_extra_normal_id_unchanged(self):
+        """log_extra keeps an ordinary ID."""
+        from safeuploads.audit import log_extra
+
+        set_correlation_id("req-123")
+        try:
+            assert log_extra()["correlation_id"] == "req-123"
+        finally:
+            reset_correlation_id()
+
+    def test_get_correlation_id_returns_raw_value(self):
+        """The host gets back exactly the ID it set."""
+        set_correlation_id(_FORGED_CID)
+        try:
+            assert get_correlation_id() == _FORGED_CID
+        finally:
+            reset_correlation_id()

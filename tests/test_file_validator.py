@@ -1,27 +1,39 @@
 """Tests for FileValidator integration."""
 
 import asyncio
+import gzip
+import hashlib
 import io
+import logging
+import tempfile
+import threading
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
     CompressionSecurityError,
+    ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
     FileProcessingError,
+    FileSecurityConfigurationError,
     FileSignatureError,
     FileSizeError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
+    XmlSecurityError,
     ZipBombError,
     ZipContentError,
 )
 from safeuploads.file_validator import FileValidator
+from safeuploads.utils import ResourceMonitor, check_resource_limits
+from tests.validators.test_fit_validator import build_fit
 
 
 class TestFileValidatorInitialization:
@@ -61,17 +73,83 @@ class TestFileValidatorInitialization:
         assert validator.magic_mime is not None
 
     def test_invalid_custom_config_logs_issue(self, caplog):
-        """Invalid custom config is validated and logged at init."""
+        """Error-severity issues are logged before construction fails."""
         import logging
 
         bad_config = FileSecurityConfig()
         bad_config.limits = SecurityLimits(max_image_size=-1)
 
-        with caplog.at_level(
-            logging.ERROR, logger="safeuploads.file_validator"
+        with (
+            caplog.at_level(
+                logging.ERROR, logger="safeuploads.file_validator"
+            ),
+            pytest.raises(FileSecurityConfigurationError),
         ):
             FileValidator(config=bad_config)
         assert "configuration" in caplog.text.lower()
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("chunk_size", -1),
+            ("max_memory_buffer_size", 0),
+            ("max_image_size", 0),
+            ("chunk_size", "64"),
+        ],
+    )
+    def test_error_severity_config_rejected(self, field, value):
+        """An invalid limit stops construction with its errors."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(**{field: value})
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+
+        errors = exc_info.value.errors
+        assert errors
+        assert {e.severity for e in errors} == {"error"}
+        assert any(field in e.message for e in errors)
+
+    def test_nested_archives_without_scan_rejected(self):
+        """Nested archives need scan_zip_content to be inspected."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True, scan_zip_content=False
+        )
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+
+        assert [e.error_type for e in exc_info.value.errors] == [
+            "nested_archives_require_scan"
+        ]
+
+    @pytest.mark.parametrize(
+        ("nested", "scan"), [(True, True), (False, False)]
+    )
+    def test_nested_scan_consistent_config_constructs(self, nested, scan):
+        """Consistent nested and scan flags construct a validator."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=nested, scan_zip_content=scan
+        )
+
+        FileValidator(config=config)
+
+    def test_warning_only_config_constructs(self, caplog):
+        """Warnings are logged but never block construction."""
+        import logging
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_size=150 * 1024 * 1024)
+
+        with caplog.at_level(
+            logging.WARNING, logger="safeuploads.file_validator"
+        ):
+            validator = FileValidator(config=config)
+
+        assert validator.config is config
+        assert "max_image_size" in caplog.text
 
 
 class TestSanitizeFilename:
@@ -107,16 +185,15 @@ class TestSanitizeFilename:
         assert "*" not in result
         assert "_" in result  # Replaced with underscore
 
-    def test_sanitize_removes_control_characters(self):
-        """Test that control characters are removed."""
+    @pytest.mark.parametrize("char", ["\x00", "\x01", "\x1f", "\x7f"])
+    def test_sanitize_rejects_control_characters(self, char):
+        """Control characters are rejected, not silently stripped."""
         validator = FileValidator()
-        result = validator._sanitize_filename("file\x00\x01\x1f\x7f.txt")
 
-        assert "\x00" not in result
-        assert "\x01" not in result
-        assert "\x1f" not in result
-        assert "\x7f" not in result
-        assert result == "file.txt"
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            validator._sanitize_filename(f"file{char}.txt")
+
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
     def test_sanitize_limits_filename_length(self):
         """Test that filename length is limited."""
@@ -136,35 +213,51 @@ class TestSanitizeFilename:
         # Should keep the hidden file name (. prefix is allowed for extensions)
         assert ".hidden" in result or result.startswith("file_")
 
-    def test_sanitize_rejects_empty_filename(self):
-        """Test that empty filename raises ValueError."""
+    def test_sanitize_replaces_empty_name_part(self):
+        """Test that an empty name gets a generated name."""
         validator = FileValidator()
 
-        with pytest.raises(ValueError, match="Filename cannot be empty"):
-            validator._sanitize_filename("")
+        assert validator._sanitize_filename("").startswith("file_")
+        assert validator._sanitize_filename(".jpg") == ".jpg"
+
+    @pytest.mark.asyncio
+    async def test_validate_filename_rejects_empty_filename(
+        self, mock_upload_file
+    ):
+        """Test that an empty filename is rejected before sanitizing."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="", content=b"x")
+
+        with pytest.raises(FilenameSecurityError) as exc_info:
+            validator._validate_filename(file)
+
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
     def test_sanitize_rejects_windows_reserved_names(self):
         """Test that Windows reserved names are rejected."""
         validator = FileValidator()
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator._sanitize_filename("CON.txt")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
 
     def test_sanitize_rejects_dangerous_unicode(self):
         """Test that dangerous Unicode characters are rejected."""
         validator = FileValidator()
 
-        with pytest.raises(UnicodeSecurityError):
+        with pytest.raises(UnicodeSecurityError) as exc_info:
             validator._sanitize_filename(
                 "file\u202e.txt"
             )  # Right-to-left override
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
     def test_sanitize_rejects_dangerous_extensions(self):
         """Test that dangerous extensions are rejected."""
         validator = FileValidator()
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             validator._sanitize_filename("malware.exe")
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     def test_sanitize_empty_name_uses_random_token(self):
         """Whitespace-only name parts get a random, unique fallback."""
@@ -178,6 +271,75 @@ class TestSanitizeFilename:
         assert second.startswith("file_")
         # Random token, so two identical inputs do not collide.
         assert first != second
+
+
+class TestSanitizeFilenameTruncation:
+    """Test that extension checks run on the truncated filename."""
+
+    def test_truncation_exposing_php_is_blocked(self):
+        """Test that truncation cannot expose a blocked extension."""
+        validator = FileValidator()
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._sanitize_filename("A" * 96 + ".phpBBBB.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    def test_truncation_exposing_js_is_blocked(self):
+        """Test that truncation cannot expose a blocked .js extension."""
+        validator = FileValidator()
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._sanitize_filename("A" * 97 + ".jsQ.jpg")
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    def test_truncation_exposing_compound_extension_is_blocked(self):
+        """Test that truncation cannot expose a compound extension."""
+        validator = FileValidator()
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._sanitize_filename("A" * 96 + ".tar.gzXX.gz")
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
+        )
+
+    @pytest.mark.asyncio
+    async def test_validate_image_truncation_exposing_php_is_blocked(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Test end-to-end rejection of a truncation-exposed extension."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="A" * 96 + ".phpBBBB.jpg", content=valid_jpeg_bytes
+        )
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    def test_long_name_truncated_to_limit(self):
+        """Test that a name over the limit is truncated to 100 chars."""
+        validator = FileValidator()
+        result = validator._sanitize_filename("A" * 150 + ".jpg")
+
+        assert result == "A" * 100 + ".jpg"
+
+    def test_name_at_limit_unchanged(self):
+        """Test that a 100-char name part is returned unchanged."""
+        validator = FileValidator()
+        result = validator._sanitize_filename("A" * 100 + ".jpg")
+
+        assert result == "A" * 100 + ".jpg"
+
+    def test_name_one_over_limit_truncated(self):
+        """Test that a 101-char name part is truncated to 100 chars."""
+        validator = FileValidator()
+        result = validator._sanitize_filename("A" * 101 + ".jpg")
+
+        assert result == "A" * 100 + ".jpg"
 
 
 class TestValidateFilename:
@@ -214,80 +376,6 @@ class TestValidateFilename:
 
         validator._validate_filename(file)
         assert file.filename == "file__.txt"  # Dangerous chars replaced
-
-
-class TestValidateFileExtension:
-    """Test file extension validation."""
-
-    @pytest.mark.asyncio
-    async def test_validate_image_extension_allowed(self, mock_upload_file):
-        """Test that allowed image extensions pass."""
-        validator = FileValidator()
-
-        # Should not raise - .gif is not in default allowed extensions
-        file1 = mock_upload_file(filename="photo.jpg", content=b"test")
-        validator._validate_file_extension(
-            file1, validator.config.ALLOWED_IMAGE_EXTENSIONS
-        )
-
-        file2 = mock_upload_file(filename="image.png", content=b"test")
-        validator._validate_file_extension(
-            file2, validator.config.ALLOWED_IMAGE_EXTENSIONS
-        )
-
-    @pytest.mark.asyncio
-    async def test_validate_zip_extension_allowed(self, mock_upload_file):
-        """Test that allowed ZIP extension passes."""
-        validator = FileValidator()
-
-        # Should not raise
-        file = mock_upload_file(filename="archive.zip", content=b"test")
-        validator._validate_file_extension(
-            file, validator.config.ALLOWED_ZIP_EXTENSIONS
-        )
-
-    @pytest.mark.asyncio
-    async def test_validate_image_extension_not_allowed(
-        self, mock_upload_file
-    ):
-        """Test that non-image extensions are rejected for images."""
-        validator = FileValidator()
-
-        file = mock_upload_file(filename="document.pdf", content=b"test")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_IMAGE_EXTENSIONS
-            )
-
-        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
-
-    @pytest.mark.asyncio
-    async def test_validate_zip_extension_not_allowed(self, mock_upload_file):
-        """Test that non-ZIP extensions are rejected for ZIPs."""
-        validator = FileValidator()
-
-        file = mock_upload_file(filename="archive.rar", content=b"test")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_ZIP_EXTENSIONS
-            )
-
-        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
-
-    @pytest.mark.asyncio
-    async def test_validate_dangerous_extension_blocked(
-        self, mock_upload_file
-    ):
-        """Test that dangerous extensions are always blocked."""
-        validator = FileValidator()
-
-        file = mock_upload_file(filename="malware.exe", content=b"test")
-        with pytest.raises(ExtensionSecurityError):
-            # Extension not in allowed list, so will
-            # raise EXTENSION_NOT_ALLOWED first
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_IMAGE_EXTENSIONS
-            )
 
 
 class TestValidateFileSize:
@@ -327,6 +415,7 @@ class TestValidateFileSize:
             await validator._validate_file_size(
                 file, max_file_size=5 * 1024 * 1024
             )
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
         assert exc_info.value.size == 10 * 1024 * 1024
         assert exc_info.value.max_size == 5 * 1024 * 1024
@@ -347,129 +436,11 @@ class TestValidateFileSize:
             await validator._validate_file_size(
                 file, max_file_size=1 * 1024 * 1024
             )
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
         # Rejection is based on the real counted bytes, not the
         # tiny declared size.
         assert exc_info.value.size > 1 * 1024 * 1024
-
-
-class TestDetectMimeType:
-    """Test MIME type detection."""
-
-    def test_detect_mime_with_magic_available(self, valid_jpeg_bytes):
-        """Test MIME detection when python-magic is available."""
-        validator = FileValidator()
-
-        mime_type = validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
-
-        assert mime_type == "image/jpeg"
-
-    def test_detect_mime_fallback_to_mimetypes(self):
-        """Test MIME detection falls back to mimetypes module."""
-        validator = FileValidator()
-        # Temporarily disable magic
-        original_magic_available = validator.magic_available
-        validator.magic_available = False
-
-        try:
-            mime_type = validator._detect_mime_type(
-                b"fake content", "document.pdf"
-            )
-            assert mime_type == "application/pdf"
-        finally:
-            validator.magic_available = original_magic_available
-
-    def test_detect_mime_unknown_fallback(self):
-        """Test MIME detection returns octet-stream for unknown."""
-        validator = FileValidator()
-        validator.magic_available = False
-
-        mime_type = validator._detect_mime_type(b"fake", "unknown.xyz123")
-
-        assert mime_type == "application/octet-stream"
-
-
-class TestValidateFileSignature:
-    """Test file signature validation."""
-
-    def test_validate_jpeg_signature(self, valid_jpeg_bytes):
-        """Test JPEG signature validation."""
-        validator = FileValidator()
-
-        # Should not raise
-        validator._validate_file_signature(
-            valid_jpeg_bytes, expected_type="image"
-        )
-
-    def test_validate_png_signature(self, valid_png_bytes):
-        """Test PNG signature validation."""
-        validator = FileValidator()
-
-        # Should not raise
-        validator._validate_file_signature(
-            valid_png_bytes, expected_type="image"
-        )
-
-    def test_validate_gif_signature(self):
-        """Test GIF signature validation - GIF not in allowed signatures."""
-        validator = FileValidator()
-        gif_bytes = b"GIF89a" + b"\x00" * 100
-
-        # GIF signature is not in the allowed image signatures (only JPEG, PNG)
-        with pytest.raises(FileSignatureError):
-            validator._validate_file_signature(
-                gif_bytes, expected_type="image"
-            )
-
-    def test_validate_zip_signature(self, create_zip_file):
-        """Test ZIP signature validation."""
-        validator = FileValidator()
-        zip_bytes = create_zip_file(files={"test.txt": b"content"})
-
-        # Should not raise
-        validator._validate_file_signature(zip_bytes, expected_type="zip")
-
-    def test_validate_invalid_image_signature(self):
-        """Test that invalid image signature is rejected."""
-        validator = FileValidator()
-        invalid_bytes = b"This is not an image"
-
-        with pytest.raises(
-            FileSignatureError,
-            match="File content does not match expected image",
-        ):
-            validator._validate_file_signature(
-                invalid_bytes, expected_type="image"
-            )
-
-    def test_validate_invalid_zip_signature(self):
-        """Test that invalid ZIP signature is rejected."""
-        validator = FileValidator()
-        invalid_bytes = b"This is not a ZIP"
-
-        with pytest.raises(
-            FileSignatureError,
-            match="File content does not match expected zip",
-        ):
-            validator._validate_file_signature(
-                invalid_bytes, expected_type="zip"
-            )
-
-    def test_validate_activity_signature_leading_whitespace(self):
-        """Leading whitespace before <?xml is tolerated."""
-        validator = FileValidator()
-        content = b"\n  <?xml version='1.0'?><gpx></gpx>"
-
-        # Should not raise
-        validator._validate_file_signature(content, "activity")
-
-    def test_validate_activity_signature_bom_then_whitespace(self):
-        """A UTF-8 BOM followed by whitespace before <?xml passes."""
-        validator = FileValidator()
-        content = b"\xef\xbb\xbf\n<?xml version='1.0'?><gpx></gpx>"
-
-        # Should not raise
-        validator._validate_file_signature(content, "activity")
 
 
 class TestValidateImageFile:
@@ -484,6 +455,33 @@ class TestValidateImageFile:
         file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
 
         # Should not raise
+        await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
+    async def test_header_read_ignores_host_stream_position(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """Header checks see byte 0 even if the host read part."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="x.jpg", content=b"<html>" + valid_jpeg_bytes
+        )
+        file._position = 6  # host consumed the HTML prefix
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+
+    @pytest.mark.asyncio
+    async def test_valid_jpeg_with_stream_at_end_accepted(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """A fully read host stream is rewound before validation."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="x.jpg", content=valid_jpeg_bytes)
+        file._position = len(valid_jpeg_bytes)
+
         await validator.validate_image_file(file)
 
     @pytest.mark.asyncio
@@ -503,8 +501,9 @@ class TestValidateImageFile:
         validator = FileValidator()
         file = mock_upload_file(filename=None, content=valid_jpeg_bytes)
 
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
     @pytest.mark.asyncio
     async def test_validate_image_dangerous_filename(
@@ -516,8 +515,9 @@ class TestValidateImageFile:
             filename="image\u202e.jpg", content=valid_jpeg_bytes
         )
 
-        with pytest.raises(UnicodeSecurityError):
+        with pytest.raises(UnicodeSecurityError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
     @pytest.mark.asyncio
     async def test_validate_image_wrong_extension(
@@ -527,8 +527,9 @@ class TestValidateImageFile:
         validator = FileValidator()
         file = mock_upload_file(filename="photo.txt", content=valid_jpeg_bytes)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
 
     @pytest.mark.asyncio
     async def test_validate_image_dangerous_extension(
@@ -540,8 +541,9 @@ class TestValidateImageFile:
             filename="malware.exe", content=valid_jpeg_bytes
         )
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     @pytest.mark.asyncio
     async def test_validate_image_empty_file(self, mock_upload_file):
@@ -549,8 +551,9 @@ class TestValidateImageFile:
         validator = FileValidator()
         file = mock_upload_file(filename="empty.jpg", content=b"")
 
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
     @pytest.mark.asyncio
     async def test_validate_image_exceeds_size_limit(self, mock_upload_file):
@@ -561,8 +564,9 @@ class TestValidateImageFile:
         )  # 25MB JPEG
         file = mock_upload_file(filename="huge.jpg", content=large_content)
 
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
     @pytest.mark.asyncio
     async def test_validate_image_wrong_mime_type(self, mock_upload_file):
@@ -572,8 +576,9 @@ class TestValidateImageFile:
         pdf_content = b"%PDF-1.4" + b"\x00" * 100
         file = mock_upload_file(filename="fake.jpg", content=pdf_content)
 
-        with pytest.raises(MimeTypeError):
+        with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_validate_image_text_content_rejected_by_mime(
@@ -586,8 +591,9 @@ class TestValidateImageFile:
             filename="fake.jpg", content=b"This is just text"
         )
 
-        with pytest.raises(MimeTypeError):
+        with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
 
 class TestValidateZipFile:
@@ -617,8 +623,9 @@ class TestValidateZipFile:
         zip_bytes = create_zip_file()
         file = mock_upload_file(filename=None, content=zip_bytes)
 
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
     @pytest.mark.asyncio
     async def test_validate_zip_wrong_extension(
@@ -629,8 +636,9 @@ class TestValidateZipFile:
         zip_bytes = create_zip_file()
         file = mock_upload_file(filename="archive.rar", content=zip_bytes)
 
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
 
     @pytest.mark.asyncio
     async def test_validate_zip_empty_file(self, mock_upload_file):
@@ -638,8 +646,9 @@ class TestValidateZipFile:
         validator = FileValidator()
         file = mock_upload_file(filename="empty.zip", content=b"")
 
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
     @pytest.mark.asyncio
     async def test_validate_zip_exceeds_size_limit(
@@ -659,8 +668,9 @@ class TestValidateZipFile:
         validator = FileValidator(config=custom_config)
         file = mock_upload_file(filename="large.zip", content=zip_bytes)
 
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
     @pytest.mark.asyncio
     async def test_validate_zip_directory_traversal(self, mock_upload_file):
@@ -677,8 +687,9 @@ class TestValidateZipFile:
             filename="malicious.zip", content=zip_buffer.getvalue()
         )
 
-        with pytest.raises(ZipContentError):
+        with pytest.raises(ZipContentError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
 
     @pytest.mark.asyncio
     async def test_validate_zip_nested_archive(
@@ -705,8 +716,9 @@ class TestValidateZipFile:
             filename="fake.zip", content=b"This is not a ZIP"
         )
 
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_validate_zip_handles_octet_stream_mime(
@@ -724,6 +736,21 @@ class TestValidateZipFile:
         await validator.validate_zip_file(file)
 
 
+def _break_magic_init(monkeypatch) -> None:
+    """
+    Make ``magic.Magic`` fail so libmagic cannot initialise.
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture.
+    """
+    import safeuploads.validators.mime_validator as _mv
+
+    def _fail(**_):
+        raise Exception("python-magic unavailable")
+
+    monkeypatch.setattr(_mv.magic, "Magic", _fail)
+
+
 class TestFileValidatorMagicUnavailable:
     """Tests for FileValidator when python-magic fails to initialise."""
 
@@ -734,10 +761,10 @@ class TestFileValidatorMagicUnavailable:
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        import safeuploads.file_validator as _fv
+        import safeuploads.validators.mime_validator as _mv
 
         monkeypatch.setattr(
-            _fv.magic,
+            _mv.magic,
             "Magic",
             lambda **_: (_ for _ in ()).throw(
                 Exception("python-magic unavailable")
@@ -746,30 +773,21 @@ class TestFileValidatorMagicUnavailable:
         validator = FileValidator()
         assert validator.magic_available is False
 
-    async def test_magic_unavailable_falls_back_to_mimetypes(
-        self, monkeypatch, valid_jpeg_bytes
-    ):
+    async def test_magic_unavailable_logs_error(self, monkeypatch, caplog):
         """
-        Test MIME detection falls back to mimetypes when magic absent.
+        Test construction logs an ERROR that uploads will be rejected.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
-            valid_jpeg_bytes: Valid JPEG bytes fixture.
+            caplog: pytest log capture fixture.
         """
-        import safeuploads.file_validator as _fv
-
-        monkeypatch.setattr(
-            _fv.magic,
-            "Magic",
-            lambda **_: (_ for _ in ()).throw(
-                Exception("python-magic unavailable")
-            ),
+        _break_magic_init(monkeypatch)
+        with caplog.at_level(logging.ERROR, logger="safeuploads"):
+            FileValidator()
+        assert any(
+            r.levelno == logging.ERROR and "rejected" in r.getMessage()
+            for r in caplog.records
         )
-        validator = FileValidator()
-        assert validator.magic_available is False
-        # Fallback should return a sensible MIME based on filename
-        mime = validator._detect_mime_type(b"data", "photo.jpg")
-        assert mime == "image/jpeg"
 
 
 class TestValidateFilenameExceptionWrapping:
@@ -793,8 +811,9 @@ class TestValidateFilenameExceptionWrapping:
 
         monkeypatch.setattr(validator, "_sanitize_filename", _explode)
 
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             validator._validate_filename(file)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
 
 class TestValidateFileSizeFullReadPath:
@@ -842,11 +861,12 @@ class TestValidateFileSizeFullReadPath:
         file.size = None  # Force the full-read calculation
 
         validator = FileValidator()
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator._validate_file_size(
                 file,
                 max_file_size=1 * 1024,  # 1 KB limit
             )
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
 
 class TestValidateImageFileExceptionWrapping:
@@ -872,8 +892,9 @@ class TestValidateImageFileExceptionWrapping:
 
         monkeypatch.setattr(validator, "_validate_file_size", _explode)
 
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
 
 class TestValidateZipFileExceptionWrapping:
@@ -900,8 +921,9 @@ class TestValidateZipFileExceptionWrapping:
 
         monkeypatch.setattr(validator, "_stream_to_temp_file", _explode)
 
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
 
 class TestStreamToTempFile:
@@ -954,11 +976,85 @@ class TestStreamToTempFile:
         file = mock_upload_file(filename="archive.zip", content=content)
         file.size = None  # Ensure streaming path is used
 
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator._stream_to_temp_file(
                 file,
                 max_file_size=1 * 1024,  # 1 KB limit
             )
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+
+
+class TestFileSizeLimitBoundaries:
+    """Tests that the size limit accepts its value and rejects the next."""
+
+    @pytest.mark.asyncio
+    async def test_declared_size_at_limit_accepted(self, mock_upload_file):
+        """A declared size equal to the limit is not rejected up front."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x" * 1024)
+
+        _, file_size = await validator._validate_file_size(file, 1024)
+
+        assert file_size == 1024
+
+    @pytest.mark.asyncio
+    async def test_declared_size_over_limit_rejected(self, mock_upload_file):
+        """A declared size above the limit is rejected before reading."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x", size=1025)
+
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._validate_file_size(file, 1024)
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+        assert exc_info.value.size == 1025
+
+    @pytest.mark.asyncio
+    async def test_streamed_size_at_limit_accepted(self, mock_upload_file):
+        """A counted size equal to the limit passes without a declared one."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x" * 1024)
+        file.size = None
+
+        _, file_size = await validator._validate_file_size(file, 1024)
+
+        assert file_size == 1024
+
+    @pytest.mark.asyncio
+    async def test_streamed_size_over_limit_rejected(self, mock_upload_file):
+        """A counted size one byte over the limit is rejected."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.jpg", content=b"x" * 1025)
+        file.size = None
+
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._validate_file_size(file, 1024)
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+        assert exc_info.value.size == 1025
+
+    @pytest.mark.asyncio
+    async def test_spooled_stream_at_limit_accepted(self, mock_upload_file):
+        """Streaming exactly the limit to a temp file passes."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"x" * 1024)
+
+        temp, total = await validator._stream_to_temp_file(file, 1024)
+        temp.close()
+
+        assert total == 1024
+
+    @pytest.mark.asyncio
+    async def test_spooled_stream_over_limit_rejected(self, mock_upload_file):
+        """Streaming one byte over the limit to a temp file is rejected."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"x" * 1025)
+
+        with pytest.raises(FileSizeError) as exc_info:
+            await validator._stream_to_temp_file(file, 1024)
+
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
+        assert exc_info.value.size == 1025
 
 
 class TestResourceMonitorIntegration:
@@ -1077,131 +1173,316 @@ class TestResourceMonitorIntegration:
 
         monkeypatch.setattr(type(file), "read", slow_read)
 
-        with pytest.raises(ResourceLimitError):
+        with pytest.raises(ResourceLimitError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+
+# Seconds the fake clock advances per reading for work that must
+# exceed the default 30 s budget, and for work that stays within it.
+_HOSTILE_STEP = 5.0
+_BENIGN_STEP = 0.01
+
+
+def _audited_validator() -> FileValidator:
+    """Return a validator with default limits and audit logging on."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(enable_audit_logging=True)
+    return FileValidator(config=config)
+
+
+def _advance_clock_during_inspection(validator, clock, monkeypatch) -> None:
+    """Start the fake clock when the offloaded inspection begins."""
+    original = validator._submit
+
+    def _submit(func, *args):
+        clock.advancing = True
+        return original(func, *args)
+
+    monkeypatch.setattr(validator, "_submit", _submit)
+
+
+def _raised_in(exc_info) -> set[str]:
+    """Return the function names on the exception's traceback."""
+    return {entry.name for entry in exc_info.traceback}
+
+
+def _zip_of(count: int, content: bytes = b"data") -> bytes:
+    """Build a stored ZIP with ``count`` text entries."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for i in range(count):
+            zf.writestr(f"f{i}.txt", content)
+    return buf.getvalue()
+
+
+def _gzip_of_chunks(chunks: int) -> bytes:
+    """Build a gzip that decompresses to ``chunks`` 64 KB chunks."""
+    block = hashlib.shake_256(b"gzip").digest(16 * 1024)
+    return gzip.compress(block * (4 * chunks), mtime=0)
+
+
+def _gpx_of_size(size: int) -> bytes:
+    """Build a valid GPX document of roughly ``size`` bytes."""
+    head = b'<?xml version="1.0" encoding="UTF-8"?><gpx><trk><trkseg>'
+    point = b'<trkpt lat="45.1" lon="7.1"><ele>100.0</ele></trkpt>'
+    return head + point * (size // len(point)) + b"</trkseg></trk></gpx>"
+
+
+class TestResourceLimitsEnforcedDuringWork:
+    """Test limits are enforced inside the work, not only at exit."""
+
+    @pytest.mark.parametrize("use_executor", [False, True])
+    async def test_check_in_worker_thread_sees_monitor(
+        self, fake_clock, use_executor
+    ):
+        """Test a check run through _to_thread sees the monitor."""
+        executor = ThreadPoolExecutor(max_workers=1) if use_executor else None
+        validator = FileValidator(executor=executor)
+        try:
+            with ResourceMonitor(max_time_seconds=10.0):
+                fake_clock.now += 100.0
+                with pytest.raises(ResourceLimitError) as exc_info:
+                    await validator._to_thread(check_resource_limits)
+                fake_clock.now -= 100.0
+            fake_clock.now += 100.0
+            await validator._to_thread(check_resource_limits)
+        finally:
+            if executor is not None:
+                executor.shutdown()
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    async def test_zip_within_budget_passes(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test a ZIP whose inspection stays in budget is accepted."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.zip", content=_zip_of(50))
+
+        await validator.validate_zip_file(file)
+
+    async def test_zip_inspection_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch, caplog
+    ):
+        """Test a slow ZIP inspection is stopped inside its loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.zip", content=_zip_of(50))
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_zip_file(file)
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert {
+            "check_resource_limits",
+            "validate_zip_compression_ratio",
+        } <= _raised_in(exc_info)
+        assert "resource_limit" in caplog.text
+
+    async def test_zip_memory_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test peak-RSS growth during ZIP inspection is rejected."""
+        validator = _audited_validator()
+        fake_clock.step = 0.0
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        monkeypatch.setattr(
+            ResourceMonitor,
+            "_get_peak_rss_bytes",
+            staticmethod(lambda: (1 << 30) if fake_clock.advancing else 1),
+        )
+        file = mock_upload_file(filename="a.zip", content=_zip_of(50))
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            await validator.validate_zip_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+        assert "validate_zip_compression_ratio" in _raised_in(exc_info)
+
+    async def test_zip_upload_streaming_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock
+    ):
+        """Test a slow upload stream is stopped while streaming."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        content = _zip_of(50, hashlib.shake_256(b"zip").digest(20 * 1024))
+        file = mock_upload_file(filename="a.zip", content=content)
+        fake_clock.advancing = True
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            await validator.validate_zip_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "_stream_to_temp_file" in _raised_in(exc_info)
+
+    async def test_gzip_within_budget_passes(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test a gzip whose decompression stays in budget passes."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.gz", content=_gzip_of_chunks(20))
+
+        await validator.validate_gzip_file(file)
+
+    async def test_gzip_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch, caplog
+    ):
+        """Test a slow gzip decompression is stopped inside its loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        file = mock_upload_file(filename="a.gz", content=_gzip_of_chunks(20))
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_gzip_file(file)
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "inspect_gzip_content" in _raised_in(exc_info)
+        assert "resource_limit" in caplog.text
+
+    async def test_activity_within_budget_passes(
+        self, mock_upload_file, fake_clock, monkeypatch
+    ):
+        """Test a GPX whose parse stays in budget is accepted."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        content = _gpx_of_size(1536 * 1024)
+        file = mock_upload_file(filename="run.gpx", content=content)
+
+        await validator.validate_activity_file(file)
+
+    async def test_activity_over_budget_raises_inside_loop(
+        self, mock_upload_file, fake_clock, monkeypatch, caplog
+    ):
+        """Test a slow GPX parse is stopped inside the parse loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
+        content = _gpx_of_size(1536 * 1024)
+        file = mock_upload_file(filename="run.gpx", content=content)
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
+            await validator.validate_activity_file(file)
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "validate_xml_safety" in _raised_in(exc_info)
+        assert "resource_limit" in caplog.text
+
+    async def test_image_within_budget_passes(
+        self, mock_upload_file, valid_jpeg_bytes, fake_clock
+    ):
+        """Test an image whose size check stays in budget passes."""
+        validator = _audited_validator()
+        fake_clock.step = _BENIGN_STEP
+        content = valid_jpeg_bytes + b"\x00" * (1024 * 1024)
+        file = mock_upload_file(filename="photo.jpg", content=content)
+        fake_clock.advancing = True
+
+        await validator.validate_image_file(file)
+
+    async def test_image_over_budget_raises_inside_loop(
+        self, mock_upload_file, valid_jpeg_bytes, fake_clock, caplog
+    ):
+        """Test a slow image stream is stopped inside the size loop."""
+        validator = _audited_validator()
+        fake_clock.step = _HOSTILE_STEP
+        content = valid_jpeg_bytes + b"\x00" * (1024 * 1024)
+        file = mock_upload_file(filename="photo.jpg", content=content)
+        fake_clock.advancing = True
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ResourceLimitError) as exc_info,
+        ):
             await validator.validate_image_file(file)
 
+        assert type(exc_info.value) is ResourceLimitError
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+        assert "_validate_file_size" in _raised_in(exc_info)
+        assert "resource_limit" in caplog.text
 
-class TestDetectMimeTypeMagicException:
-    """Tests for _detect_mime_type when magic raises."""
 
-    def test_magic_from_buffer_exception_falls_back(
-        self, monkeypatch, valid_jpeg_bytes
-    ):
+class TestMimeDetectionFailureEndToEnd:
+    """MIME detection failure rejects every upload type."""
+
+    _HTML_JPEG = b"\xff\xd8\xff<html><script>alert(1)</script>"
+
+    @staticmethod
+    def _break(validator, how, monkeypatch):
         """
-        Test MIME fallback when magic.from_buffer raises.
+        Make MIME detection fail in the requested way.
 
         Args:
+            validator: Validator whose detector to break.
+            how: ``"unavailable"`` or ``"raises"``.
             monkeypatch: pytest monkeypatch fixture.
-            valid_jpeg_bytes: Valid JPEG bytes fixture.
         """
-        validator = FileValidator()
-        assert validator.magic_available is True
+        if how == "unavailable":
+            validator.magic_available = False
+            return
 
         def _explode(_content):
-            raise RuntimeError("magic failed")
+            raise RuntimeError("boom")
 
         monkeypatch.setattr(validator.magic_mime, "from_buffer", _explode)
 
-        mime = validator._detect_mime_type(valid_jpeg_bytes, "photo.jpg")
-        # Falls back to mimetypes guess from filename
-        assert mime == "image/jpeg"
-
-
-class TestValidateFileSignatureEdgeCases:
-    """Tests for _validate_file_signature edge cases."""
-
-    def test_signature_too_small_file(self):
-        """
-        Test that files smaller than 4 bytes are rejected.
-
-        Returns:
-            None
-        """
-        validator = FileValidator()
-
-        with pytest.raises(FileSignatureError, match="too small"):
-            validator._validate_file_signature(b"\xff\xd8", "image")
-
-    def test_signature_one_byte_file(self):
-        """
-        Test that single byte files are rejected.
-
-        Returns:
-            None
-        """
-        validator = FileValidator()
-
-        with pytest.raises(FileSignatureError):
-            validator._validate_file_signature(b"X", "zip")
-
-    def test_signature_empty_content(self):
-        """
-        Test that empty content is rejected.
-
-        Returns:
-            None
-        """
-        validator = FileValidator()
-
-        with pytest.raises(FileSignatureError):
-            validator._validate_file_signature(b"", "image")
-
-
-class TestEnforceMimeAndWiredErrorCodes:
-    """Tests for the shared MIME helper and wired error codes."""
-
-    def test_enforce_mime_allows_permitted_type(self):
-        """Permitted MIME types pass without raising."""
-        validator = FileValidator()
-        validator._enforce_mime(
-            "application/zip",
-            validator.config.ALLOWED_ZIP_MIMES,
-            "a.zip",
-        )
-
-    def test_enforce_mime_allows_octet_stream_when_enabled(self):
-        """octet-stream is accepted only when explicitly allowed."""
-        validator = FileValidator()
-        validator._enforce_mime(
-            "application/octet-stream",
-            validator.config.ALLOWED_ZIP_MIMES,
-            "a.zip",
-            allow_octet_stream=True,
-        )
-
-    def test_enforce_mime_rejects_octet_stream_by_default(self):
-        """octet-stream is rejected when not explicitly allowed."""
-        validator = FileValidator()
-        with pytest.raises(MimeTypeError):
-            validator._enforce_mime(
-                "application/octet-stream",
-                validator.config.ALLOWED_ZIP_MIMES,
-                "a.zip",
-            )
-
-    def test_enforce_mime_wires_mismatch_error_code(self):
-        """A disallowed MIME type raises with the supplied code."""
-        validator = FileValidator()
-        with pytest.raises(MimeTypeError) as exc_info:
-            validator._enforce_mime(
-                "text/plain",
-                validator.config.ALLOWED_ZIP_MIMES,
-                "a.zip",
-                error_code=ErrorCode.MIME_TYPE_MISMATCH,
-            )
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
-
-    def test_validate_extension_missing_reports_missing_code(
-        self, mock_upload_file
+    @pytest.mark.parametrize("how", ["unavailable", "raises"])
+    @pytest.mark.parametrize(
+        ("method", "name", "payload"),
+        [
+            ("validate_image_file", "x.jpg", _HTML_JPEG),
+            ("validate_zip_file", "x.zip", b"PK\x05\x06" + b"\x00" * 18),
+            ("validate_gzip_file", "x.gz", gzip.compress(b"hello")),
+            (
+                "validate_activity_file",
+                "x.gpx",
+                b'<?xml version="1.0"?><gpx></gpx>',
+            ),
+        ],
+    )
+    async def test_detection_failure_rejects(
+        self, mock_upload_file, monkeypatch, how, method, name, payload
     ):
-        """A file with no extension reports EXTENSION_MISSING."""
+        """Each validate_* method raises MIME_DETECTION_FAILED."""
         validator = FileValidator()
-        file = mock_upload_file(filename="noext", content=b"data")
-        with pytest.raises(ExtensionSecurityError) as exc_info:
-            validator._validate_file_extension(
-                file, validator.config.ALLOWED_IMAGE_EXTENSIONS
-            )
-        assert exc_info.value.error_code == ErrorCode.EXTENSION_MISSING
+        self._break(validator, how, monkeypatch)
+        file = mock_upload_file(name, payload)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await getattr(validator, method)(file)
+
+        assert exc_info.value.error_code == ErrorCode.MIME_DETECTION_FAILED
+
+    async def test_valid_jpeg_with_working_magic_accepted(
+        self, mock_upload_file, valid_jpeg_bytes
+    ):
+        """A valid JPEG passes when libmagic works."""
+        validator = FileValidator()
+        file = mock_upload_file("x.jpg", valid_jpeg_bytes)
+        await validator.validate_image_file(file)
+
+
+class TestWiredErrorCodes:
+    """Tests for error codes kept by the orchestration helpers."""
 
     @pytest.mark.asyncio
     async def test_empty_file_reports_empty_code(self, mock_upload_file):
@@ -1212,28 +1493,41 @@ class TestEnforceMimeAndWiredErrorCodes:
             await validator._validate_file_size(file, max_file_size=1024)
         assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
-    def test_signature_too_small_reports_missing_code(self):
-        """A too-small header reports FILE_SIGNATURE_MISSING."""
+    def test_read_header_keeps_signature_error_code(self):
+        """A too-small upload keeps FILE_SIGNATURE_MISSING."""
         validator = FileValidator()
-        with pytest.raises(FileSignatureError) as exc_info:
-            validator._validate_file_signature(b"\xff\xd8", "image")
+        with tempfile.SpooledTemporaryFile() as temp_file:
+            temp_file.write(b"PK")
+            temp_file.seek(0)
+            with pytest.raises(FileSignatureError) as exc_info:
+                validator._read_header_and_detect(temp_file, "a.zip", "zip")
         assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISSING
+
+    def test_read_header_mismatch_keeps_mismatch_code(self):
+        """A wrong signature still reports FILE_SIGNATURE_MISMATCH."""
+        validator = FileValidator()
+        with tempfile.SpooledTemporaryFile() as temp_file:
+            temp_file.write(b"PK\x03\x04" + b"\x00" * 32)
+            temp_file.seek(0)
+            with pytest.raises(FileSignatureError) as exc_info:
+                validator._read_header_and_detect(temp_file, "a.gz", "gzip")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
 
 class TestSanitizeFilenameEdgeCases:
     """Tests for _sanitize_filename edge cases."""
 
-    def test_sanitize_removes_null_bytes(self):
+    def test_sanitize_rejects_null_bytes(self):
         """
-        Test explicit null byte removal from filename.
+        Test that null bytes are rejected, not stripped.
 
         Returns:
             None
         """
         validator = FileValidator()
-        result = validator._sanitize_filename("file\x00.txt\x00")
-        assert "\x00" not in result
-        assert result == "file.txt"
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            validator._sanitize_filename("file\x00.txt\x00")
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
     def test_sanitize_whitespace_only_name_part(self):
         """
@@ -1282,15 +1576,7 @@ class TestValidateActivityFile:
     async def test_validate_valid_fit(self, mock_upload_file):
         """Test validation of valid FIT file."""
         validator = FileValidator()
-        # Minimal FIT header: 14 bytes header + ".FIT" at 8-11
-        fit_content = (
-            b"\x0e"  # header size
-            b"\x10"  # protocol version
-            b"\x00\x08"  # profile version
-            b"\x00\x00\x00\x00"  # data size
-            b".FIT"  # magic
-            b"\x00\x00" + b"\x00" * 50  # CRC  # padding
-        )
+        fit_content = build_fit(b"\x00" * 50, header_size=14)
         file = mock_upload_file(filename="ride.fit", content=fit_content)
         await validator.validate_activity_file(file)
 
@@ -1299,16 +1585,18 @@ class TestValidateActivityFile:
         """Test that wrong extension is rejected."""
         validator = FileValidator()
         file = mock_upload_file(filename="activity.txt", content=b"data")
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
 
     @pytest.mark.asyncio
     async def test_reject_empty_activity(self, mock_upload_file):
         """Test that empty file is rejected."""
         validator = FileValidator()
         file = mock_upload_file(filename="empty.gpx", content=b"")
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
     @pytest.mark.asyncio
     async def test_reject_xxe_in_gpx(self, mock_upload_file):
@@ -1322,8 +1610,10 @@ class TestValidateActivityFile:
             b"<gpx>&xxe;</gpx>"
         )
         file = mock_upload_file(filename="evil.gpx", content=xxe_gpx)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.XML_DTD_FORBIDDEN
+        assert exc_info.value.filename == "evil.gpx"
 
     @pytest.mark.asyncio
     async def test_reject_malformed_gpx_xml(self, mock_upload_file):
@@ -1331,8 +1621,10 @@ class TestValidateActivityFile:
         validator = FileValidator()
         bad_xml = b'<?xml version="1.0"?><gpx><unclosed>'
         file = mock_upload_file(filename="bad.gpx", content=bad_xml)
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(XmlSecurityError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
+        assert exc_info.value.filename == "bad.gpx"
 
     @pytest.mark.asyncio
     async def test_reject_oversized_activity(self, mock_upload_file):
@@ -1344,16 +1636,18 @@ class TestValidateActivityFile:
         validator = FileValidator(config=config)
         content = b"<?xml " + b"x" * 2048
         file = mock_upload_file(filename="big.gpx", content=content)
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
 
     @pytest.mark.asyncio
     async def test_reject_missing_filename(self, mock_upload_file):
         """Test that missing filename is rejected."""
         validator = FileValidator()
         file = mock_upload_file(filename=None, content=b"data")
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_activity_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
 
 class TestValidateGzipFile:
@@ -1377,24 +1671,27 @@ class TestValidateGzipFile:
         """Test that wrong extension is rejected."""
         validator = FileValidator()
         file = mock_upload_file(filename="data.zip", content=b"data")
-        with pytest.raises(ExtensionSecurityError):
+        with pytest.raises(ExtensionSecurityError) as exc_info:
             await validator.validate_gzip_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
 
     @pytest.mark.asyncio
     async def test_reject_empty_gzip(self, mock_upload_file):
         """Test that empty file is rejected."""
         validator = FileValidator()
         file = mock_upload_file(filename="empty.gz", content=b"")
-        with pytest.raises(FileSizeError):
+        with pytest.raises(FileSizeError) as exc_info:
             await validator.validate_gzip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
     @pytest.mark.asyncio
     async def test_reject_invalid_gzip_signature(self, mock_upload_file):
         """Test that invalid gzip signature is rejected."""
         validator = FileValidator()
         file = mock_upload_file(filename="fake.gz", content=b"not a gzip")
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_gzip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_reject_gzip_bomb(self, mock_upload_file):
@@ -1416,16 +1713,20 @@ class TestValidateGzipFile:
         gz_bytes = buf.getvalue()
         file = mock_upload_file(filename="bomb.gz", content=gz_bytes)
 
-        with pytest.raises(ZipBombError):
+        with pytest.raises(ZipBombError) as exc_info:
             await validator.validate_gzip_file(file)
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
 
     @pytest.mark.asyncio
     async def test_reject_missing_filename(self, mock_upload_file):
         """Test that missing filename is rejected."""
         validator = FileValidator()
         file = mock_upload_file(filename=None, content=b"data")
-        with pytest.raises(FilenameSecurityError):
+        with pytest.raises(FilenameSecurityError) as exc_info:
             await validator.validate_gzip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
 
 class TestImageContentAnalysisIntegration:
@@ -1448,8 +1749,12 @@ class TestImageContentAnalysisIntegration:
             b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04" + b"\xff\xd9"
         )
         file = mock_upload_file(filename="poly.jpg", content=jpeg)
-        with pytest.raises(FileProcessingError, match="Content analysis"):
+        with pytest.raises(ContentThreatError) as exc_info:
             await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+        assert exc_info.value.filename == "poly.jpg"
+        assert exc_info.value.threats
+        assert "Content analysis" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_clean_large_image_passes(self, mock_upload_file):
@@ -1530,3 +1835,504 @@ class TestConcurrentValidation:
             assert recorder.calls > 0
         finally:
             recorder.shutdown(wait=True)
+
+
+_UNICODE_REJECTED = [
+    "a\u200fb.jpg",
+    "a\u00adb.jpg",
+    "a\U000e0041.jpg",
+    "a\u0085b.jpg",
+    "a\u009bb.jpg",
+    "a\x00b.jpg",
+    "a\ue000b.jpg",
+    "a\u0378b.jpg",
+    "a\ud800b.jpg",
+    "a\u2028b.jpg",
+    "a\u2029b.jpg",
+    "a\u200db.jpg",
+]
+
+_RESERVED_REJECTED = [
+    "COM\u00b9.jpg",
+    "LPT\u00b2.jpg",
+    "COM0.jpg",
+    "LPT0.jpg",
+    "CONIN$.jpg",
+    "CONOUT$.jpg",
+    "CLOCK$.jpg",
+    "clock$.txt.jpg",
+    "\uff23\uff2f\uff2e.jpg",
+]
+
+_EXTENSION_REJECTED = [
+    "shell.\uff50\uff48\uff50.jpg",
+    "x.phar.jpg",
+    "x.php7.jpg",
+    "x.php8.jpg",
+    "x.shtml.jpg",
+    "x.shtm.jpg",
+    "x.stm.jpg",
+    "x.pht.jpg",
+    "x.phps.jpg",
+    "x.vbe.jpg",
+    "x.wsc.jpg",
+]
+
+
+class TestHostileFilenamesEndToEnd:
+    """Hostile names are rejected through validate_image_file."""
+
+    @pytest.mark.parametrize("name", _UNICODE_REJECTED)
+    async def test_invisible_characters_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Control, format, private-use and unassigned chars fail."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
+
+    @pytest.mark.parametrize("name", _RESERVED_REJECTED)
+    async def test_reserved_names_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Reserved device names fail, also in compatibility form."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(WindowsReservedNameError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
+
+    @pytest.mark.parametrize("name", _EXTENSION_REJECTED)
+    async def test_blocked_extensions_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Blocked extensions fail, also in compatibility form."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "..\uff0f..\uff0fetc\uff0fx.jpg",
+            "a\uff3cb.jpg",
+            "a\ufe52\ufe52b.jpg",
+        ],
+    )
+    async def test_hidden_path_components_rejected(
+        self, mock_upload_file, valid_jpeg_bytes, name
+    ):
+        """Compatibility characters cannot hide a path component."""
+        file = mock_upload_file(name, valid_jpeg_bytes)
+
+        with pytest.raises(FilenameSecurityError) as exc_info:
+            await FileValidator().validate_image_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.FILENAME_INVALID
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("r\u00e9sum\u00e9.jpg", "r\u00e9sum\u00e9.jpg"),
+            ("\u65e5\u672c\u8a9e.png", "\u65e5\u672c\u8a9e.png"),
+            ("\u0444\u0430\u0439\u043b.jpg", "\u0444\u0430\u0439\u043b.jpg"),
+            ("cafe\u0301.jpg", "caf\u00e9.jpg"),
+            ("caf\u00e9.jpg", "caf\u00e9.jpg"),
+            ("\ufb01le.jpg", "\ufb01le.jpg"),
+            ("a..b.jpg", "a..b.jpg"),
+        ],
+    )
+    def test_legitimate_names_accepted(self, name, expected):
+        """Legitimate names pass and come back NFC, not NFKC."""
+        assert FileValidator()._sanitize_filename(name) == expected
+
+
+class _TrackedSpool:
+    """Wrap a temp file to record whether it was closed."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.closed_event = threading.Event()
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def close(self) -> None:
+        self._inner.close()
+        self.closed_event.set()
+
+
+async def _settle() -> None:
+    """Yield to the loop a few times so callbacks can run."""
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+class TestCancellationSafety:
+    """Cancellation closes temp files and never races a worker."""
+
+    @pytest.fixture
+    def tracked(self, monkeypatch):
+        """Record every SpooledTemporaryFile the validator creates."""
+        import tempfile
+
+        created: list[_TrackedSpool] = []
+        real = tempfile.SpooledTemporaryFile
+
+        def _factory(*args, **kwargs):
+            tracked = _TrackedSpool(real(*args, **kwargs))
+            created.append(tracked)
+            return tracked
+
+        monkeypatch.setattr(
+            "safeuploads.file_validator.tempfile.SpooledTemporaryFile",
+            _factory,
+        )
+        return created
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_streaming_closes_temp_file(self, tracked):
+        """Cancelling a read closes the temp file and propagates."""
+        reading = asyncio.Event()
+        calls = 0
+
+        class _HangingFile:
+            filename = "a.zip"
+            size = None
+
+            async def read(self, size: int = -1) -> bytes:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return b"x" * 100
+                reading.set()
+                await asyncio.Event().wait()
+                return b""
+
+            async def seek(self, offset: int) -> int:
+                return offset
+
+        validator = FileValidator()
+        task = asyncio.create_task(
+            validator._stream_to_temp_file(_HangingFile(), 1024 * 1024)
+        )
+        await reading.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert tracked[0].closed_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_spilled_write_waits_for_worker(
+        self, tracked, monkeypatch
+    ):
+        """A cancelled disk write closes the file after the worker."""
+        started = threading.Event()
+        release = threading.Event()
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_memory_buffer_size=10, chunk_size=64
+        )
+        validator = FileValidator(config=config)
+        real_submit = validator._submit
+
+        def _held_submit(func, *args):
+            def _slow(*a):
+                started.set()
+                release.wait(5)
+                return func(*a)
+
+            return real_submit(_slow, *args)
+
+        monkeypatch.setattr(validator, "_submit", _held_submit)
+
+        class _File:
+            filename = "a.zip"
+            size = None
+
+            async def read(self, size: int = -1) -> bytes:
+                return b"x" * 64
+
+            async def seek(self, offset: int) -> int:
+                return offset
+
+        task = asyncio.create_task(
+            validator._stream_to_temp_file(_File(), 10**6)
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _settle()
+        assert not tracked[0].closed_event.is_set()
+        release.set()
+        assert await asyncio.to_thread(tracked[0].closed_event.wait, 5)
+
+    @pytest.mark.asyncio
+    async def test_spilled_writes_run_off_the_loop(self, monkeypatch):
+        """Writes past the memory buffer happen in worker threads."""
+        threads: list[int] = []
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_memory_buffer_size=10, chunk_size=64
+        )
+        validator = FileValidator(config=config)
+        real_submit = validator._submit
+
+        def _recording(func, *args):
+            def _call(*a):
+                threads.append(threading.get_ident())
+                return func(*a)
+
+            return real_submit(_call, *args)
+
+        monkeypatch.setattr(validator, "_submit", _recording)
+
+        class _File:
+            def __init__(self) -> None:
+                self.data = [b"x" * 64, b"y" * 64, b""]
+
+            async def read(self, size: int = -1) -> bytes:
+                return self.data.pop(0)
+
+            async def seek(self, offset: int) -> int:
+                return offset
+
+        temp, total = await validator._stream_to_temp_file(_File(), 10**6)
+        try:
+            assert total == 128
+            assert temp.read() == b"x" * 64 + b"y" * 64
+        finally:
+            temp.close()
+        assert threads
+        assert threading.get_ident() not in threads
+
+    @pytest.mark.parametrize("use_executor", [False, True])
+    @pytest.mark.asyncio
+    async def test_cancel_during_inspection_closes_after_worker(
+        self, tracked, mock_upload_file, create_zip_file, use_executor
+    ):
+        """The temp file stays open until the worker has finished."""
+        started = threading.Event()
+        release = threading.Event()
+        executor = ThreadPoolExecutor(max_workers=1) if use_executor else None
+        validator = FileValidator(executor=executor)
+
+        def _held(temp_file, file_size, filename):
+            started.set()
+            release.wait(5)
+            assert not temp_file.closed
+
+        validator._inspect_zip_sync = _held
+        file = mock_upload_file(
+            filename="a.zip", content=create_zip_file(files={"a": b"b"})
+        )
+        task = asyncio.create_task(validator.validate_zip_file(file))
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _settle()
+        assert not tracked[0].closed_event.is_set()
+        release.set()
+        assert await asyncio.to_thread(tracked[0].closed_event.wait, 5)
+        if executor is not None:
+            executor.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_inspection_error_closes_temp_file(
+        self, tracked, mock_upload_file
+    ):
+        """A failing inspection closes the file and raises."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="a.zip", content=b"not a zip")
+        with pytest.raises(FileSignatureError) as exc_info:
+            await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
+        assert tracked[0].closed_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_valid_zip_closes_temp_file(
+        self, tracked, mock_upload_file, create_zip_file
+    ):
+        """A normal ZIP validates and its temp file is closed."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="a.zip", content=create_zip_file(files={"a": b"b"})
+        )
+        await validator.validate_zip_file(file)
+        assert tracked[0].closed_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_scheduling_failure_closes_temp_file(
+        self, tracked, mock_upload_file, create_zip_file
+    ):
+        """A scheduling error in inspection still closes the file.
+
+        The inspection call alone is made to fail: a shut-down
+        executor would already fail earlier in MIME detection.
+        """
+        validator = FileValidator()
+        real_submit = validator._submit
+
+        def _submit(func, *args):
+            if func.__name__ == "_inspect_zip_sync":
+                raise RuntimeError("cannot schedule new futures")
+            return real_submit(func, *args)
+
+        validator._submit = _submit
+        file = mock_upload_file(
+            filename="a.zip", content=create_zip_file(files={"a": b"b"})
+        )
+        with pytest.raises(FileProcessingError):
+            await validator.validate_zip_file(file)
+        assert tracked[0].closed_event.is_set()
+
+
+class TestCorrelationIdRestoredOnAuditFailure:
+    """The caller's correlation ID survives a failing audit start."""
+
+    @pytest.mark.parametrize("host_id", [None, "host-id"])
+    @pytest.mark.asyncio
+    async def test_failing_audit_start_restores_id(
+        self, monkeypatch, mock_upload_file, create_zip_file, host_id
+    ):
+        """A raising audit.start leaves the host's ID in place."""
+        from safeuploads.audit import (
+            SecurityAuditLogger,
+            correlation_id_var,
+            get_correlation_id,
+            set_correlation_id,
+        )
+
+        def _boom(self, *args, **kwargs):
+            raise OSError("handler failed")
+
+        monkeypatch.setattr(SecurityAuditLogger, "start", _boom)
+        token = correlation_id_var.set(None)
+        try:
+            if host_id is not None:
+                set_correlation_id(host_id)
+            file = mock_upload_file(
+                filename="a.zip",
+                content=create_zip_file(files={"a": b"b"}),
+            )
+            with pytest.raises(FileProcessingError):
+                await FileValidator().validate_zip_file(file)
+            assert get_correlation_id() == host_id
+        finally:
+            correlation_id_var.reset(token)
+
+
+class TestImageMimeDetectionOffLoop:
+    """Image MIME detection must not run on the event loop."""
+
+    @pytest.mark.asyncio
+    async def test_detect_mime_runs_in_worker_thread(
+        self, mock_upload_file, valid_jpeg_bytes, monkeypatch
+    ):
+        """libmagic is called from a thread other than the loop."""
+        validator = FileValidator()
+        threads: list[int] = []
+        real = validator.mime_validator.detect
+
+        def _recording(content, filename):
+            threads.append(threading.get_ident())
+            return real(content, filename)
+
+        monkeypatch.setattr(validator.mime_validator, "detect", _recording)
+        file = mock_upload_file(filename="p.jpg", content=valid_jpeg_bytes)
+        await validator.validate_image_file(file)
+        assert threads
+        assert threading.get_ident() not in threads
+
+
+def _nested_zip_validator() -> FileValidator:
+    """Return a validator that allows and inspects nested archives."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(allow_nested_archives=True)
+    return FileValidator(config=config)
+
+
+def _zip_with(
+    entries: dict[str, bytes], compression: int = zipfile.ZIP_STORED
+) -> bytes:
+    """Build a ZIP holding ``entries`` with the given compression."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression) as zf:
+        for name, content in entries.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+class TestNestedArchivesEndToEnd:
+    """validate_zip_file checks every nested archive level."""
+
+    async def test_clean_nested_archive_accepted(self, mock_upload_file):
+        """An upload with a clean inner archive is accepted."""
+        inner = _zip_with({"a.txt": b"hello"}, zipfile.ZIP_DEFLATED)
+        data = _zip_with({"inner.zip": inner, "b.txt": b"x"})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        await _nested_zip_validator().validate_zip_file(file)
+
+    async def test_identical_sibling_archives_accepted(self, mock_upload_file):
+        """Two identical inner archives are not reported as a quine."""
+        inner = _zip_with({"a.txt": b"hello"})
+        data = _zip_with({"a/lib.zip": inner, "b/lib.zip": inner})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        await _nested_zip_validator().validate_zip_file(file)
+
+    async def test_identical_sibling_fan_out_rejected(self, mock_upload_file):
+        """Identical-sibling fan-out hits the total entries limit."""
+        leaf = _zip_with({"a.txt": b"x"})
+        mid = _zip_with({f"l{i}.zip": leaf for i in range(10)})
+        data = _zip_with({f"m{i}.zip": mid for i in range(10)})
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            allow_nested_archives=True, max_total_entries_recursive=50
+        )
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            await FileValidator(config=config).validate_zip_file(file)
+
+        assert type(exc_info.value) is ZipContentError
+        assert exc_info.value.error_code == ErrorCode.ZIP_COMPLEXITY_ATTACK
+
+    async def test_inner_traversal_rejected(self, mock_upload_file):
+        """A traversal entry inside an inner archive is rejected."""
+        inner = _zip_with({"../evil.txt": b"x"})
+        data = _zip_with({"inner.zip": inner})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            await _nested_zip_validator().validate_zip_file(file)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
+        assert "inner.zip: Directory traversal attack" in str(exc_info.value)
+
+    async def test_inner_ratio_bomb_rejected(self, mock_upload_file):
+        """An inner archive over the compression ratio is a ZipBombError."""
+        inner = _zip_with(
+            {"zeros.dat": b"\x00" * (2 * 1024 * 1024)}, zipfile.ZIP_DEFLATED
+        )
+        data = _zip_with({"inner.zip": inner})
+        file = mock_upload_file(filename="outer.zip", content=data)
+
+        with pytest.raises(ZipBombError) as exc_info:
+            await _nested_zip_validator().validate_zip_file(file)
+
+        assert type(exc_info.value) is ZipBombError
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert "inner.zip: Excessive compression ratio" in str(exc_info.value)

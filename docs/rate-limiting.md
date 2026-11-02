@@ -13,7 +13,7 @@ protects the endpoint itself.**
 | Denial of service via bulk uploads | CPU/memory/disk exhaustion | Per-IP request limits |
 | Credential-stuffing with file payloads | Account compromise | Per-user throttling |
 | Storage exhaustion | Disk full, service outage | Global upload quotas |
-| Zip bomb floods | CPU exhaustion during analysis | Combined with `ResourceMonitor` |
+| Zip bomb floods | Wall-clock time spent on analysis | Combined with `ResourceMonitor` |
 
 ## Recommended Limits
 
@@ -279,7 +279,8 @@ Client Request
 - **Application limiter**: Enforces per-user or per-endpoint
   quotas after authentication.
 - **safeuploads**: Validates file content, detects attacks,
-  enforces resource limits via `ResourceMonitor`.
+  enforces the wall-clock time and memory limits of each
+  validation via `ResourceMonitor`.
 
 See [examples/fastapi_example.py](https://github.com/endurain-project/safeuploads/blob/main/examples/fastapi_example.py)
 for a complete working example with rate limiting integrated.

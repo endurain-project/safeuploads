@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -62,6 +63,22 @@ def reset_correlation_id() -> None:
     correlation_id_var.set(None)
 
 
+def bind_correlation_id() -> tuple[str, contextvars.Token[str | None]]:
+    """
+    Bind a correlation ID for one operation, keeping a caller's ID.
+
+    Reuses the ID already set in the current context so host logs
+    and audit records share it; generates one otherwise.
+
+    Returns:
+        Tuple of the bound ID and the token that
+        ``correlation_id_var.reset`` uses to restore the previous
+        value.
+    """
+    cid = correlation_id_var.get() or uuid.uuid4().hex
+    return cid, correlation_id_var.set(cid)
+
+
 def log_extra(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -72,12 +89,12 @@ def log_extra(
         extra: Optional existing extra dict to merge into.
 
     Returns:
-        Dict with ``correlation_id`` key added.
+        Dict with the escaped ``correlation_id`` key added.
     """
     merged: dict[str, Any] = dict(extra) if extra else {}
     cid = correlation_id_var.get()
     if cid is not None:
-        merged["correlation_id"] = cid
+        merged["correlation_id"] = _sanitize_field(cid)
     return merged
 
 
@@ -137,6 +154,47 @@ class AuditEvent:
 
 _audit_logger = logging.getLogger("safeuploads.audit")
 
+_MAX_FIELD_LENGTH = 1024
+_TRUNCATION_SUFFIX = "...[truncated]"
+
+
+def _sanitize_field(value: str) -> str:
+    """
+    Make an attacker-controlled value safe to write to a log.
+
+    Protects against log injection (a newline or other control
+    character that forges a second record or hides text from a
+    reader, including bidi overrides) and against unbounded
+    record size. Control, format, surrogate, private-use,
+    unassigned and line/paragraph separator characters are
+    replaced with their ``repr()``-style escape; ordinary
+    letters, including non-ASCII ones, are kept. The result is
+    at most ``_MAX_FIELD_LENGTH`` characters and ends with
+    ``_TRUNCATION_SUFFIX`` when it was cut.
+
+    Args:
+        value: Raw filename, result, details, correlation ID or
+            source IP text.
+
+    Returns:
+        The escaped, length-bounded text.
+    """
+    # Each character yields at least one output character, so the
+    # ones past the cap can never reach the result.
+    escaped = "".join(
+        (
+            repr(char)[1:-1]
+            if unicodedata.category(char) in ("Zl", "Zp")
+            or unicodedata.category(char).startswith("C")
+            else char
+        )
+        for char in value[: _MAX_FIELD_LENGTH + 1]
+    )
+    if len(escaped) <= _MAX_FIELD_LENGTH:
+        return escaped
+    keep = _MAX_FIELD_LENGTH - len(_TRUNCATION_SUFFIX)
+    return escaped[:keep] + _TRUNCATION_SUFFIX
+
 
 class SecurityAuditLogger:
     """
@@ -164,20 +222,29 @@ class SecurityAuditLogger:
         """
         Emit an audit event as a structured log record.
 
+        The correlation ID, filename, result, details and source
+        IP are escaped and length-bounded before being logged.
+
         Args:
             event: The audit event to record.
         """
         if not self.enabled:
             return
 
+        correlation_id = _sanitize_field(event.correlation_id)
+        filename = _sanitize_field(event.filename)
+        result = _sanitize_field(event.result)
+        details = _sanitize_field(event.details)
+        source_ip = _sanitize_field(event.source_ip or "")
+
         extra = {
             "audit_event_type": event.event_type.value,
-            "audit_correlation_id": event.correlation_id,
-            "audit_filename": event.filename,
-            "audit_result": event.result,
-            "audit_details": event.details,
+            "audit_correlation_id": correlation_id,
+            "audit_filename": filename,
+            "audit_result": result,
+            "audit_details": details,
             "audit_duration_ms": event.duration_ms,
-            "audit_source_ip": event.source_ip or "",
+            "audit_source_ip": source_ip,
         }
 
         level = logging.INFO
@@ -191,10 +258,10 @@ class SecurityAuditLogger:
         _audit_logger.log(
             level,
             "[%s] %s file=%s result=%s",
-            event.correlation_id[:12],
+            correlation_id[:12],
             event.event_type.value,
-            event.filename,
-            event.result,
+            filename,
+            result,
             extra=extra,
         )
 
@@ -293,5 +360,31 @@ class SecurityAuditLogger:
                 filename=filename,
                 result="threat_detected",
                 details=threat_description,
+            )
+        )
+
+    def resource_limit(
+        self,
+        filename: str,
+        correlation_id: str,
+        duration_ms: float,
+        error: str,
+    ) -> None:
+        """
+        Log a resource limit event.
+
+        Args:
+            filename: Name of the file being validated.
+            correlation_id: Unique operation identifier.
+            duration_ms: Validation duration in milliseconds.
+            error: Short description of the exceeded limit.
+        """
+        self.log_event(
+            AuditEvent(
+                event_type=AuditEventType.RESOURCE_LIMIT,
+                correlation_id=correlation_id,
+                filename=filename,
+                result=error,
+                duration_ms=duration_ms,
             )
         )

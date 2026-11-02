@@ -5,6 +5,11 @@ Complete working example showing how to integrate safeuploads with FastAPI,
 including exception handling, custom error responses, rate limiting,
 and configuration.
 
+Running the server requires ``uvicorn``, and the upload endpoints
+require ``python-multipart``; no safeuploads extra installs either::
+
+    pip install uvicorn python-multipart
+
 Rate limiting requires ``slowapi``::
 
     pip install slowapi
@@ -12,7 +17,6 @@ Rate limiting requires ``slowapi``::
 
 from concurrent.futures import ThreadPoolExecutor
 
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
@@ -25,6 +29,7 @@ try:
 except ImportError:
     SLOWAPI_AVAILABLE = False
 
+import safeuploads
 from safeuploads import FileValidator
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
@@ -44,7 +49,7 @@ from safeuploads.exceptions import (
 app = FastAPI(
     title="SafeUploads FastAPI Example",
     description="Example API demonstrating safeuploads integration",
-    version="1.1.0",
+    version=safeuploads.__version__,
 )
 
 # Optional: configure rate limiting if slowapi is installed
@@ -139,7 +144,8 @@ async def file_validation_exception_handler(request, exc: FileValidationError):
             "error_code": exc.error_code,
         }
     else:
-        # Generic file validation error
+        # Any other FileValidationError, including XmlSecurityError and
+        # ContentThreatError
         detail = {
             "error": "validation_failed",
             "message": str(exc),
@@ -154,7 +160,7 @@ async def file_processing_exception_handler(request, exc: FileProcessingError):
     """
     Handle processing and resource errors.
 
-    XML parsing failures and resource-limit breaches derive
+    Unexpected internal errors and resource-limit breaches derive
     from FileProcessingError rather than FileValidationError,
     so they need their own handler.
     """
@@ -405,24 +411,26 @@ async def get_config():
 @app.get("/")
 async def root():
     """Root endpoint with API information."""
+    endpoints = {
+        "POST /upload/image": "Upload image with default validation",
+        "POST /upload/image/strict": "Upload image with strict validation",
+        "POST /upload/zip": "Upload and validate ZIP archive",
+        "POST /upload/zip/verified": (
+            "Upload ZIP with strict decompression verification"
+        ),
+        "POST /upload/activity": "Upload GPX/TCX/FIT activity file",
+        "POST /upload/gzip": "Upload and validate gzip archive",
+        "POST /upload/multiple": "Upload multiple files",
+        "GET /config": "View validator configurations",
+    }
+    if SLOWAPI_AVAILABLE:
+        endpoints["POST /upload/image/rate-limited"] = (
+            "Rate-limited image upload"
+        )
     return {
         "name": "SafeUploads FastAPI Example",
-        "version": "1.1.0",
-        "endpoints": {
-            "POST /upload/image": "Upload image with default validation",
-            "POST /upload/image/strict": "Upload image with strict validation",
-            "POST /upload/zip": "Upload and validate ZIP archive",
-            "POST /upload/zip/verified": (
-                "Upload ZIP with strict decompression verification"
-            ),
-            "POST /upload/activity": "Upload GPX/TCX/FIT activity file",
-            "POST /upload/gzip": "Upload and validate gzip archive",
-            "POST /upload/multiple": "Upload multiple files",
-            "POST /upload/image/rate-limited": (
-                "Rate-limited image upload (requires slowapi)"
-            ),
-            "GET /config": "View validator configurations",
-        },
+        "version": safeuploads.__version__,
+        "endpoints": endpoints,
     }
 
 
@@ -452,6 +460,8 @@ if SLOWAPI_AVAILABLE:
 
 
 if __name__ == "__main__":
+    import uvicorn
+
     print("Starting SafeUploads FastAPI Example Server...")
     print("API Documentation: http://localhost:8000/docs")
     print("Example endpoints:")

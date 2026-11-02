@@ -49,6 +49,10 @@ class FileSecurityConfigurationError(Exception):
             f"Configuration validation failed: {'; '.join(error_messages)}"
         )
 
+    def __reduce__(self) -> tuple[type, tuple[list[ConfigValidationError]]]:
+        """Rebuild from ``errors`` so pickling round-trips."""
+        return (type(self), (self.errors,))
+
 
 # ============================================================================
 # Error Codes
@@ -70,10 +74,8 @@ class ErrorCode(StrEnum):
     # Filename validation errors
     FILENAME_EMPTY = "FILENAME_EMPTY"
     FILENAME_INVALID = "FILENAME_INVALID"
-    FILENAME_TOO_LONG = "FILENAME_TOO_LONG"
 
     # Unicode security errors
-    UNICODE_SECURITY = "UNICODE_SECURITY"
     UNICODE_DANGEROUS_CHARS = "UNICODE_DANGEROUS_CHARS"
     UNICODE_NORMALIZATION_ERROR = "UNICODE_NORMALIZATION_ERROR"
 
@@ -89,7 +91,6 @@ class ErrorCode(StrEnum):
     # File size errors
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
     FILE_EMPTY = "FILE_EMPTY"
-    FILE_SIZE_UNKNOWN = "FILE_SIZE_UNKNOWN"
 
     # MIME type errors
     MIME_TYPE_INVALID = "MIME_TYPE_INVALID"
@@ -97,9 +98,16 @@ class ErrorCode(StrEnum):
     MIME_DETECTION_FAILED = "MIME_DETECTION_FAILED"
 
     # File signature errors
-    FILE_SIGNATURE_INVALID = "FILE_SIGNATURE_INVALID"
     FILE_SIGNATURE_MISSING = "FILE_SIGNATURE_MISSING"
     FILE_SIGNATURE_MISMATCH = "FILE_SIGNATURE_MISMATCH"
+    FIT_INVALID_STRUCTURE = "FIT_INVALID_STRUCTURE"
+
+    # XML security errors
+    XML_DTD_FORBIDDEN = "XML_DTD_FORBIDDEN"
+    XML_MALFORMED = "XML_MALFORMED"
+
+    # Content analysis errors
+    CONTENT_THREAT_DETECTED = "CONTENT_THREAT_DETECTED"
 
     # Compression and ZIP errors
     ZIP_BOMB_DETECTED = "ZIP_BOMB_DETECTED"
@@ -123,10 +131,9 @@ class ErrorCode(StrEnum):
     RESOURCE_TIME_EXCEEDED = "RESOURCE_TIME_EXCEEDED"
     RESOURCE_MEMORY_EXCEEDED = "RESOURCE_MEMORY_EXCEEDED"
 
-    # Processing errors
+    # Generic and processing errors
+    VALIDATION_FAILED = "VALIDATION_FAILED"
     PROCESSING_ERROR = "PROCESSING_ERROR"
-    IO_ERROR = "IO_ERROR"
-    MEMORY_ERROR = "MEMORY_ERROR"
 
 
 # ============================================================================
@@ -140,7 +147,8 @@ class FileSecurityError(Exception):
 
     Args:
         message: Human-readable error description.
-        error_code: Optional machine-readable error code.
+        error_code: Optional machine-readable error code (defaults
+            to PROCESSING_ERROR).
 
     Attributes:
         message: Human-readable error message.
@@ -150,7 +158,7 @@ class FileSecurityError(Exception):
     def __init__(self, message: str, error_code: str | None = None):
         """Initialize with message and error code."""
         self.message = message
-        self.error_code = error_code
+        self.error_code = error_code or ErrorCode.PROCESSING_ERROR
         super().__init__(message)
 
 
@@ -166,7 +174,8 @@ class FileValidationError(FileSecurityError):
     Args:
         message: Human-readable error description.
         filename: Optional name of the file that failed validation.
-        error_code: Optional machine-readable error code.
+        error_code: Optional machine-readable error code (defaults
+            to VALIDATION_FAILED).
 
     Attributes:
         filename: Name of the file that failed validation.
@@ -180,7 +189,7 @@ class FileValidationError(FileSecurityError):
     ):
         """Initialize with message and filename."""
         self.filename = filename
-        super().__init__(message, error_code)
+        super().__init__(message, error_code or ErrorCode.VALIDATION_FAILED)
 
 
 # ============================================================================
@@ -189,7 +198,24 @@ class FileValidationError(FileSecurityError):
 
 
 class FilenameSecurityError(FileValidationError):
-    """Filename failed security checks."""
+    """
+    Filename failed security checks.
+
+    The error code defaults to FILENAME_INVALID.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with message and filename."""
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.FILENAME_INVALID,
+        )
 
 
 class UnicodeSecurityError(FilenameSecurityError):
@@ -397,14 +423,25 @@ class CompressionSecurityError(FileValidationError):
     """
     Compressed file security check failed.
 
-    Inherits the constructor of ``FileValidationError``.
-
     Args:
         message: Human-readable error description.
         filename: Optional filename of compressed file.
         error_code: Optional machine-readable error code
-            (defaults to None).
+            (defaults to ZIP_INVALID_STRUCTURE).
     """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with message and filename."""
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.ZIP_INVALID_STRUCTURE,
+        )
 
 
 class ZipBombError(CompressionSecurityError):
@@ -481,6 +518,71 @@ class ZipContentError(CompressionSecurityError):
         )
 
 
+# ============================================================================
+# Content Analysis and XML Exceptions
+# ============================================================================
+
+
+class XmlSecurityError(FileValidationError):
+    """
+    XML document is forbidden, unsafe or malformed.
+
+    Args:
+        message: Human-readable error description.
+        filename: Optional name of the file with the XML problem.
+        error_code: Optional error code (defaults to XML_MALFORMED).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with message and filename."""
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.XML_MALFORMED,
+        )
+
+
+class ContentThreatError(FileValidationError):
+    """
+    Content analysis found threats in the file.
+
+    Args:
+        message: Human-readable error description.
+        filename: Optional name of the file with the threats.
+        threats: Optional list of detected threat descriptions.
+        error_code: Optional error code (defaults to
+            CONTENT_THREAT_DETECTED).
+
+    Attributes:
+        threats: List of detected threat descriptions.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        threats: list[str] | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with threat details."""
+        self.threats = threats or []
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.CONTENT_THREAT_DETECTED,
+        )
+
+
+# ============================================================================
+# Processing Exceptions
+# ============================================================================
+
+
 class FileProcessingError(FileSecurityError):
     """
     Unexpected processing error during file validation.
@@ -510,10 +612,12 @@ class ResourceLimitError(FileProcessingError):
 
     Args:
         message: Human-readable error description.
-        error_code: Machine-readable error code.
-        elapsed_seconds: Optional wall-clock time consumed.
-        memory_bytes: Optional peak memory consumed in bytes.
-        original_error: Optional original exception.
+        error_code: Machine-readable error code (keyword-only).
+        elapsed_seconds: Optional wall-clock time consumed
+            (keyword-only).
+        memory_bytes: Optional peak memory consumed in bytes
+            (keyword-only).
+        original_error: Optional original exception (keyword-only).
 
     Attributes:
         elapsed_seconds: Wall-clock seconds consumed.
@@ -523,6 +627,7 @@ class ResourceLimitError(FileProcessingError):
     def __init__(
         self,
         message: str,
+        *,
         error_code: str = ErrorCode.RESOURCE_LIMIT_EXCEEDED,
         elapsed_seconds: float | None = None,
         memory_bytes: int | None = None,

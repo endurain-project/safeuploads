@@ -2517,12 +2517,16 @@ class TestNestedArchivesCheckedPerLevel:
         """
         A four-level chain does not hold every level in memory.
 
-        Each level stores about 1 MiB; with a small spool buffer
+        Each level stores about 4 MiB; with a small spool buffer
         the peak stays well below a single level, where reading
         each inner archive into memory would hold all of them.
+        The spooled files that are open at each level keep I/O
+        buffers whose size depends on the Python version (about
+        128 KiB each on 3.14 and later), so a level must be large
+        enough for them to stay far below half of it.
         """
         payload = b"DATA" + b"".join(
-            hashlib.sha256(i.to_bytes(4)).digest() for i in range(32768)
+            hashlib.sha256(i.to_bytes(4)).digest() for i in range(131072)
         )
         level = _build_zip({"data.dat": payload})
         for depth in (3, 2, 1):

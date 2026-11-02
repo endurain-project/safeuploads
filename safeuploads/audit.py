@@ -179,6 +179,8 @@ def _sanitize_field(value: str) -> str:
     Returns:
         The escaped, length-bounded text.
     """
+    # Each character yields at least one output character, so the
+    # ones past the cap can never reach the result.
     escaped = "".join(
         (
             repr(char)[1:-1]
@@ -186,7 +188,7 @@ def _sanitize_field(value: str) -> str:
             or unicodedata.category(char).startswith("C")
             else char
         )
-        for char in value
+        for char in value[: _MAX_FIELD_LENGTH + 1]
     )
     if len(escaped) <= _MAX_FIELD_LENGTH:
         return escaped

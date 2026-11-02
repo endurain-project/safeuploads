@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import unicodedata
 
 import pytest
 
@@ -9,6 +10,7 @@ from safeuploads.audit import (
     AuditEvent,
     AuditEventType,
     SecurityAuditLogger,
+    _sanitize_field,
     get_correlation_id,
     reset_correlation_id,
     set_correlation_id,
@@ -600,6 +602,29 @@ class TestAuditLogInjection:
         """Oversized threat details cannot flood the record."""
         record = _log_one(caplog, details="x" * 1_000_000)
         assert len(record.audit_details) == 1024
+
+    def test_only_the_kept_prefix_is_examined(self, monkeypatch):
+        """Characters past the cap are never classified, same result."""
+        value = "a\n" * 600 + "\u202e" * 100_000
+        escaped = "".join(
+            repr(char)[1:-1]
+            if unicodedata.category(char) in ("Zl", "Zp")
+            or unicodedata.category(char).startswith("C")
+            else char
+            for char in value
+        )
+        expected = escaped[: 1024 - len("...[truncated]")] + "...[truncated]"
+
+        examined = []
+        real_category = unicodedata.category
+
+        def counting_category(char):
+            examined.append(char)
+            return real_category(char)
+
+        monkeypatch.setattr(unicodedata, "category", counting_category)
+        assert _sanitize_field(value) == expected
+        assert len(examined) <= 2 * 1025
 
 
 class TestAuditLogInjectionEndToEnd:

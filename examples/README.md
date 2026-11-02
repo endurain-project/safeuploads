@@ -13,7 +13,7 @@ This directory contains a working example demonstrating how to integrate `safeup
 The example requires Python 3.13+ and the `safeuploads` library with FastAPI:
 
 ```bash
-pip install safeuploads[fastapi]
+pip install safeuploads[fastapi] python-multipart uvicorn
 ```
 
 ## Running the Example
@@ -246,10 +246,10 @@ general_validator = FileValidator()  # Default config
 
 ### "Import could not be resolved" errors
 
-`uvicorn` is not installed by any safeuploads extra. Install it separately to run the FastAPI example:
+`uvicorn` and `python-multipart` are not installed by any safeuploads extra. FastAPI needs `python-multipart` for endpoints that take an `UploadFile`, and `uvicorn` runs the server. Install both separately to run the FastAPI example:
 
 ```bash
-pip install uvicorn
+pip install uvicorn python-multipart
 ```
 
 ### python-magic errors

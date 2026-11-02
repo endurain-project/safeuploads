@@ -5,10 +5,10 @@ Complete working example showing how to integrate safeuploads with FastAPI,
 including exception handling, custom error responses, rate limiting,
 and configuration.
 
-Running the server requires ``uvicorn``, which no safeuploads extra
-installs::
+Running the server requires ``uvicorn``, and the upload endpoints
+require ``python-multipart``; no safeuploads extra installs either::
 
-    pip install uvicorn
+    pip install uvicorn python-multipart
 
 Rate limiting requires ``slowapi``::
 

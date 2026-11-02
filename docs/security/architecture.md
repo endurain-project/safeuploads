@@ -368,9 +368,10 @@ Exception
         └── ResourceLimitError
 ```
 
-All exceptions carry an `error_code` from `ErrorCode` for
-machine-readable classification. When none is passed, the
-default is:
+All `FileSecurityError` subclasses carry an `error_code` from
+`ErrorCode` for machine-readable classification.
+`FileSecurityConfigurationError` is separate and exposes its
+`errors` list instead. When no code is passed, the default is:
 
 | Exception | Default `ErrorCode` |
 |---|---|

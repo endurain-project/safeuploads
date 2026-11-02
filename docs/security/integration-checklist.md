@@ -129,10 +129,12 @@ that addresses it.
 
 - [ ] Container or process memory limits set — safeuploads
   `max_validation_memory_mb` should be below the container
-  limit. The monitor measures the process-wide peak RSS, so
-  other work in the same process can also trip it; on Windows
-  memory accounting is disabled and only the time limit
-  applies.
+  limit. The monitor measures the increase in process-wide peak
+  RSS, so it cannot bound validation memory by itself (an
+  earlier, higher peak hides later allocations) and other work in
+  the same process can also trip it; the container limit stays
+  the hard bound. On Windows memory accounting is disabled and
+  only the time limit applies.
 - [ ] Both limits are checked at loop boundaries (upload
   streaming, ZIP entry loops, gzip decompression, each XML
   chunk) and on exit; a single blocking call, such as one
@@ -157,9 +159,10 @@ that addresses it.
 - [ ] `defusedxml` and `python-magic` dependencies kept
   up to date.
 - [ ] `libmagic` system library installed and up to date
-  on the deployment target. Without it every upload is rejected
-  with `MIME_DETECTION_FAILED`; there is no extension-based
-  fallback.
+  on the deployment target. Without it `import safeuploads`
+  fails with `ImportError`. If the detector fails to initialize,
+  every upload is rejected with `MIME_DETECTION_FAILED`; there is
+  no extension-based fallback.
 
 ## Testing
 

@@ -118,8 +118,9 @@ class ResourceMonitor:
     boundaries of long-running work; they are checked again on
     exit. A single blocking call, such as one ``zipfile`` parse,
     is not interrupted mid-call. Memory is the process-wide peak
-    RSS (``ru_maxrss``), a high-water mark, so the delta is a
-    coarse upper bound that concurrent work can also trip.
+    RSS (``ru_maxrss``), a high-water mark, so the delta is not an
+    upper bound: an earlier, higher peak hides later allocations,
+    and concurrent work can also trip it.
 
     Attributes:
         max_time_seconds: Maximum allowed wall-clock seconds.
@@ -211,8 +212,8 @@ class ResourceMonitor:
         """
         Check peak memory growth mid-operation.
 
-        Uses the process peak RSS high-water mark, so it is a
-        coarse upper bound.
+        Uses the process peak RSS high-water mark, so an earlier,
+        higher peak hides later growth.
 
         Raises:
             ResourceLimitError: If peak-RSS growth since context

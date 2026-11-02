@@ -350,11 +350,14 @@ extension.
 
 - `python-magic` detects the actual MIME type from file content
   (first 8 KB).
-- Detection never falls back to the filename extension. If
-  libmagic cannot be initialized, `FileValidator` still
+- Detection never falls back to the filename extension. If the
+  libmagic detector cannot be initialized, `FileValidator` still
   constructs, logs an error and rejects every upload with
   `MimeTypeError` (`MIME_DETECTION_FAILED`). A libmagic failure
-  or an empty result for a file is rejected the same way.
+  or an empty result for a file is rejected the same way. If the
+  libmagic library itself is missing, `python-magic` raises
+  `ImportError` when `safeuploads` is imported, so nothing is
+  validated.
 - The detected MIME type is validated against the allowlist for
   the file type being validated.
 - File signatures (magic bytes) are verified independently of
@@ -470,10 +473,12 @@ significantly during validation consumes all available memory.
   spilling to disk for larger files.
 - `ResourceMonitor` tracks the process peak RSS
   (`resource.getrusage()` `ru_maxrss`, a high-water mark) and
-  enforces `max_validation_memory_mb` (default 512 MB) as growth
-  since the monitor started. The figure is a coarse upper
-  bound that concurrent work in the same process can also trip;
-  on Windows memory accounting is disabled.
+  enforces `max_validation_memory_mb` (default 512 MB) as the
+  increase in process peak RSS since the monitor started. This
+  is not an upper bound for validation memory: an earlier, higher
+  process peak hides later allocations. Concurrent work in the
+  same process can also trip the limit; on Windows memory
+  accounting is disabled.
 - The limit is checked at loop boundaries (upload streaming, ZIP
   entry loops, gzip decompression, each XML chunk) and on exit,
   and raises `ResourceLimitError` with
@@ -583,6 +588,8 @@ bypass attempts.
   without exposing implementation details.
 - Application code controls what error text reaches the client
   by catching specific exception types.
-- Every exception has a default `ErrorCode`, so a host can
-  always read `error_code`.
+- Every `FileSecurityError` subclass has a default `ErrorCode`,
+  so a host can always read `error_code` on the library's
+  exceptions. `FileSecurityConfigurationError` is not one of
+  them and exposes its `errors` instead.
 

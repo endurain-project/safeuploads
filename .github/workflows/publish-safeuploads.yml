@@ -70,6 +70,11 @@ jobs:
             exit 1
           fi
 
+      # python-magic needs the libmagic shared library at import time; install it
+      # explicitly instead of relying on the runner image, as the test workflows do.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic1
+
       # The full gate runs on every PR, but a tag can point anywhere in history,
       # so re-run it here: a release must never ship code that does not pass.
       - name: Sync dependencies

@@ -1507,7 +1507,7 @@ class TestUnreadableEntriesFailClosed:
 class TestNestedArchiveSignatures:
     """Nested archives are detected by magic bytes, not only by name."""
 
-    @pytest.mark.parametrize("name", ["inner.dat", "report.docx", "inner.jar"])
+    @pytest.mark.parametrize("name", ["inner.dat", "report.docx"])
     def test_inner_zip_under_any_name_rejected(self, default_config, name):
         """A real ZIP is rejected regardless of its entry name."""
         data = _build_zip({name: _build_zip({"a.txt": b"x"})})
@@ -1516,6 +1516,19 @@ class TestNestedArchiveSignatures:
             default_config,
             "Nested archive detected",
             ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    def test_inner_jar_rejected_by_name_and_content(self, default_config):
+        """A JAR entry fails the blocked-extension and signature checks."""
+        data = _build_zip({"inner.jar": _build_zip({"a.txt": b"x"})})
+        inspector = ZipContentInspector(default_config)
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(io.BytesIO(data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Unsafe file name 'inner.jar'" in exc_info.value.threats[0]
+        assert any(
+            "Nested archive detected" in threat
+            for threat in exc_info.value.threats
         )
 
     def test_gzip_content_rejected(self, default_config):
@@ -1646,6 +1659,106 @@ class TestDangerousEntryExtensions:
             _build_zip({"run.bat": b"hello"}),
             config,
             "Dangerous file type detected",
+        )
+
+
+class _ExtraBlockedConfig(FileSecurityConfig):
+    """Configuration that blocks one extra extension."""
+
+    BLOCKED_EXTENSIONS = FileSecurityConfig.BLOCKED_EXTENSIONS | {".xyz"}
+
+
+class TestEntryNamesGetFilenameChecks:
+    """Entry names get the checks applied to a top-level filename."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # Blocked extensions outside the ZIP threat categories
+            "invoice.docm",
+            "budget.xlsm",
+            "a.hta",
+            "INVOICE.DOCM",
+            "dir/sub/invoice.docm",
+            # Trailing dots and spaces dropped by Windows extractors
+            "invoice.docm.",
+            "invoice.docm ",
+            # Inner and compound extensions
+            "invoice.docm.txt",
+            "theme.min.css",
+            # Fullwidth compatibility characters
+            "invoice.\uff44\uff4f\uff43\uff4d",
+            # Spaces that NFKC folds to a trailing ASCII space
+            "invoice.docm\u3000",
+            "invoice.docm\u00a0",
+            # Dangerous Unicode anywhere in the path
+            "photo\u202egpj.pdf",
+            "dir\u202e/notes.txt",
+            "a\u200bb.txt",
+            # NFKC hides a path separator
+            "x\uff0fy.txt",
+            # Windows reserved names in any path component
+            "CON.txt",
+            "dir/nul.csv",
+            "CON/notes.txt",
+            "CON/",
+            "aux.tar.txt",
+            "\uff23\uff2f\uff2e.txt",
+        ],
+    )
+    def test_unsafe_name_rejected(self, default_config, name):
+        """A name rejected at the top level is rejected as an entry."""
+        _assert_threat(
+            _build_zip({name: b"hello world"}),
+            default_config,
+            "Unsafe file name",
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "report.docx",
+            "R\u00e9sum\u00e9.pdf",
+            "data/console.txt",
+            "con_notes.txt",
+            "photos/2024/beach.jpg",
+            "docs/",
+        ],
+    )
+    def test_safe_name_accepted(self, default_config, name):
+        """Ordinary names, paths and directories are accepted."""
+        inspector = ZipContentInspector(default_config)
+        inspector.inspect_zip_content(
+            io.BytesIO(_build_zip({name: b"hello world"}))
+        )
+
+    def test_unicode_escaped_in_message(self, default_config):
+        """The bidi override is escaped in the error message."""
+        inspector = ZipContentInspector(default_config)
+        with pytest.raises(ZipContentError) as exc_info:
+            inspector.inspect_zip_content(
+                io.BytesIO(_build_zip({"photo\u202egpj.pdf": b"hi"}))
+            )
+        assert "\u202e" not in str(exc_info.value)
+        assert "\\u202e" in str(exc_info.value)
+
+    def test_config_blocked_extension_rejected(self):
+        """Entries follow a configuration's extended block-list."""
+        data = _build_zip({"notes.xyz": b"hello"})
+        ZipContentInspector(FileSecurityConfig()).inspect_zip_content(
+            io.BytesIO(data)
+        )
+        _assert_threat(data, _ExtraBlockedConfig(), "Unsafe file name")
+
+    def test_checked_in_nested_archive(self):
+        """Entry names of a nested archive are checked as well."""
+        inner = _build_zip({"invoice.docm": b"hello"})
+        data = _build_zip({"inner.zip": inner})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "Unsafe file name",
         )
 
 

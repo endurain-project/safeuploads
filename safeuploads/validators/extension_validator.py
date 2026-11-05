@@ -46,6 +46,10 @@ class ExtensionSecurityValidator(BaseValidator):
         """
         Validate filename against blocked extensions.
 
+        Trailing dots and spaces are ignored, because Windows drops
+        them when it saves a file, so ``run.exe .`` is checked as
+        ``run.exe``.
+
         Args:
             filename: Name of the file to validate.
 
@@ -53,10 +57,10 @@ class ExtensionSecurityValidator(BaseValidator):
             ExtensionSecurityError: If blocked compound or single
                 extension detected in filename.
         """
+        filename_lower = filename.rstrip(". ").lower()
+        logger.debug("Validating extensions in filename")
         # Check for compound dangerous extensions first
         # (e.g., .tar.xz, .user.js)
-        filename_lower = filename.lower()
-        logger.debug("Validating extensions in filename")
         for compound_ext in self._compound_blocked:
             if filename_lower.endswith(compound_ext):
                 logger.warning(
@@ -80,10 +84,10 @@ class ExtensionSecurityValidator(BaseValidator):
                 )
 
         # Check ALL extensions in the filename for dangerous ones
-        parts = filename.split(".")
+        parts = filename_lower.split(".")
         if len(parts) > 1:
             for i in range(1, len(parts)):
-                ext = f".{parts[i].lower()}"
+                ext = f".{parts[i]}"
                 if ext in self._blocked:
                     logger.warning(
                         "Dangerous extension detected",

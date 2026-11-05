@@ -1,7 +1,7 @@
 # Code standards
 
 ## Python
-- Python 3.13 syntax (`requires-python = ">=3.13"`): `int | None`, `list[str]`, `dict[str, Any]`; no `typing.Optional/List/Dict`.
+- Python 3.11 syntax and standard library (`requires-python = ">=3.11"`): `int | None`, `list[str]`, `dict[str, Any]`; no `typing.Optional/List/Dict`, and no 3.12+ features such as PEP 695 type parameters, `type` aliases or `typing.override`. The 3.11 CI job is the check.
 - Lines up to 79 characters, enforced by `ruff format` (`line-length = 79`); keep comments and docstrings within it too.
 - Imports grouped stdlib / third-party / local; `TYPE_CHECKING` to avoid cycles.
 - Every module has a top-level docstring.

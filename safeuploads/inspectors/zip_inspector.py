@@ -20,6 +20,7 @@ from ..enums import (
 from ..exceptions import (
     CompressionSecurityError,
     ErrorCode,
+    FilenameSecurityError,
     FileProcessingError,
     ResourceLimitError,
     ZipBombError,
@@ -35,6 +36,9 @@ from ..validators.compression_validator import (
     ZIP_PARSE_ERRORS,
     CompressionSecurityValidator,
 )
+from ..validators.extension_validator import ExtensionSecurityValidator
+from ..validators.unicode_validator import UnicodeSecurityValidator
+from ..validators.windows_validator import WindowsSecurityValidator
 from .base import BaseInspector
 
 if TYPE_CHECKING:
@@ -127,6 +131,10 @@ class ZipContentInspector(BaseInspector):
         # Nested archives get the same compression checks as the
         # top-level archive
         self._compression = CompressionSecurityValidator(config)
+        # Entry names get the filename checks a top-level upload gets
+        self._unicode = UnicodeSecurityValidator(config)
+        self._windows = WindowsSecurityValidator(config)
+        self._extensions = ExtensionSecurityValidator(config)
 
     def inspect_zip_content(self, file_obj: SeekableFile) -> None:
         """
@@ -278,8 +286,9 @@ class ZipContentInspector(BaseInspector):
 
         Checks the raw name for null bytes, then the name for traversal,
         absolute paths, symlinks, length limits, suspicious patterns,
-        nested archive extensions and dangerous file extensions. The
-        content is inspected when ``scan_zip_content`` is enabled.
+        nested archive extensions, the top-level filename checks and
+        dangerous file extensions. The content is inspected when
+        ``scan_zip_content`` is enabled.
 
         Args:
             entry: ZIP entry metadata.
@@ -367,13 +376,16 @@ class ZipContentInspector(BaseInspector):
                 )
             )
 
-        # 9. Check for executable, script and system file extensions
+        # 9. Check the name as a top-level filename is checked
+        threats.extend(self._check_entry_name(entry))
+
+        # 10. Check for executable, script and system file extensions
         if self._extension(filename) in self._dangerous_exts:
             threats.append(
                 _content_threat(f"Dangerous file type detected: '{filename}'")
             )
 
-        # 10. Check file content if enabled
+        # 11. Check file content if enabled
         # Only first 512 bytes are read, so no size gate needed
         if self.config.limits.scan_zip_content and not entry.is_dir():
             content_threats = self._inspect_entry_content(entry, zip_file)
@@ -526,6 +538,46 @@ class ZipContentInspector(BaseInspector):
             True if nested archive detected.
         """
         return self._extension(filename) in self._nested_archive_exts
+
+    def _check_entry_name(self, entry: zipfile.ZipInfo) -> list[_Threat]:
+        """
+        Apply the top-level filename checks to an entry name.
+
+        The whole name gets the Unicode checks, every path component
+        the Windows reserved-name check and a file's base name the
+        blocked and compound extension checks, all driven by the
+        configuration. Name checks run on the NFC name and on its NFKC
+        form; both validators ignore the trailing dots and spaces that
+        Windows drops on extraction.
+
+        Args:
+            entry: ZIP entry whose name is checked.
+
+        Returns:
+            One threat if the name fails a check, otherwise none.
+        """
+        try:
+            name = self._unicode.validate_unicode_security(entry.filename)
+            self._unicode.compatibility_form(name)
+            components = name.replace("\\", "/").split("/")
+            for component in components:
+                for form in (
+                    component,
+                    self._unicode.compatibility_form(component),
+                ):
+                    self._windows.validate_windows_reserved_names(form)
+            if not entry.is_dir():
+                base = components[-1]
+                for form in (base, self._unicode.compatibility_form(base)):
+                    self._extensions.validate_extensions(form)
+        except FilenameSecurityError as err:
+            # repr escapes control and bidi characters in the message
+            return [
+                _content_threat(
+                    f"Unsafe file name {entry.filename!r}: {err.message}"
+                )
+            ]
+        return []
 
     @staticmethod
     def _extension(filename: str) -> str:

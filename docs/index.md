@@ -12,7 +12,7 @@
     </a>
 </div>
 
-Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
+Secure file upload validation for Python 3.11+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 
 ## Features
 

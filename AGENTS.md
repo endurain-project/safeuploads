@@ -1,6 +1,6 @@
 # safeuploads
 
-Secure file upload validation for Python 3.13+ applications.
+Secure file upload validation for Python 3.11+ applications.
 Catches dangerous filenames, malicious extensions, Windows reserved names, compression bombs, polyglots and unsafe XML before an upload is accepted.
 Runtime dependencies are minimal (`python-magic`, `defusedxml`; FastAPI behind the `fastapi` extra).
 Published to PyPI; the public API is governed by SemVer.
@@ -33,7 +33,7 @@ docs/           Documentation site (mkdocs)
 
 ## Commands
 
-From the repository root (Python 3.13+, `uv`, system `libmagic`):
+From the repository root (Python 3.11+, `uv`, system `libmagic`):
 
 ```bash
 uv sync --dev --extra fastapi
@@ -97,4 +97,4 @@ uv run pytest
 - Never build a filesystem path from an uploaded filename.
 - Logging uses `logging.getLogger(__name__)` and the `SecurityAuditLogger`; never log file contents.
 - Comments and docstrings state what the code does now, not what it used to do.
-- Python 3.13 syntax, 79-character lines (`pyproject.toml`), PEP 257 docstrings with `Args`, `Returns`, `Raises` where applicable.
+- Python 3.11 syntax and standard library (no 3.12+ features), 79-character lines (`pyproject.toml`), PEP 257 docstrings with `Args`, `Returns`, `Raises` where applicable.

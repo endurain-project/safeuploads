@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-05
+
+### Added
+
+- Support for Python 3.11 and 3.12; `requires-python` is now `>=3.11` and CI tests 3.11 to 3.15. A Python version stays supported until its CPython end of life and is dropped in the next minor release after that. The Unicode checks use the running Python's Unicode database, so a character assigned after that database's version is rejected as unassigned (for example U+1FAE8 on 3.11).
+
+### Removed
+
+- **Breaking:** the `ConfigValidationError` alias, deprecated in 2.2.0, is removed from `safeuploads` and `safeuploads.exceptions`. Use `ConfigValidationIssue`.
+
+### Security
+
+- ZIP entry names now get the filename checks a top-level upload gets ([GHSA-jjqv-c38c-fjf3](https://github.com/endurain-project/safeuploads/security/advisories/GHSA-jjqv-c38c-fjf3)). `ZipContentInspector` checked entries only against `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES` and `SYSTEM_FILES`, so an entry such as `invoice.docm`, `a.hta`, `CON.txt` or a name with a right-to-left override was accepted although the same name is rejected as an upload. Each entry name is now checked against `DANGEROUS_UNICODE_CHARS` and the rejected Unicode categories, each path component against `WINDOWS_RESERVED_NAMES`, and a file's base name against `BLOCKED_EXTENSIONS` and `COMPOUND_BLOCKED_EXTENSIONS`, on the NFC and NFKC forms, all taken from `FileSecurityConfig`. A failing entry raises `ZipContentError` with `ZIP_CONTENT_THREAT`.
+- The blocked-extension check ignores trailing dots and spaces, as Windows drops them when it saves a file. A filename such as `run.exe ` or `invoice.docm` followed by U+3000 or U+00A0 (which NFKC folds to a space) was accepted as an upload or a ZIP entry; it is now rejected with `EXTENSION_BLOCKED`.
+
+### Changed
+
+- **Breaking:** the ZIP entry name checks under Security reject archives that 2.2.0 accepted under the default configuration, for example archives with `.docm`, `.xlsm`, `.hta`, `.min.css` or `CON.txt` entries. Uploads and entries whose name ends in a blocked extension followed by spaces, such as `run.exe `, are rejected as well. An entry named `.jar`, `.war` or `.ear` whose content is a ZIP now reports `ZIP_CONTENT_THREAT` first instead of `ZIP_NESTED_ARCHIVE`.
+
 ## [2.2.0] - 2026-11-05
 
 ### Added
@@ -223,6 +242,8 @@ Initial release.
 - **MIME type verification:** magic-number validation for common file types.
 - Framework-agnostic async validation, a rich exception hierarchy with machine-readable error codes, secure defaults, and full type hints.
 
+[3.0.0]: https://github.com/endurain-project/safeuploads/compare/v2.2.0...v3.0.0
+[2.2.0]: https://github.com/endurain-project/safeuploads/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/endurain-project/safeuploads/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/endurain-project/safeuploads/compare/v1.1.3...v2.0.0
 [1.1.3]: https://github.com/endurain-project/safeuploads/compare/v1.1.2...v1.1.3

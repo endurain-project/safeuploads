@@ -72,7 +72,7 @@ PRs that are too large to review efficiently will be asked to be split before th
    docs: update the integration checklist
    ```
    Commit subjects and PR titles are validated in CI; see `.agents/skills/conventional-commits/SKILL.md` for the allowed types and scopes.
-5. **Run the checks** from the repository root (Python 3.13+, [uv](https://docs.astral.sh/uv/) and the system `libmagic`):
+5. **Run the checks** from the repository root (Python 3.11+, [uv](https://docs.astral.sh/uv/) and the system `libmagic`):
    ```bash
    uv sync --dev --extra fastapi
    uv run ruff check safeuploads tests examples

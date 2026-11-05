@@ -4,11 +4,11 @@
 [![Release](https://img.shields.io/github/v/release/endurain-project/safeuploads?label=release&color=blue)](https://github.com/endurain-project/safeuploads/releases)
 [![PyPI version](https://img.shields.io/pypi/v/safeuploads)](https://pypi.org/project/safeuploads/)
 [![PyPI downloads](https://img.shields.io/pypi/dm/safeuploads)](https://pypi.org/project/safeuploads/)
-[![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://pypi.org/project/safeuploads/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/safeuploads/)
 [![Docs](https://img.shields.io/badge/docs-safeuploads.endurain.com-blue)](https://safeuploads.endurain.com/)
 [![Stars](https://img.shields.io/github/stars/endurain-project/safeuploads?label=stars&logo=github)](https://github.com/endurain-project/safeuploads)
 
-Secure file upload validation for Python 3.13+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
+Secure file upload validation for Python 3.11+ applications. Catches dangerous filenames, malicious extensions, Windows reserved names, and compression-based attacks before you accept an upload.
 
 ## Features
 
@@ -31,6 +31,8 @@ Secure file upload validation for Python 3.13+ applications. Catches dangerous f
 ```bash
 pip install safeuploads
 ```
+
+safeuploads supports Python 3.11 and newer. A Python version stays supported until its CPython end of life and is dropped in the next minor release after that.
 
 For FastAPI integration:
 ```bash

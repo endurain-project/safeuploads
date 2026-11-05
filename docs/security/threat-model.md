@@ -59,6 +59,11 @@ is `.exe`.
   rejected with `UnicodeSecurityError`; none is stripped. A
   filename containing an emoji ZWJ sequence is therefore
   rejected.
+- Categories come from the running Python's Unicode database
+  (14.0 on Python 3.11, 15.0 on 3.12, 15.1 on 3.13), so a
+  character assigned in a later Unicode version is unassigned
+  (Cn) and rejected on an older Python. Older versions only
+  reject more.
 - The Windows reserved-name and extension checks run on the NFC
   name and on its NFKC form, so fullwidth letters or
   superscript digits cannot disguise `CON`, `COM1` or `.php`.
@@ -99,6 +104,11 @@ improperly.
   files, drivers, themes, and help files.
 - Compound extensions (`.tar.gz`, `.user.js`, `.min.css`) are
   checked via `CompoundExtensionCategory`.
+- Trailing dots and spaces are ignored by the blocked-extension
+  check, because Windows drops them when it saves a file. The
+  check also runs on the NFKC form, so `run.exe ` or
+  `invoice.docm` followed by U+3000 (an ideographic space that
+  NFKC folds to a space) is rejected.
 - Allowed extensions are validated against a configurable
   allowlist per file type.
 
@@ -285,6 +295,32 @@ outside the extraction directory (Zip Slip).
   bypasses (CWE-158). Python's `zipfile` truncates `filename`
   at the first NUL, so the raw name is needed.
 
+### Spoofed or Blocked Entry Names (CWE-184, CWE-434)
+
+**Attack:** A file refused as a standalone upload (a
+macro-enabled Office document, an `.hta`, a name with a
+right-to-left override, `CON.txt`) is wrapped in a ZIP so that a
+host extracting or listing the entries stores it anyway.
+
+**Mitigations:**
+
+- Every entry name gets the filename checks a top-level upload
+  gets, driven by the same `FileSecurityConfig` fields, so a
+  configuration that extends a list covers entries too:
+  - the whole name is checked against `DANGEROUS_UNICODE_CHARS`
+    and the rejected Unicode categories, and its NFKC form must
+    not introduce a path separator or `..`;
+  - every path component is checked against
+    `WINDOWS_RESERVED_NAMES`;
+  - a file's base name is checked against `BLOCKED_EXTENSIONS`
+    (every extension in the name) and
+    `COMPOUND_BLOCKED_EXTENSIONS`.
+- The reserved-name and extension checks run on the NFC name and
+  its NFKC form, after stripping trailing dots and spaces that
+  Windows drops on extraction.
+- A failing name is reported as `ZIP_CONTENT_THREAT`; the message
+  shows the name with control and bidi characters escaped.
+
 ### Executable Content in ZIP
 
 **Attack:** Executables, scripts, system files, or shortcuts
@@ -292,10 +328,11 @@ hidden inside ZIP archives.
 
 **Mitigations:**
 
-- The entry's final extension, after stripping trailing dots
-  and spaces, is checked against
-  `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`, and
-  `SYSTEM_FILES`.
+- Besides `BLOCKED_EXTENSIONS` (see above), the entry's final
+  extension, after stripping trailing dots and spaces, is checked
+  against `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`,
+  and `SYSTEM_FILES`, which also cover configuration files such
+  as `.ini`, `.cfg` and `.conf`.
 - Binary content is scanned for executable magic bytes from
   `SuspiciousFilePattern.EXECUTABLE_SIGNATURES`. The first 512
   bytes of each entry are read for this scan.

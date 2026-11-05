@@ -195,6 +195,24 @@ class TestSanitizeFilename:
 
         assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
 
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "run.exe ",
+            "invoice.docm\u3000",
+            "invoice.docm\u00a0",
+            "invoice.docm\u2002",
+        ],
+    )
+    def test_sanitize_rejects_extension_before_trailing_space(self, filename):
+        """A space, or one NFKC folds to a space, cannot hide .exe/.docm."""
+        validator = FileValidator()
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator._sanitize_filename(filename)
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
     def test_sanitize_limits_filename_length(self):
         """Test that filename length is limited."""
         validator = FileValidator()

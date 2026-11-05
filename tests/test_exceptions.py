@@ -749,42 +749,20 @@ class TestPackageExports:
 
     @pytest.mark.parametrize(
         "name",
-        ["log_extra", "reset_correlation_id", "ConfigValidationError"],
+        ["log_extra", "reset_correlation_id"],
     )
     def test_internal_names_not_exported(self, name):
-        """Internal helpers and deprecated aliases stay out of ``__all__``."""
+        """Internal helpers stay out of ``__all__``."""
         assert name not in safeuploads.__all__
 
 
-class TestDeprecatedConfigValidationError:
-    """``ConfigValidationError`` is a deprecated alias of the issue record."""
+class TestRemovedConfigValidationError:
+    """The ``ConfigValidationError`` alias was removed in 3.0."""
 
     @pytest.mark.parametrize("module", [safeuploads, exceptions_module])
-    def test_alias_warns_and_resolves(self, module):
-        """Attribute access warns at the caller and returns the new class."""
-        with pytest.warns(
-            DeprecationWarning, match="use ConfigValidationIssue"
-        ) as record:
-            alias = module.ConfigValidationError
-        assert alias is ConfigValidationIssue
-        assert record[0].filename == __file__
-
-    def test_from_import_warns(self):
-        """``from safeuploads import ConfigValidationError`` warns."""
-        with pytest.warns(DeprecationWarning, match="removed in safeuploads"):
-            from safeuploads import ConfigValidationError
-        assert ConfigValidationError is ConfigValidationIssue
-
-    def test_public_names_do_not_warn(self, recwarn):
-        """Every ``__all__`` name, as ``import *`` reads them, is silent."""
-        for name in safeuploads.__all__:
-            getattr(safeuploads, name)
-        assert not [
-            w for w in recwarn if issubclass(w.category, DeprecationWarning)
-        ]
-
-    @pytest.mark.parametrize("module", [safeuploads, exceptions_module])
-    def test_unknown_attribute_raises(self, module):
-        """Other missing names still raise ``AttributeError``."""
-        with pytest.raises(AttributeError, match="no attribute 'Missing'"):
-            _ = module.Missing
+    def test_attribute_access_raises(self, module):
+        """The removed alias is not an attribute of either module."""
+        with pytest.raises(
+            AttributeError, match="no attribute 'ConfigValidationError'"
+        ):
+            _ = module.ConfigValidationError

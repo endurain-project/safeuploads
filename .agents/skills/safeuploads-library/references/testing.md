@@ -9,7 +9,7 @@
 - Markers are declared in `pyproject.toml` (`unit`, `integration`, `slow`, `performance`, `fuzz`) and run with `--strict-markers`; mark a new test accordingly.
 - Skips need `reason=`.
 - Coverage is branch coverage with `fail_under = 90`; it is a ratchet, raise it when coverage rises and never lower it.
-- Tests are deterministic and offline; a performance test asserts a generous bound, never an exact time.
+- Tests are deterministic and offline; a performance test asserts a generous bound, never an exact time, and is deselected by default (`addopts` in `pyproject.toml`), so run it with `-m performance`.
 - Do not mock a validator to test the orchestrator's decision; run the real one on a small payload.
 
 ## Fuzzing
@@ -18,6 +18,7 @@
 
 ```bash
 uv run pytest tests/validators -v
-uv run pytest -m "not performance and not fuzz"
+uv run pytest -m "not fuzz"
+uv run pytest -m performance
 uv run pytest --cov=safeuploads --cov-report=term-missing
 ```

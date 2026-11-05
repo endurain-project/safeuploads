@@ -118,6 +118,10 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "-ra",
+    # Benchmarks assert wall-clock bounds that depend on the machine;
+    # run them explicitly with `pytest -m performance`.
+    "-m",
+    "not performance",
     "--cov=safeuploads",
     "--cov-report=term-missing",
     "--cov-report=html",

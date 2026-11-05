@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-11-05
+
+### Added
+
+- `ConfigValidationIssue`, exported from `safeuploads` and `safeuploads.exceptions`: the record `validate_instance()` and `validate_configuration()` return and `FileSecurityConfigurationError.errors` carries. It is the same dataclass under a name that does not suggest an exception.
+
+### Deprecated
+
+- `ConfigValidationError` is a deprecated alias of `ConfigValidationIssue` and will be removed in 3.0. Accessing or importing it from `safeuploads` or `safeuploads.exceptions` emits a `DeprecationWarning`; it is no longer in `safeuploads.__all__`. It was never an exception, so `except ConfigValidationError` could not catch anything.
+
+### Changed
+
+- Development: the dev dependency `httpx` is replaced by `httpx2`, which Starlette's `TestClient` now expects.
+- Development: performance tests (`-m performance`) are deselected by default; run them with `pytest -m performance`.
+- CI: the publish workflow installs `libmagic1` explicitly, and the GitLab mirror passes its tokens as HTTP authorization headers through `GIT_CONFIG_*` environment variables instead of embedding them in remote URLs.
+
 ## [2.1.0] - 2026-11-05
 
 ### Added

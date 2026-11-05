@@ -7,7 +7,7 @@ import logging
 import os
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -787,7 +787,7 @@ class FileValidator:
     @contextlib.contextmanager
     def _validation_run(
         self, filename: str | None, file_type: str
-    ) -> Iterator[_ValidationRun]:
+    ) -> Generator[_ValidationRun]:
         """
         Wrap a validation with audit logging and error mapping.
 

@@ -46,7 +46,7 @@ safeuploads/
 | `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. `validate_allowed` checks an extension against the allowlist and the blocked list. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
 | `FilenameSecurityValidator` | Strips path components and dangerous characters from a filename and limits its length to `max_sanitized_name_length`. |
-| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image, ZIP, gzip, activity or FIT). |
+| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image: JPEG, PNG or WebP; ZIP, gzip, activity or FIT). |
 | `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename) and enforces the allowed MIME types. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |

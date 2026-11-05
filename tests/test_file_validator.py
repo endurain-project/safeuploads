@@ -512,6 +512,39 @@ class TestValidateImageFile:
         await validator.validate_image_file(file)
 
     @pytest.mark.asyncio
+    async def test_validate_valid_webp(
+        self, mock_upload_file, valid_webp_bytes
+    ):
+        """A valid WebP image is accepted."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="image.webp", content=valid_webp_bytes
+        )
+
+        # Should not raise
+        await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"RIFF\x24\x00\x00\x00AVI LIST" + b"\x00" * 28,
+            b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 28,
+        ],
+        ids=["avi", "wav"],
+    )
+    async def test_riff_media_named_webp_rejected(
+        self, mock_upload_file, content
+    ):
+        """AVI or WAV content under a .webp name is rejected."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="fake.webp", content=content)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+
+    @pytest.mark.asyncio
     async def test_validate_image_missing_filename(
         self, mock_upload_file, valid_jpeg_bytes
     ):
@@ -1773,6 +1806,27 @@ class TestImageContentAnalysisIntegration:
         assert exc_info.value.filename == "poly.jpg"
         assert exc_info.value.threats
         assert "Content analysis" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_webp_polyglot_is_detected(
+        self, mock_upload_file, valid_webp_bytes
+    ):
+        """A ZIP signature appended to a valid WebP is caught."""
+        validator = self._content_analysis_validator()
+        webp = valid_webp_bytes + b"\x00" * 9000 + b"PK\x03\x04"
+        file = mock_upload_file(filename="poly.webp", content=webp)
+        with pytest.raises(ContentThreatError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    @pytest.mark.asyncio
+    async def test_clean_webp_passes(self, mock_upload_file, valid_webp_bytes):
+        """A clean WebP passes content analysis."""
+        validator = self._content_analysis_validator()
+        file = mock_upload_file(
+            filename="clean.webp", content=valid_webp_bytes
+        )
+        await validator.validate_image_file(file)
 
     @pytest.mark.asyncio
     async def test_clean_large_image_passes(self, mock_upload_file):

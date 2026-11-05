@@ -84,6 +84,7 @@ class TestFileSecurityConfig:
         assert "image/jpeg" in config.ALLOWED_IMAGE_MIMES
         assert "image/jpg" in config.ALLOWED_IMAGE_MIMES
         assert "image/png" in config.ALLOWED_IMAGE_MIMES
+        assert "image/webp" in config.ALLOWED_IMAGE_MIMES
 
     def test_allowed_zip_mimes(self):
         """Test allowed ZIP MIME types."""
@@ -99,6 +100,7 @@ class TestFileSecurityConfig:
         assert ".jpg" in config.ALLOWED_IMAGE_EXTENSIONS
         assert ".jpeg" in config.ALLOWED_IMAGE_EXTENSIONS
         assert ".png" in config.ALLOWED_IMAGE_EXTENSIONS
+        assert ".webp" in config.ALLOWED_IMAGE_EXTENSIONS
 
     def test_allowed_zip_extensions(self):
         """Test allowed ZIP extensions."""

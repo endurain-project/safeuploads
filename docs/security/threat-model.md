@@ -398,7 +398,9 @@ extension.
 - The detected MIME type is validated against the allowlist for
   the file type being validated.
 - File signatures (magic bytes) are verified independently of
-  the MIME type.
+  the MIME type. A WebP must carry `WEBP` at bytes 8-11 of its
+  RIFF container, so WAV, AVI and other RIFF files are not
+  accepted as images.
 
 ### Polyglot Files
 

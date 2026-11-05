@@ -193,6 +193,7 @@ class FileSecurityConfig:
             "image/jpeg",
             "image/jpg",
             "image/png",
+            "image/webp",
         }
     )
 
@@ -232,6 +233,7 @@ class FileSecurityConfig:
             ".jpg",
             ".jpeg",
             ".png",
+            ".webp",
         }
     )
     ALLOWED_ZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".zip"})

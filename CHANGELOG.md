@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-11-05
+
+### Added
+
+- WebP image support. `FileSignatureValidator` accepts a RIFF container whose form type at bytes 8-11 is `WEBP` as an image signature; WAV, AVI and other RIFF files are still rejected. `FileSecurityConfig.ALLOWED_IMAGE_MIMES` includes `image/webp` and `ALLOWED_IMAGE_EXTENSIONS` includes `.webp`.
+
+### Changed
+
+- **Breaking:** `validate_image_file()` and `validate_image_file_sync()` accept `.webp` uploads with WebP content under the default configuration, which 3.0.0 rejected. A host that cannot handle WebP after validation removes `image/webp` from `ALLOWED_IMAGE_MIMES` and `.webp` from `ALLOWED_IMAGE_EXTENSIONS` in the `FileSecurityConfig` it passes to `FileValidator`; removing only the extension still accepts WebP content under a `.jpg` or `.png` name.
+
 ## [3.0.0] - 2026-11-05
 
 ### Added

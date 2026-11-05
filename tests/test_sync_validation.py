@@ -43,6 +43,12 @@ _JPEG = (
     b"\xff\xd9"
 )
 _POLYGLOT_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04\xff\xd9"
+_WEBP = (
+    b"RIFF\x1a\x00\x00\x00WEBPVP8L\x0d\x00\x00\x00"
+    b"\x2f\x00\x00\x00\x10\x07\x10\x11\x11\x88\x88\xfe\x07\x00"
+)
+_POLYGLOT_WEBP = _WEBP + b"\x00" * 9000 + b"PK\x03\x04"
+_AVI = b"RIFF\x24\x00\x00\x00AVI LIST" + b"\x00" * 28
 _GPX = (
     b'<?xml version="1.0" encoding="UTF-8"?>'
     b"<gpx><trk><trkseg>"
@@ -91,6 +97,7 @@ _BOMB_LIMITS = {
 # (method stem, valid filename, valid payload)
 _VALID = [
     ("image", "photo.jpg", _JPEG),
+    ("image", "photo.webp", _WEBP),
     ("zip", "archive.zip", _ZIP),
     ("activity", "track.gpx", _GPX),
     ("activity", "workout.tcx", _TCX),
@@ -209,6 +216,19 @@ class TestSyncImageRejects:
         with pytest.raises(ContentThreatError) as exc_info:
             _run_sync(validator, "image", "poly.jpg", _POLYGLOT_JPEG)
         assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    def test_webp_polyglot_content_threat_raises(self):
+        """A ZIP signature appended to a WebP is a content threat."""
+        validator = _make_validator(enable_content_analysis=True)
+        with pytest.raises(ContentThreatError) as exc_info:
+            _run_sync(validator, "image", "poly.webp", _POLYGLOT_WEBP)
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    def test_avi_named_webp_raises(self):
+        """AVI content under a .webp name fails the MIME check."""
+        with pytest.raises(MimeTypeError) as exc_info:
+            _run_sync(FileValidator(), "image", "clip.webp", _AVI)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     def test_oversize_raises(self):
         """A file over max_image_size raises FILE_TOO_LARGE."""

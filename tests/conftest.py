@@ -141,6 +141,26 @@ def valid_png_bytes() -> bytes:
 
 
 @pytest.fixture
+def valid_webp_bytes() -> bytes:
+    """
+    Provide valid WebP file bytes.
+
+    Returns:
+        Minimal valid WebP file content.
+    """
+    # Minimal valid WebP: RIFF header + 1x1 lossless VP8L chunk
+    return (
+        b"RIFF"  # RIFF container
+        b"\x1a\x00\x00\x00"  # RIFF size: 26
+        b"WEBP"  # Form type
+        b"VP8L"  # Lossless bitstream chunk
+        b"\x0d\x00\x00\x00"  # Chunk size: 13
+        b"\x2f\x00\x00\x00\x10\x07\x10\x11\x11\x88\x88\xfe\x07"  # 1x1
+        b"\x00"  # Padding to an even chunk size
+    )
+
+
+@pytest.fixture
 def create_zip_file():
     """
     Factory fixture to create ZIP files with custom content.

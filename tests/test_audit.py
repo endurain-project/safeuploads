@@ -17,7 +17,6 @@ from safeuploads.audit import (
 )
 from safeuploads.config import FileSecurityConfig
 from safeuploads.exceptions import (
-    CompressionSecurityError,
     ErrorCode,
     FileSizeError,
     UnicodeSecurityError,
@@ -444,9 +443,12 @@ class TestThreatAuditEvents:
 
         with (
             caplog.at_level(logging.DEBUG, logger="safeuploads.audit"),
-            pytest.raises((ZipBombError, CompressionSecurityError)),
+            pytest.raises(ZipBombError) as exc_info,
         ):
             await validator.validate_zip_file(file)
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
 
         threat_records = [
             r

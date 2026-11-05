@@ -251,8 +251,9 @@ class TestSyncZipRejects:
 
     def test_non_zip_content_raises(self):
         """Plain text under a .zip name fails the signature check."""
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             _run_sync(FileValidator(), "zip", "a.zip", b"Hello World")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
 
 class TestSyncActivityRejects:
@@ -278,8 +279,9 @@ class TestSyncActivityRejects:
 
     def test_fit_with_bad_signature_raises(self):
         """Non-FIT bytes under a .fit name fail the signature check."""
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             _run_sync(FileValidator(), "activity", "r.fit", b"\x00" * 64)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     def test_oversize_raises(self):
         """A file over max_activity_file_size raises FILE_TOO_LARGE."""
@@ -312,14 +314,16 @@ class TestSyncGzipRejects:
 
     def test_non_gzip_content_raises(self):
         """Plain text under a .gz name fails the signature check."""
-        with pytest.raises(FileSignatureError):
+        with pytest.raises(FileSignatureError) as exc_info:
             _run_sync(FileValidator(), "gzip", "a.gz", b"Hello World")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     def test_invalid_gzip_structure_is_compression_error(self):
         """A gzip header with a corrupt body is a compression error."""
         corrupt = _GZIP[:10] + b"\xff" * 8
-        with pytest.raises(CompressionSecurityError):
+        with pytest.raises(CompressionSecurityError) as exc_info:
             _run_sync(FileValidator(), "gzip", "a.gz", corrupt)
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
 
 
 class TestSyncCommonRejects:
@@ -562,13 +566,22 @@ class TestSyncFileObjects:
             assert result == "a.zip"
             assert not f.closed
 
-    @pytest.mark.parametrize("stem", _STEMS)
-    def test_file_not_closed_after_failure(self, stem):
+    @pytest.mark.parametrize(
+        ("stem", "code"),
+        [
+            ("image", ErrorCode.MIME_TYPE_MISMATCH),
+            ("zip", ErrorCode.FILE_SIGNATURE_MISMATCH),
+            ("activity", ErrorCode.FILE_SIGNATURE_MISMATCH),
+            ("gzip", ErrorCode.FILE_SIGNATURE_MISMATCH),
+        ],
+    )
+    def test_file_not_closed_after_failure(self, stem, code):
         """The caller's file stays open when validation fails."""
         name, _ = _STEM_FILES[stem]
         f = io.BytesIO(b"garbage that is not valid")
-        with pytest.raises(FileValidationError):
+        with pytest.raises(FileValidationError) as exc_info:
             getattr(FileValidator(), f"validate_{stem}_file_sync")(f, name)
+        assert exc_info.value.error_code == code
         assert not f.closed
 
 
@@ -720,8 +733,9 @@ class TestSyncCorrelationId:
         """The previous id is back after a rejected call."""
         token = correlation_id_var.set(previous)
         try:
-            with pytest.raises(FileSizeError):
+            with pytest.raises(FileSizeError) as exc_info:
                 _run_sync(FileValidator(), "image", "photo.jpg", b"")
+            assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
             assert correlation_id_var.get() == previous
         finally:
             correlation_id_var.reset(token)
@@ -813,5 +827,7 @@ class TestSyncInternalErrors:
         monkeypatch.setattr(
             validator.unicode_validator, "validate_unicode_security", _explode
         )
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             _run_sync(validator, "image", "photo.jpg", _JPEG)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
+        assert isinstance(exc_info.value.__cause__, KeyError)

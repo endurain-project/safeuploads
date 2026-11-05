@@ -2225,8 +2225,10 @@ class TestCancellationSafety:
         file = mock_upload_file(
             filename="a.zip", content=create_zip_file(files={"a": b"b"})
         )
-        with pytest.raises(FileProcessingError):
+        with pytest.raises(FileProcessingError) as exc_info:
             await validator.validate_zip_file(file)
+        assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
         assert tracked[0].closed_event.is_set()
 
 
@@ -2258,8 +2260,10 @@ class TestCorrelationIdRestoredOnAuditFailure:
                 filename="a.zip",
                 content=create_zip_file(files={"a": b"b"}),
             )
-            with pytest.raises(FileProcessingError):
+            with pytest.raises(FileProcessingError) as exc_info:
                 await FileValidator().validate_zip_file(file)
+            assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
+            assert isinstance(exc_info.value.__cause__, OSError)
             assert get_correlation_id() == host_id
         finally:
             correlation_id_var.reset(token)

@@ -4,11 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-05
 
 ### Added
 
 - `FileValidator.validate_image_file_sync`, `validate_zip_file_sync`, `validate_activity_file_sync` and `validate_gzip_file_sync`: synchronous counterparts of the async `validate_*_file` methods, each taking `(file: SeekableFile, filename: str)` and returning the sanitized filename as `str`. They run the same checks, order, exceptions, error codes and audit events and block the calling thread without the worker-thread offload (the `executor` option applies only to the async methods); called on a thread with a running asyncio event loop they raise `RuntimeError` before reading the file.
+
+### Changed
+
+- Shortened the uv `exclude-newer` cooldown from 30 to 7 days.
+- Updated all dependency groups to their latest versions.
 
 ### Security
 
@@ -202,7 +207,7 @@ Initial release.
 - **MIME type verification:** magic-number validation for common file types.
 - Framework-agnostic async validation, a rich exception hierarchy with machine-readable error codes, secure defaults, and full type hints.
 
-[Unreleased]: https://github.com/endurain-project/safeuploads/compare/v2.0.0...HEAD
+[2.1.0]: https://github.com/endurain-project/safeuploads/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/endurain-project/safeuploads/compare/v1.1.3...v2.0.0
 [1.1.3]: https://github.com/endurain-project/safeuploads/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/endurain-project/safeuploads/compare/v1.1.1...v1.1.2

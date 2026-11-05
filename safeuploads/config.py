@@ -3,7 +3,9 @@
 import itertools
 import logging
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 from .enums import (
@@ -12,7 +14,7 @@ from .enums import (
     UnicodeAttackCategory,
 )
 from .exceptions import ConfigValidationIssue, FileSecurityConfigurationError
-from .utils import bytes_to_mb
+from .utils import allowed_extensions, bytes_to_mb
 
 logger = logging.getLogger(__name__)
 
@@ -168,16 +170,12 @@ class FileSecurityConfig:
 
     Attributes:
         limits: Security limits configuration instance.
-        ALLOWED_IMAGE_MIMES: Permitted MIME types for images.
-        ALLOWED_ZIP_MIMES: Permitted MIME types for ZIP files.
-        ALLOWED_ACTIVITY_MIMES: Permitted MIME types for activity
-            files (GPX/TCX/FIT).
-        ALLOWED_GZIP_MIMES: Permitted MIME types for gzip files.
-        ALLOWED_IMAGE_EXTENSIONS: Permitted image file extensions.
-        ALLOWED_ZIP_EXTENSIONS: Permitted ZIP file extensions.
-        ALLOWED_ACTIVITY_EXTENSIONS: Permitted activity file
-            extensions.
-        ALLOWED_GZIP_EXTENSIONS: Permitted gzip file extensions.
+        ALLOWED_IMAGE_TYPES: Permitted image MIME types, each mapped
+            to the extensions its content may carry.
+        ALLOWED_ZIP_TYPES: Permitted ZIP MIME types and extensions.
+        ALLOWED_ACTIVITY_TYPES: Permitted activity file (GPX/TCX/FIT)
+            MIME types and extensions.
+        ALLOWED_GZIP_TYPES: Permitted gzip MIME types and extensions.
         BLOCKED_EXTENSIONS: Dangerous file extensions to block.
         COMPOUND_BLOCKED_EXTENSIONS: Multi-part extensions to block.
         DANGEROUS_UNICODE_CHARS: Unicode characters for filename attacks.
@@ -187,64 +185,50 @@ class FileSecurityConfig:
     # Security limits configuration
     limits = SecurityLimits()
 
-    # Allowed MIME types for images
-    ALLOWED_IMAGE_MIMES: ClassVar[frozenset[str]] = frozenset(
-        {
-            "image/jpeg",
-            "image/jpg",
-            "image/png",
-            "image/webp",
-        }
+    # Allowed content per category: each MIME type libmagic may
+    # report maps to the extensions that content may carry. A file
+    # is accepted only when its extension is listed for the MIME
+    # type detected from its content.
+    ALLOWED_IMAGE_TYPES: ClassVar[Mapping[str, frozenset[str]]] = (
+        MappingProxyType(
+            {
+                "image/jpeg": frozenset({".jpg", ".jpeg"}),
+                "image/png": frozenset({".png"}),
+                "image/webp": frozenset({".webp"}),
+            }
+        )
     )
-
-    # Allowed MIME types for ZIP files
-    ALLOWED_ZIP_MIMES: ClassVar[frozenset[str]] = frozenset(
-        {
-            "application/zip",
-            "application/x-zip-compressed",
-            "multipart/x-zip",
-        }
+    ALLOWED_ZIP_TYPES: ClassVar[Mapping[str, frozenset[str]]] = (
+        MappingProxyType(
+            {
+                "application/zip": frozenset({".zip"}),
+                "application/x-zip-compressed": frozenset({".zip"}),
+                "multipart/x-zip": frozenset({".zip"}),
+            }
+        )
     )
-
-    # Allowed MIME types for activity files (GPX/TCX/FIT)
-    ALLOWED_ACTIVITY_MIMES: ClassVar[frozenset[str]] = frozenset(
-        {
-            "application/gpx+xml",
-            "application/xml",
-            "text/xml",
-            "application/octet-stream",  # FIT files detected as binary
-            # libmagic cannot tell some valid GPX/TCX from plain text;
-            # the signature check and the XML parse decide.
-            "text/plain",
-        }
+    # libmagic reports GPX and TCX as the same XML types and some
+    # valid ones as plain text; the signature check and the XML
+    # parse decide. FIT files are detected as binary.
+    ALLOWED_ACTIVITY_TYPES: ClassVar[Mapping[str, frozenset[str]]] = (
+        MappingProxyType(
+            {
+                "application/gpx+xml": frozenset({".gpx", ".tcx"}),
+                "application/xml": frozenset({".gpx", ".tcx"}),
+                "text/xml": frozenset({".gpx", ".tcx"}),
+                "text/plain": frozenset({".gpx", ".tcx"}),
+                "application/octet-stream": frozenset({".fit"}),
+            }
+        )
     )
-
-    # Allowed MIME types for gzip files
-    ALLOWED_GZIP_MIMES: ClassVar[frozenset[str]] = frozenset(
-        {
-            "application/gzip",
-            "application/x-gzip",
-        }
+    ALLOWED_GZIP_TYPES: ClassVar[Mapping[str, frozenset[str]]] = (
+        MappingProxyType(
+            {
+                "application/gzip": frozenset({".gz"}),
+                "application/x-gzip": frozenset({".gz"}),
+            }
+        )
     )
-
-    # Allowed file extensions
-    ALLOWED_IMAGE_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
-        {
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".webp",
-        }
-    )
-    ALLOWED_ZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".zip"})
-    ALLOWED_ACTIVITY_EXTENSIONS: ClassVar[frozenset[str]] = frozenset(
-        {
-            ".gpx",
-            ".tcx",
-            ".fit",
-        }
-    )
-    ALLOWED_GZIP_EXTENSIONS: ClassVar[frozenset[str]] = frozenset({".gz"})
 
     # Generate dangerous file extensions from categorized enums
     @staticmethod
@@ -788,33 +772,58 @@ class FileSecurityConfig:
         return errors
 
     @staticmethod
+    def _allowed_type_maps(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[tuple[str, Mapping[str, frozenset[str]], str]]:
+        """
+        List the allowed-types mappings with their names and labels.
+
+        Args:
+            config: Class or instance to read the mappings from.
+
+        Returns:
+            Tuples of attribute name, mapping and category label.
+        """
+        return [
+            ("ALLOWED_IMAGE_TYPES", config.ALLOWED_IMAGE_TYPES, "image"),
+            ("ALLOWED_ZIP_TYPES", config.ALLOWED_ZIP_TYPES, "ZIP"),
+            (
+                "ALLOWED_ACTIVITY_TYPES",
+                config.ALLOWED_ACTIVITY_TYPES,
+                "activity",
+            ),
+            ("ALLOWED_GZIP_TYPES", config.ALLOWED_GZIP_TYPES, "gzip"),
+        ]
+
+    @staticmethod
     def _validate_mime_configurations(
         config: "FileSecurityConfig | type[FileSecurityConfig]",
     ) -> list[ConfigValidationIssue]:
         """
-        Validate MIME type configurations.
+        Validate the MIME types of the allowed-types mappings.
 
         Args:
-            config: Class or instance to read the sets from.
+            config: Class or instance to read the mappings from.
 
         Returns:
             List of detected configuration issues.
         """
         errors = []
+        type_maps = FileSecurityConfig._allowed_type_maps(config)
 
-        # Check image MIME types
-        if not config.ALLOWED_IMAGE_MIMES:
-            errors.append(
-                _config_error(
-                    "empty_mime_set",
-                    "ALLOWED_IMAGE_MIMES cannot be empty",
-                    "mime_types",
-                    "Add at least one allowed image MIME type",
+        for map_name, types, label in type_maps:
+            if not types:
+                errors.append(
+                    _config_error(
+                        "empty_mime_set",
+                        f"{map_name} cannot be empty",
+                        "mime_types",
+                        f"Add at least one allowed {label} MIME type",
+                    )
                 )
-            )
 
         # Validate image MIME type format
-        for mime_type in config.ALLOWED_IMAGE_MIMES:
+        for mime_type in config.ALLOWED_IMAGE_TYPES:
             if not mime_type.startswith("image/"):
                 errors.append(
                     _config_error(
@@ -834,33 +843,8 @@ class FileSecurityConfig:
                     )
                 )
 
-        # Check ZIP, activity and gzip MIME types
-        for mime_set_name, mime_set, label in [
-            ("ALLOWED_ZIP_MIMES", config.ALLOWED_ZIP_MIMES, "ZIP"),
-            (
-                "ALLOWED_ACTIVITY_MIMES",
-                config.ALLOWED_ACTIVITY_MIMES,
-                "activity",
-            ),
-            ("ALLOWED_GZIP_MIMES", config.ALLOWED_GZIP_MIMES, "gzip"),
-        ]:
-            if not mime_set:
-                errors.append(
-                    _config_error(
-                        "empty_mime_set",
-                        f"{mime_set_name} cannot be empty",
-                        "mime_types",
-                        f"Add at least one allowed {label} MIME type",
-                    )
-                )
-
-        # Check for duplicate MIME types
-        all_mimes = (
-            list(config.ALLOWED_IMAGE_MIMES)
-            + list(config.ALLOWED_ZIP_MIMES)
-            + list(config.ALLOWED_ACTIVITY_MIMES)
-            + list(config.ALLOWED_GZIP_MIMES)
-        )
+        # A MIME type allowed in two categories is ambiguous
+        all_mimes = [mime for _, types, _ in type_maps for mime in types]
         duplicates = {mime for mime in all_mimes if all_mimes.count(mime) > 1}
         if duplicates:
             errors.append(
@@ -880,7 +864,7 @@ class FileSecurityConfig:
         config: "FileSecurityConfig | type[FileSecurityConfig]",
     ) -> list[ConfigValidationIssue]:
         """
-        Validate file extension configurations.
+        Validate the allowed-types extensions and the block-lists.
 
         Args:
             config: Class or instance to read the sets from.
@@ -889,52 +873,38 @@ class FileSecurityConfig:
             List of detected configuration issues.
         """
         errors = []
-
-        allowed_sets = [
-            (
-                "ALLOWED_IMAGE_EXTENSIONS",
-                config.ALLOWED_IMAGE_EXTENSIONS,
-                "Image",
-            ),
-            ("ALLOWED_ZIP_EXTENSIONS", config.ALLOWED_ZIP_EXTENSIONS, "ZIP"),
-            (
-                "ALLOWED_ACTIVITY_EXTENSIONS",
-                config.ALLOWED_ACTIVITY_EXTENSIONS,
-                "Activity",
-            ),
-            (
-                "ALLOWED_GZIP_EXTENSIONS",
-                config.ALLOWED_GZIP_EXTENSIONS,
-                "Gzip",
-            ),
-        ]
+        type_maps = FileSecurityConfig._allowed_type_maps(config)
 
         # Check extension format
-        for ext_set_name, ext_set, _label in allowed_sets:
-            if not ext_set:
-                errors.append(
-                    _config_error(
-                        "empty_extension_set",
-                        f"{ext_set_name} cannot be empty",
-                        "extensions",
-                        f"Add at least one extension to {ext_set_name}",
-                    )
-                )
-
-            for ext in ext_set:
-                if not ext.startswith("."):
+        for map_name, types, _label in type_maps:
+            for mime_type, exts in types.items():
+                if not exts:
                     errors.append(
                         _config_error(
-                            "invalid_extension_format",
-                            (
-                                f"Extension '{ext}'"
-                                f" in {ext_set_name}"
-                                " should start with '.'"
-                            ),
+                            "empty_extension_set",
+                            f"{map_name}['{mime_type}'] lists no extensions",
                             "extensions",
-                            "Use format '.ext' for file extensions",
+                            (
+                                "Add at least one extension for"
+                                f" '{mime_type}' or remove it"
+                            ),
                         )
                     )
+
+                for ext in exts:
+                    if not ext.startswith("."):
+                        errors.append(
+                            _config_error(
+                                "invalid_extension_format",
+                                (
+                                    f"Extension '{ext}'"
+                                    f" in {map_name}"
+                                    " should start with '.'"
+                                ),
+                                "extensions",
+                                "Use format '.ext' for file extensions",
+                            )
+                        )
 
         # Check blocked extensions
         if not config.BLOCKED_EXTENSIONS:
@@ -958,8 +928,10 @@ class FileSecurityConfig:
             )
 
         # Check for overlap between allowed and blocked extensions
-        for _ext_set_name, ext_set, label in allowed_sets:
-            blocked = ext_set.intersection(config.BLOCKED_EXTENSIONS)
+        for _map_name, types, label in type_maps:
+            blocked = allowed_extensions(types).intersection(
+                config.BLOCKED_EXTENSIONS
+            )
             if blocked:
                 errors.append(
                     _config_error(
@@ -980,7 +952,10 @@ class FileSecurityConfig:
         # Filenames are lowercased before matching, so an entry
         # with uppercase characters can never match.
         for ext_set_name, ext_set in [
-            *((name, ext_set) for name, ext_set, _label in allowed_sets),
+            *(
+                (name, allowed_extensions(types))
+                for name, types, _label in type_maps
+            ),
             ("BLOCKED_EXTENSIONS", config.BLOCKED_EXTENSIONS),
             (
                 "COMPOUND_BLOCKED_EXTENSIONS",

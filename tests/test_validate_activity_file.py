@@ -243,9 +243,10 @@ class TestValidateActivityFileTextPlain:
         self._as_text_plain(validator, monkeypatch)
         fake = b"\x0e\x10" + b"\0" * 6 + b".FIT" + b"<?php evil ?>" * 10
         f = mock_upload_file("a.fit", fake)
-        with pytest.raises(FileSignatureError) as exc_info:
+        # text/plain content may only carry .gpx or .tcx
+        with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_activity_file(f)
-        assert exc_info.value.error_code == ErrorCode.FIT_INVALID_STRUCTURE
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
 
     async def test_image_renamed_gpx_still_rejected(
         self, mock_upload_file, monkeypatch

@@ -31,7 +31,7 @@ from safeuploads.exceptions import (
     ZipBombError,
     ZipContentError,
 )
-from safeuploads.file_validator import FileValidator
+from safeuploads.file_validator import FileValidator, ValidationResult
 from safeuploads.utils import ResourceMonitor, check_resource_limits
 from tests.validators.test_fit_validator import build_fit
 
@@ -523,6 +523,44 @@ class TestValidateImageFile:
 
         # Should not raise
         await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("fixture", "filename", "detected"),
+        [
+            ("valid_webp_bytes", "photo.jpg", "image/webp"),
+            ("valid_png_bytes", "photo.jpg", "image/png"),
+            ("valid_jpeg_bytes", "photo.png", "image/jpeg"),
+            ("valid_webp_bytes", "photo.png", "image/webp"),
+            ("valid_jpeg_bytes", "photo.webp", "image/jpeg"),
+        ],
+    )
+    async def test_image_under_another_types_extension_rejected(
+        self, request, mock_upload_file, fixture, filename, detected
+    ):
+        """An allowed image under another format's extension fails."""
+        validator = FileValidator()
+        content = request.getfixturevalue(fixture)
+        file = mock_upload_file(filename=filename, content=content)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+        assert exc_info.value.detected_mime == detected
+        assert exc_info.value.filename == filename
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("filename", ["photo.jpeg", "PHOTO.JPG"])
+    async def test_jpeg_under_any_jpeg_extension_accepted(
+        self, mock_upload_file, valid_jpeg_bytes, filename
+    ):
+        """Every extension listed for image/jpeg is accepted."""
+        validator = FileValidator()
+        file = mock_upload_file(filename=filename, content=valid_jpeg_bytes)
+
+        result = await validator.validate_image_file(file)
+
+        assert result == ValidationResult(filename, "image/jpeg")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

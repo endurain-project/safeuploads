@@ -47,12 +47,13 @@ that addresses it.
   raises `FileSecurityConfigurationError` otherwise), and every
   inner ZIP is inspected like the top level; one that is
   oversized, corrupt or uninspectable is rejected.
-- [ ] Allowed extensions and MIME types reviewed and narrowed
-  to only what your application accepts.
+- [ ] `ALLOWED_*_TYPES` reviewed and narrowed to the MIME types
+  your application accepts and the extensions each may carry.
 - [ ] `FileSecurityConfigurationError` from the `FileValidator`
   constructor handled at startup: it is raised for any
   error-severity configuration issue (invalid limit types,
-  non-positive limits, empty or uppercase extension entries,
+  non-positive limits, an empty allowed-types mapping, a MIME
+  type with no extensions, empty or uppercase extension entries,
   empty block lists or reserved names, reserved names that are
   not lowercase, a content scan window smaller than an image or
   activity size limit), including sets overridden on the
@@ -108,13 +109,15 @@ that addresses it.
 - [ ] Uploaded files stored outside the web-accessible
   document root.
 - [ ] Uploaded files renamed to random identifiers (UUIDs);
-  original filenames stored in metadata only.
+  original filenames stored in metadata only. If the stored name
+  needs an extension, derive it from `ValidationResult.mime_type`,
+  not from the uploaded name.
 - [ ] Storage directory permissions restrict access to the
   application user only (`0700` or equivalent).
 - [ ] If serving uploaded files back to users, use:
     - `Content-Disposition: attachment` to force download.
-    - `Content-Type` set from validated MIME type, not from
-      the filename.
+    - `Content-Type` set from `ValidationResult.mime_type`,
+      not from the filename.
     - `X-Content-Type-Options: nosniff` header.
 
 ## Security Headers (for serving uploaded content)

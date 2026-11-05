@@ -397,6 +397,13 @@ extension.
   validated.
 - The detected MIME type is validated against the allowlist for
   the file type being validated.
+- The filename's extension must be one the configuration lists
+  for the detected MIME type (`ALLOWED_*_TYPES`), so a file that
+  is a valid, allowed image under another image format's name
+  (for example a WebP named `photo.jpg`) is rejected with
+  `EXTENSION_MIME_MISMATCH`. Downstream tools that pick a decoder
+  or a `Content-Type` from the extension never see a name that
+  contradicts the content.
 - File signatures (magic bytes) are verified independently of
   the MIME type. A WebP must carry `WEBP` at bytes 8-11 of its
   RIFF container, so WAV, AVI and other RIFF files are not

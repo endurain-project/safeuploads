@@ -7,7 +7,7 @@ import logging
 import os
 import tempfile
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from concurrent.futures import Executor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -47,7 +47,12 @@ from .inspectors import ZipContentInspector
 from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
 from .protocols import SeekableFile
-from .utils import ResourceMonitor, bytes_to_mb, check_resource_limits
+from .utils import (
+    ResourceMonitor,
+    allowed_extensions,
+    bytes_to_mb,
+    check_resource_limits,
+)
 from .validators import (
     CompressionSecurityValidator,
     ExtensionSecurityValidator,
@@ -76,6 +81,22 @@ class _ValidationRun:
     """
 
     filename: str
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """
+    What a successful validation verified about an upload.
+
+    Attributes:
+        filename: Sanitized filename. Its extension is one the
+            configuration lists for ``mime_type``.
+        mime_type: MIME type libmagic detected from the content,
+            for the ``Content-Type`` of a stored or served copy.
+    """
+
+    filename: str
+    mime_type: str
 
 
 class FileValidator:
@@ -256,9 +277,9 @@ class FileValidator:
     async def _inspect_temp_file(
         self,
         temp_file: tempfile.SpooledTemporaryFile[bytes],
-        func: Callable[..., None],
+        func: Callable[..., _T],
         *args: object,
-    ) -> None:
+    ) -> _T:
         """
         Run ``func(temp_file, *args)`` off the loop, then close the file.
 
@@ -271,11 +292,14 @@ class FileValidator:
                 afterwards.
             func: Blocking inspection taking the temp file first.
             *args: Further positional arguments for ``func``.
+
+        Returns:
+            The value returned by ``func``.
         """
-        worker: asyncio.Future[None] | None = None
+        worker: asyncio.Future[_T] | None = None
         try:
             worker = self._submit(func, temp_file, *args)
-            await asyncio.shield(worker)
+            return await asyncio.shield(worker)
         finally:
             self._close_when_idle(temp_file, worker)
 
@@ -885,14 +909,15 @@ class FileValidator:
             Detected MIME type.
 
         Raises:
-            MimeTypeError: If the MIME type is not allowed.
+            MimeTypeError: If the MIME type is not allowed or does
+                not permit the extension.
             FileSignatureError: If the signature mismatches.
             ContentThreatError: If content analysis finds threats.
         """
         detected_mime = self.mime_validator.detect(header, filename)
         self.mime_validator.enforce(
             detected_mime,
-            self.config.ALLOWED_IMAGE_MIMES,
+            self.config.ALLOWED_IMAGE_TYPES,
             filename,
             error_code=ErrorCode.MIME_TYPE_MISMATCH,
         )
@@ -913,7 +938,7 @@ class FileValidator:
             max_memory_mb=self.config.limits.max_validation_memory_mb,
         )
 
-    async def validate_image_file(self, file: UploadFile) -> None:
+    async def validate_image_file(self, file: UploadFile) -> ValidationResult:
         """
         Validate uploaded image by checking filename.
 
@@ -922,13 +947,17 @@ class FileValidator:
         Args:
             file: Uploaded file to validate.
 
+        Returns:
+            Sanitized filename and detected MIME type.
+
         Raises:
             FilenameSecurityError: Filename is empty, invalid, or fails
                 security checks.
             ExtensionSecurityError: File extension is not allowed or is
                 blocked.
             FileSizeError: File size exceeds maximum or file is empty.
-            MimeTypeError: MIME type is not in allowed image types.
+            MimeTypeError: MIME type is not in allowed image types, or
+                the extension is not one listed for it.
             FileSignatureError: File signature doesn't match expected image
                 format.
             ContentThreatError: Content analysis found threats.
@@ -939,7 +968,7 @@ class FileValidator:
             filename = file.filename or "unknown"
             run.filename = filename
             self.extension_validator.validate_allowed(
-                filename, self.config.ALLOWED_IMAGE_EXTENSIONS
+                filename, allowed_extensions(self.config.ALLOWED_IMAGE_TYPES)
             )
 
             with self._resource_monitor():
@@ -970,10 +999,11 @@ class FileValidator:
                     detected_mime,
                     file_size,
                 )
+        return ValidationResult(filename, detected_mime)
 
     def validate_image_file_sync(
         self, file: SeekableFile, filename: str
-    ) -> str:
+    ) -> ValidationResult:
         """
         Validate an image from a seekable file in the calling thread.
 
@@ -988,7 +1018,7 @@ class FileValidator:
             filename: Filename supplied by the client.
 
         Returns:
-            Sanitized filename.
+            Sanitized filename and detected MIME type.
 
         Raises:
             RuntimeError: Called on a thread running an event loop.
@@ -997,7 +1027,8 @@ class FileValidator:
             ExtensionSecurityError: File extension is not allowed or is
                 blocked.
             FileSizeError: File size exceeds maximum or file is empty.
-            MimeTypeError: MIME type is not in allowed image types.
+            MimeTypeError: MIME type is not in allowed image types, or
+                the extension is not one listed for it.
             FileSignatureError: File signature doesn't match expected image
                 format.
             ContentThreatError: Content analysis found threats.
@@ -1010,7 +1041,7 @@ class FileValidator:
             name = self._validated_filename(filename)
             run.filename = name
             self.extension_validator.validate_allowed(
-                name, self.config.ALLOWED_IMAGE_EXTENSIONS
+                name, allowed_extensions(self.config.ALLOWED_IMAGE_TYPES)
             )
 
             with self._resource_monitor():
@@ -1034,18 +1065,18 @@ class FileValidator:
                     detected_mime,
                     file_size,
                 )
-        return name
+        return ValidationResult(name, detected_mime)
 
     async def _validate_streamed(
         self,
         file: UploadFile,
         run: _ValidationRun,
-        allowed_extensions: frozenset[str],
+        allowed_types: Mapping[str, frozenset[str]],
         max_file_size: int,
         inspect: Callable[
-            [tempfile.SpooledTemporaryFile[bytes], int, str], None
+            [tempfile.SpooledTemporaryFile[bytes], int, str], str
         ],
-    ) -> None:
+    ) -> ValidationResult:
         """
         Validate an upload that is streamed to a temp file.
 
@@ -1057,10 +1088,15 @@ class FileValidator:
             file: Uploaded file to validate.
             run: Run state; its ``filename`` is set to the
                 sanitized name.
-            allowed_extensions: Permitted file extensions.
+            allowed_types: Allowed MIME types mapped to the
+                extensions each one permits.
             max_file_size: Maximum allowed file size in bytes.
             inspect: Blocking inspection of the temp file, taking
-                the temp file, its size and the sanitized name.
+                the temp file, its size and the sanitized name and
+                returning the detected MIME type.
+
+        Returns:
+            Sanitized filename and detected MIME type.
 
         Raises:
             FileValidationError: If a validation check fails.
@@ -1068,27 +1104,30 @@ class FileValidator:
         self._validate_filename(file)
         filename = file.filename or "unknown"
         run.filename = filename
-        self.extension_validator.validate_allowed(filename, allowed_extensions)
+        self.extension_validator.validate_allowed(
+            filename, allowed_extensions(allowed_types)
+        )
 
         with self._resource_monitor():
             temp_file, file_size = await self._stream_to_temp_file(
                 file, max_file_size
             )
-            await self._inspect_temp_file(
+            detected_mime = await self._inspect_temp_file(
                 temp_file, inspect, file_size, filename
             )
+        return ValidationResult(filename, detected_mime)
 
     def _validate_streamed_sync(
         self,
         file: SeekableFile,
         filename: str,
         run: _ValidationRun,
-        allowed_extensions: frozenset[str],
+        allowed_types: Mapping[str, frozenset[str]],
         max_file_size: int,
         inspect: Callable[
-            [tempfile.SpooledTemporaryFile[bytes], int, str], None
+            [tempfile.SpooledTemporaryFile[bytes], int, str], str
         ],
-    ) -> str:
+    ) -> ValidationResult:
         """
         Validate a seekable file by streaming it to a temp file.
 
@@ -1100,32 +1139,36 @@ class FileValidator:
             filename: Filename supplied by the client.
             run: Run state; its ``filename`` is set to the
                 sanitized name.
-            allowed_extensions: Permitted file extensions.
+            allowed_types: Allowed MIME types mapped to the
+                extensions each one permits.
             max_file_size: Maximum allowed file size in bytes.
             inspect: Blocking inspection of the temp file, taking
-                the temp file, its size and the sanitized name.
+                the temp file, its size and the sanitized name and
+                returning the detected MIME type.
 
         Returns:
-            Sanitized filename.
+            Sanitized filename and detected MIME type.
 
         Raises:
             FileValidationError: If a validation check fails.
         """
         name = self._validated_filename(filename)
         run.filename = name
-        self.extension_validator.validate_allowed(name, allowed_extensions)
+        self.extension_validator.validate_allowed(
+            name, allowed_extensions(allowed_types)
+        )
 
         with self._resource_monitor():
             temp_file, file_size = self._stream_to_temp_file_sync(
                 file, max_file_size
             )
             try:
-                inspect(temp_file, file_size, name)
+                detected_mime = inspect(temp_file, file_size, name)
             finally:
                 temp_file.close()
-        return name
+        return ValidationResult(name, detected_mime)
 
-    async def validate_zip_file(self, file: UploadFile) -> None:
+    async def validate_zip_file(self, file: UploadFile) -> ValidationResult:
         """
         Validate uploaded ZIP archive against service configuration.
 
@@ -1138,7 +1181,8 @@ class FileValidator:
             ExtensionSecurityError: File extension is not allowed or is
                 blocked.
             FileSizeError: File size exceeds maximum or file is empty.
-            MimeTypeError: MIME type is not in allowed ZIP types.
+            MimeTypeError: MIME type is not in allowed ZIP types, or
+                the extension is not one listed for it.
             FileSignatureError: File signature doesn't match expected ZIP
                 format.
             CompressionSecurityError: ZIP compression validation failed
@@ -1147,15 +1191,17 @@ class FileValidator:
             FileProcessingError: Unexpected error during validation.
         """
         with self._validation_run(file.filename, "ZIP") as run:
-            await self._validate_streamed(
+            return await self._validate_streamed(
                 file,
                 run,
-                self.config.ALLOWED_ZIP_EXTENSIONS,
+                self.config.ALLOWED_ZIP_TYPES,
                 self.config.limits.max_zip_size,
                 self._inspect_zip_sync,
             )
 
-    def validate_zip_file_sync(self, file: SeekableFile, filename: str) -> str:
+    def validate_zip_file_sync(
+        self, file: SeekableFile, filename: str
+    ) -> ValidationResult:
         """
         Validate a ZIP archive from a seekable file in the calling thread.
 
@@ -1170,7 +1216,7 @@ class FileValidator:
             filename: Filename supplied by the client.
 
         Returns:
-            Sanitized filename.
+            Sanitized filename and detected MIME type.
 
         Raises:
             RuntimeError: Called on a thread running an event loop.
@@ -1179,7 +1225,8 @@ class FileValidator:
             ExtensionSecurityError: File extension is not allowed or is
                 blocked.
             FileSizeError: File size exceeds maximum or file is empty.
-            MimeTypeError: MIME type is not in allowed ZIP types.
+            MimeTypeError: MIME type is not in allowed ZIP types, or
+                the extension is not one listed for it.
             FileSignatureError: File signature doesn't match expected ZIP
                 format.
             CompressionSecurityError: ZIP compression validation failed
@@ -1195,7 +1242,7 @@ class FileValidator:
                 file,
                 filename,
                 run,
-                self.config.ALLOWED_ZIP_EXTENSIONS,
+                self.config.ALLOWED_ZIP_TYPES,
                 self.config.limits.max_zip_size,
                 self._inspect_zip_sync,
             )
@@ -1205,7 +1252,7 @@ class FileValidator:
         temp_file: tempfile.SpooledTemporaryFile[bytes],
         file_size: int,
         filename: str,
-    ) -> None:
+    ) -> str:
         """
         Run blocking ZIP inspection on a temp file.
 
@@ -1214,8 +1261,12 @@ class FileValidator:
             file_size: Compressed archive size in bytes.
             filename: Sanitized filename for context.
 
+        Returns:
+            Detected MIME type.
+
         Raises:
-            MimeTypeError: If the MIME type is not allowed.
+            MimeTypeError: If the MIME type is not allowed or does
+                not permit the extension.
             FileSignatureError: If the signature mismatches.
             CompressionSecurityError: If a zip bomb is detected.
             ContentThreatError: If content analysis finds threats.
@@ -1228,7 +1279,7 @@ class FileValidator:
         # Check MIME type, allow octet-stream if signature valid
         self.mime_validator.enforce(
             detected_mime,
-            self.config.ALLOWED_ZIP_MIMES,
+            self.config.ALLOWED_ZIP_TYPES,
             filename,
             allow_octet_stream=True,
             error_code=ErrorCode.MIME_TYPE_MISMATCH,
@@ -1250,8 +1301,11 @@ class FileValidator:
             detected_mime,
             file_size,
         )
+        return detected_mime
 
-    async def validate_activity_file(self, file: UploadFile) -> None:
+    async def validate_activity_file(
+        self, file: UploadFile
+    ) -> ValidationResult:
         """
         Validate uploaded activity file (GPX, TCX, FIT).
 
@@ -1266,23 +1320,24 @@ class FileValidator:
             FilenameSecurityError: Filename fails security.
             ExtensionSecurityError: Extension not allowed.
             FileSizeError: File exceeds size limit or empty.
-            MimeTypeError: MIME type not allowed.
+            MimeTypeError: MIME type not allowed, or the extension
+                is not one listed for it.
             FileSignatureError: Signature mismatch.
             XmlSecurityError: The XML is forbidden or malformed.
             FileProcessingError: Unexpected error during validation.
         """
         with self._validation_run(file.filename, "activity") as run:
-            await self._validate_streamed(
+            return await self._validate_streamed(
                 file,
                 run,
-                self.config.ALLOWED_ACTIVITY_EXTENSIONS,
+                self.config.ALLOWED_ACTIVITY_TYPES,
                 self.config.limits.max_activity_file_size,
                 self._inspect_activity_sync,
             )
 
     def validate_activity_file_sync(
         self, file: SeekableFile, filename: str
-    ) -> str:
+    ) -> ValidationResult:
         """
         Validate an activity file from a seekable file in this thread.
 
@@ -1297,14 +1352,15 @@ class FileValidator:
             filename: Filename supplied by the client.
 
         Returns:
-            Sanitized filename.
+            Sanitized filename and detected MIME type.
 
         Raises:
             RuntimeError: Called on a thread running an event loop.
             FilenameSecurityError: Filename fails security.
             ExtensionSecurityError: Extension not allowed.
             FileSizeError: File exceeds size limit or empty.
-            MimeTypeError: MIME type not allowed.
+            MimeTypeError: MIME type not allowed, or the extension
+                is not one listed for it.
             FileSignatureError: Signature mismatch.
             XmlSecurityError: The XML is forbidden or malformed.
             FileProcessingError: Unexpected error during validation.
@@ -1317,7 +1373,7 @@ class FileValidator:
                 file,
                 filename,
                 run,
-                self.config.ALLOWED_ACTIVITY_EXTENSIONS,
+                self.config.ALLOWED_ACTIVITY_TYPES,
                 self.config.limits.max_activity_file_size,
                 self._inspect_activity_sync,
             )
@@ -1327,7 +1383,7 @@ class FileValidator:
         temp_file: tempfile.SpooledTemporaryFile[bytes],
         file_size: int,
         filename: str,
-    ) -> None:
+    ) -> str:
         """
         Run blocking activity-file inspection on a temp file.
 
@@ -1339,8 +1395,12 @@ class FileValidator:
             file_size: File size in bytes.
             filename: Sanitized filename for context.
 
+        Returns:
+            Detected MIME type.
+
         Raises:
-            MimeTypeError: If the MIME type is not allowed.
+            MimeTypeError: If the MIME type is not allowed or does
+                not permit the extension.
             FileSignatureError: If the signature mismatches or the
                 FIT structure is invalid.
             XmlSecurityError: If the XML is forbidden or malformed.
@@ -1355,14 +1415,12 @@ class FileValidator:
             temp_file, filename, sig_type
         )
 
-        # MIME check — be lenient for FIT
-        if not is_fit:
-            self.mime_validator.enforce(
-                detected_mime,
-                self.config.ALLOWED_ACTIVITY_MIMES,
-                filename,
-                error_code=ErrorCode.MIME_TYPE_MISMATCH,
-            )
+        self.mime_validator.enforce(
+            detected_mime,
+            self.config.ALLOWED_ACTIVITY_TYPES,
+            filename,
+            error_code=ErrorCode.MIME_TYPE_MISMATCH,
+        )
 
         if is_fit:
             self.fit_validator.validate(temp_file, filename=filename)
@@ -1386,8 +1444,9 @@ class FileValidator:
             detected_mime,
             file_size,
         )
+        return detected_mime
 
-    async def validate_gzip_file(self, file: UploadFile) -> None:
+    async def validate_gzip_file(self, file: UploadFile) -> ValidationResult:
         """
         Validate uploaded gzip archive.
 
@@ -1401,24 +1460,25 @@ class FileValidator:
             FilenameSecurityError: Filename fails security.
             ExtensionSecurityError: Extension not allowed.
             FileSizeError: File exceeds size limit or empty.
-            MimeTypeError: MIME type not allowed.
+            MimeTypeError: MIME type not allowed, or the extension
+                is not one listed for it.
             FileSignatureError: Signature mismatch.
             ZipBombError: Decompression bomb detected.
             CompressionSecurityError: Invalid gzip structure.
             FileProcessingError: Unexpected error.
         """
         with self._validation_run(file.filename, "gzip") as run:
-            await self._validate_streamed(
+            return await self._validate_streamed(
                 file,
                 run,
-                self.config.ALLOWED_GZIP_EXTENSIONS,
+                self.config.ALLOWED_GZIP_TYPES,
                 self.config.limits.max_gzip_size,
                 self._inspect_gzip_sync,
             )
 
     def validate_gzip_file_sync(
         self, file: SeekableFile, filename: str
-    ) -> str:
+    ) -> ValidationResult:
         """
         Validate a gzip archive from a seekable file in this thread.
 
@@ -1433,14 +1493,15 @@ class FileValidator:
             filename: Filename supplied by the client.
 
         Returns:
-            Sanitized filename.
+            Sanitized filename and detected MIME type.
 
         Raises:
             RuntimeError: Called on a thread running an event loop.
             FilenameSecurityError: Filename fails security.
             ExtensionSecurityError: Extension not allowed.
             FileSizeError: File exceeds size limit or empty.
-            MimeTypeError: MIME type not allowed.
+            MimeTypeError: MIME type not allowed, or the extension
+                is not one listed for it.
             FileSignatureError: Signature mismatch.
             ZipBombError: Decompression bomb detected.
             CompressionSecurityError: Invalid gzip structure.
@@ -1454,7 +1515,7 @@ class FileValidator:
                 file,
                 filename,
                 run,
-                self.config.ALLOWED_GZIP_EXTENSIONS,
+                self.config.ALLOWED_GZIP_TYPES,
                 self.config.limits.max_gzip_size,
                 self._inspect_gzip_sync,
             )
@@ -1464,7 +1525,7 @@ class FileValidator:
         temp_file: tempfile.SpooledTemporaryFile[bytes],
         file_size: int,
         filename: str,
-    ) -> None:
+    ) -> str:
         """
         Run blocking gzip inspection on a temp file.
 
@@ -1473,8 +1534,12 @@ class FileValidator:
             file_size: Compressed size in bytes.
             filename: Sanitized filename for context.
 
+        Returns:
+            Detected MIME type.
+
         Raises:
-            MimeTypeError: If the MIME type is not allowed.
+            MimeTypeError: If the MIME type is not allowed or does
+                not permit the extension.
             FileSignatureError: If the signature mismatches.
             ZipBombError: If a decompression bomb is detected.
             CompressionSecurityError: If the gzip is invalid.
@@ -1486,7 +1551,7 @@ class FileValidator:
         # MIME check — allow octet-stream
         self.mime_validator.enforce(
             detected_mime,
-            self.config.ALLOWED_GZIP_MIMES,
+            self.config.ALLOWED_GZIP_TYPES,
             filename,
             allow_octet_stream=True,
             error_code=ErrorCode.MIME_TYPE_MISMATCH,
@@ -1501,3 +1566,4 @@ class FileValidator:
             detected_mime,
             file_size,
         )
+        return detected_mime

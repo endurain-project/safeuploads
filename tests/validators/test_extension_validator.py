@@ -7,6 +7,7 @@ from safeuploads.exceptions import (
     ExtensionSecurityError,
     FilenameSecurityError,
 )
+from safeuploads.utils import allowed_extensions
 from safeuploads.validators.extension_validator import (
     ExtensionSecurityValidator,
 )
@@ -331,22 +332,22 @@ class TestValidateAllowed:
         """Allowed image extensions pass, case-insensitively."""
         validator = ExtensionSecurityValidator(default_config)
         validator.validate_allowed(
-            filename, default_config.ALLOWED_IMAGE_EXTENSIONS
+            filename, allowed_extensions(default_config.ALLOWED_IMAGE_TYPES)
         )
 
     def test_allowed_zip_extension_passes(self, default_config):
         """Allowed ZIP extension passes."""
         validator = ExtensionSecurityValidator(default_config)
         validator.validate_allowed(
-            "archive.zip", default_config.ALLOWED_ZIP_EXTENSIONS
+            "archive.zip", allowed_extensions(default_config.ALLOWED_ZIP_TYPES)
         )
 
     @pytest.mark.parametrize(
         ("filename", "allowed"),
         [
-            ("document.pdf", "ALLOWED_IMAGE_EXTENSIONS"),
-            ("archive.rar", "ALLOWED_ZIP_EXTENSIONS"),
-            ("malware.exe", "ALLOWED_IMAGE_EXTENSIONS"),
+            ("document.pdf", "ALLOWED_IMAGE_TYPES"),
+            ("archive.rar", "ALLOWED_ZIP_TYPES"),
+            ("malware.exe", "ALLOWED_IMAGE_TYPES"),
         ],
     )
     def test_extension_not_allowed(self, default_config, filename, allowed):
@@ -354,7 +355,7 @@ class TestValidateAllowed:
         validator = ExtensionSecurityValidator(default_config)
         with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_allowed(
-                filename, getattr(default_config, allowed)
+                filename, allowed_extensions(getattr(default_config, allowed))
             )
         assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
         assert exc_info.value.filename == filename
@@ -372,7 +373,7 @@ class TestValidateAllowed:
         validator = ExtensionSecurityValidator(default_config)
         with pytest.raises(ExtensionSecurityError) as exc_info:
             validator.validate_allowed(
-                "noext", default_config.ALLOWED_IMAGE_EXTENSIONS
+                "noext", allowed_extensions(default_config.ALLOWED_IMAGE_TYPES)
             )
         assert exc_info.value.error_code == ErrorCode.EXTENSION_MISSING
 
@@ -389,6 +390,7 @@ class TestValidateAllowed:
         validator = ExtensionSecurityValidator(default_config)
         with pytest.raises(FilenameSecurityError) as exc_info:
             validator.validate_allowed(
-                filename, default_config.ALLOWED_IMAGE_EXTENSIONS
+                filename,
+                allowed_extensions(default_config.ALLOWED_IMAGE_TYPES),
             )
         assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY

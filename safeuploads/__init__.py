@@ -49,7 +49,7 @@ from .exceptions import (
 )
 
 # Main validator
-from .file_validator import FileValidator
+from .file_validator import FileValidator, ValidationResult
 
 # Inspectors
 from .inspectors import (
@@ -124,6 +124,7 @@ __all__ = [
     "MalwareSignatureCategory",
     # Main validator
     "FileValidator",
+    "ValidationResult",
     # Specialized validators
     "BaseValidator",
     "UnicodeSecurityValidator",

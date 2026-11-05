@@ -39,7 +39,7 @@ safeuploads/
 | Component | Responsibility |
 |---|---|
 | `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring and audit events, and delegates to validators/inspectors. The async methods offload blocking inspection to a worker thread (or a configured `executor`); the `*_sync` methods run the same pipeline in the calling thread and refuse to run on an event-loop thread. Exposes them as `filename_validator`, `signature_validator`, `mime_validator` and the other validator attributes; `magic_mime` and `magic_available` are properties that delegate to `mime_validator`. |
-| `FileSecurityConfig` | Centralizes all configuration: allowed MIME types, extensions, blocked extensions, Unicode characters, and Windows reserved names. |
+| `FileSecurityConfig` | Centralizes all configuration: allowed MIME types mapped to the extensions each permits, blocked extensions, Unicode characters, and Windows reserved names. |
 | `SecurityLimits` | Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps. |
 | `BaseValidator` | Abstract base class; validators inherit and implement `validate()`. |
 | `UnicodeSecurityValidator` | NFC normalization and dangerous character detection (rejects with `UnicodeSecurityError`). |
@@ -47,7 +47,7 @@ safeuploads/
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
 | `FilenameSecurityValidator` | Strips path components and dangerous characters from a filename and limits its length to `max_sanitized_name_length`. |
 | `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image: JPEG, PNG or WebP; ZIP, gzip, activity or FIT). |
-| `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename) and enforces the allowed MIME types. |
+| `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename), enforces the allowed MIME types and requires the filename's extension to be one listed for the detected type. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |
 | `FitSecurityValidator` | Checks the FIT container: headers, header CRC, data size, CRC-16 per section, and that the sections cover the file exactly. |
@@ -61,7 +61,7 @@ safeuploads/
 
 ## Validation Pipelines
 
-The `validate_*_file_sync` methods run the identical steps listed below in the calling thread, without the worker-thread offload.
+The `validate_*_file_sync` methods run the identical steps listed below in the calling thread, without the worker-thread offload. Every method returns a `ValidationResult` with the sanitized filename and the detected MIME type.
 
 ### Image Validation (`validate_image_file`)
 
@@ -97,8 +97,11 @@ UploadFile
               │
               ▼
 ┌─────────────────────────────┐
-│ 5. MIME Type Detection      │
+│ 5. MIME Type Check          │
 │    (python-magic, first 8KB)│
+│    ├── Type allowed         │
+│    └── Extension listed for │
+│        the detected type    │
 └─────────────┬───────────────┘
               │
               ▼
@@ -162,6 +165,8 @@ UploadFile
               ▼
 ┌─────────────────────────────┐
 │ 6. MIME + Signature Check   │
+│    (extension listed for    │
+│    the detected type)       │
 └─────────────┬───────────────┘
               │
               ▼
@@ -245,8 +250,10 @@ UploadFile (.gpx, .tcx, .fit)
 │ 5. MIME + Signature Check    │
 │    ├── FIT: binary signature │
 │    │   (.FIT at bytes 8-11)  │
-│    └── GPX/TCX: XML header   │
-│        (<?xml)               │
+│    ├── GPX/TCX: XML header   │
+│    │   (<?xml)               │
+│    └── Extension listed for  │
+│        the detected type     │
 └──────────────┬───────────────┘
                │
                ▼
@@ -310,6 +317,8 @@ UploadFile (.gz)
 ┌──────────────────────────────┐
 │ 5. MIME + Signature Check    │
 │    (gzip magic: \x1f\x8b)   │
+│    (extension listed for     │
+│    the detected type)        │
 └──────────────┬───────────────┘
                │
                ▼
@@ -388,7 +397,7 @@ All `FileSecurityError` subclasses carry an `error_code` from
 | `ExtensionSecurityError` | `EXTENSION_BLOCKED` |
 | `WindowsReservedNameError` | `WINDOWS_RESERVED_NAME` |
 | `FileSizeError` | `FILE_TOO_LARGE` |
-| `MimeTypeError` | `MIME_TYPE_INVALID` (uploads whose detected MIME is not allowed are reported as `MIME_TYPE_MISMATCH`) |
+| `MimeTypeError` | `MIME_TYPE_INVALID` (uploads whose detected MIME is not allowed are reported as `MIME_TYPE_MISMATCH`, and an extension not listed for the detected MIME as `EXTENSION_MIME_MISMATCH`) |
 | `FileSignatureError` | `FILE_SIGNATURE_MISMATCH` |
 | `CompressionSecurityError` | `ZIP_INVALID_STRUCTURE` |
 | `ZipBombError` | `ZIP_BOMB_DETECTED` |

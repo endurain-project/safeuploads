@@ -8,11 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- WebP image support. `FileSignatureValidator` accepts a RIFF container whose form type at bytes 8-11 is `WEBP` as an image signature; WAV, AVI and other RIFF files are still rejected. `FileSecurityConfig.ALLOWED_IMAGE_MIMES` includes `image/webp` and `ALLOWED_IMAGE_EXTENSIONS` includes `.webp`.
+- WebP image support. `FileSignatureValidator` accepts a RIFF container whose form type at bytes 8-11 is `WEBP` as an image signature; WAV, AVI and other RIFF files are still rejected. `ALLOWED_IMAGE_TYPES` maps `image/webp` to `.webp`.
+- `ValidationResult`, exported from `safeuploads`: a frozen dataclass with the sanitized `filename` and the `mime_type` libmagic detected from the content. Use `mime_type` for the `Content-Type` of a stored or served copy and to derive a stored file's extension, as the integration checklist recommends.
+- `ErrorCode.EXTENSION_MIME_MISMATCH`, raised with `MimeTypeError` when the content's MIME type is allowed but the filename's extension is not one listed for it. `allowed_mimes` on the error lists the MIME types that extension permits.
+- `FileSecurityConfig.ALLOWED_IMAGE_TYPES`, `ALLOWED_ZIP_TYPES`, `ALLOWED_ACTIVITY_TYPES` and `ALLOWED_GZIP_TYPES`: read-only mappings from each allowed MIME type to the extensions its content may carry. Configuration validation reports an empty mapping (`empty_mime_set`), a MIME type with no extensions (`empty_extension_set`), and the existing extension format, case and block-list conflict checks on every listed extension.
 
 ### Changed
 
-- **Breaking:** `validate_image_file()` and `validate_image_file_sync()` accept `.webp` uploads with WebP content under the default configuration, which 3.0.0 rejected. A host that cannot handle WebP after validation removes `image/webp` from `ALLOWED_IMAGE_MIMES` and `.webp` from `ALLOWED_IMAGE_EXTENSIONS` in the `FileSecurityConfig` it passes to `FileValidator`; removing only the extension still accepts WebP content under a `.jpg` or `.png` name.
+- **Breaking:** every `validate_*_file()` method returns a `ValidationResult` instead of `None`, and every `validate_*_file_sync()` method returns a `ValidationResult` instead of the sanitized filename. Replace `name = validator.validate_image_file_sync(f, name)` with `name = validator.validate_image_file_sync(f, name).filename`.
+- **Breaking:** an upload is rejected with `MimeTypeError` (`EXTENSION_MIME_MISMATCH`) when its extension is not one listed for the MIME type detected from its content, for example a PNG or WebP named `photo.jpg`, or a JPEG named `photo.png`. 3.0.0 accepted any allowed extension with any allowed MIME type of the same category. To accept such a pair, list the extension under that MIME type, for example `".jpg"` under `"image/webp"`.
+- **Breaking:** `validate_image_file()` and `validate_image_file_sync()` accept `.webp` uploads with WebP content under the default configuration, which 3.0.0 rejected. A host that cannot handle WebP after validation removes `image/webp` from `ALLOWED_IMAGE_TYPES`.
+- **Breaking:** FIT uploads get the MIME check the other formats get: a `.fit` file must be detected as `application/octet-stream`. A fake FIT that libmagic reports as text is now rejected with `EXTENSION_MIME_MISMATCH` before the FIT structure check.
+- **Breaking:** `MimeTypeValidator.enforce()` takes an allowed-types mapping instead of a set of MIME types and checks the filename's extension against it.
+- **Breaking:** `image/jpg` is no longer an allowed image MIME type. It is not a registered type and libmagic reports JPEG content as `image/jpeg`.
+
+### Removed
+
+- **Breaking:** `FileSecurityConfig.ALLOWED_IMAGE_MIMES`, `ALLOWED_ZIP_MIMES`, `ALLOWED_ACTIVITY_MIMES`, `ALLOWED_GZIP_MIMES`, `ALLOWED_IMAGE_EXTENSIONS`, `ALLOWED_ZIP_EXTENSIONS`, `ALLOWED_ACTIVITY_EXTENSIONS` and `ALLOWED_GZIP_EXTENSIONS`. Each pair is replaced by one `ALLOWED_*_TYPES` mapping, so a MIME type and its extensions can no longer be changed apart. Migrate a narrowed allow-list such as
+
+  ```python
+  config.ALLOWED_IMAGE_MIMES = frozenset({"image/png"})
+  config.ALLOWED_IMAGE_EXTENSIONS = frozenset({".png"})
+  ```
+
+  to
+
+  ```python
+  config.ALLOWED_IMAGE_TYPES = {"image/png": frozenset({".png"})}
+  ```
 
 ## [3.0.0] - 2026-11-05
 

@@ -92,7 +92,7 @@ uv run pytest
 - Configuration changes go through `FileSecurityConfig` and `SecurityLimits`, and a new field updates their cross-field validation.
 - Failures raise the exceptions in `safeuploads/exceptions.py` (with a stable `ErrorCode`), never a bare `ValueError` or `Exception`.
 - The order of filename checks is significant: Unicode sanitization first, Windows reserved names before other normalization.
-- Blocking inspection never runs on the event loop; it goes through `FileValidator`'s worker-thread offload.
+- Blocking inspection never runs on the event loop: the async `validate_*_file` methods offload it to a worker thread, and the `*_sync` methods run it in the calling thread and refuse to run on an event-loop thread.
 - XML is parsed only through `defusedxml` (XXE-safe); archives are inspected without extracting to disk and under size, ratio, depth and entry limits.
 - Never build a filesystem path from an uploaded filename.
 - Logging uses `logging.getLogger(__name__)` and the `SecurityAuditLogger`; never log file contents.

@@ -38,7 +38,7 @@ safeuploads/
 
 | Component | Responsibility |
 |---|---|
-| `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring, audit events, offloads blocking inspection to a worker thread (or a configured `executor`), and delegates to validators/inspectors. Exposes them as `filename_validator`, `signature_validator`, `mime_validator` and the other validator attributes; `magic_mime` and `magic_available` are properties that delegate to `mime_validator`. |
+| `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring and audit events, and delegates to validators/inspectors. The async methods offload blocking inspection to a worker thread (or a configured `executor`); the `*_sync` methods run the same pipeline in the calling thread and refuse to run on an event-loop thread. Exposes them as `filename_validator`, `signature_validator`, `mime_validator` and the other validator attributes; `magic_mime` and `magic_available` are properties that delegate to `mime_validator`. |
 | `FileSecurityConfig` | Centralizes all configuration: allowed MIME types, extensions, blocked extensions, Unicode characters, and Windows reserved names. |
 | `SecurityLimits` | Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps. |
 | `BaseValidator` | Abstract base class; validators inherit and implement `validate()`. |
@@ -60,6 +60,8 @@ safeuploads/
 ---
 
 ## Validation Pipelines
+
+The `validate_*_file_sync` methods run the identical steps listed below in the calling thread, without the worker-thread offload.
 
 ### Image Validation (`validate_image_file`)
 
@@ -400,7 +402,7 @@ and content threats, are `FileValidationError` subclasses.
 ## Audit Event Flow
 
 ```
-FileValidator.validate_*()  (_run_validation)
+FileValidator.validate_*()  (_validation_run)
   │
   ├── bind_correlation_id()    # reuses the host's ID, if set
   ├── audit.start()            # VALIDATION_START

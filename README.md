@@ -12,7 +12,7 @@ Secure file upload validation for Python 3.13+ applications. Catches dangerous f
 
 ## Features
 
-- **Framework-agnostic** async validation (FastAPI, generic)
+- **Framework-agnostic** async and sync validation (FastAPI, generic)
 - Filename sanitization and Unicode security checks
 - Extension validation with configurable allow/block lists
 - ZIP bomb detection, nested archive inspection, and recursive structure protection
@@ -56,6 +56,19 @@ async def upload_image(file: UploadFile):
     
     return {"status": "success", "filename": file.filename}
 ```
+
+For synchronous code or worker threads, use the `*_sync` methods. They block the calling thread and return the sanitized filename:
+
+```python
+from safeuploads import FileValidator
+
+validator = FileValidator()
+
+with open("activity.gpx", "rb") as fh:
+    safe_name = validator.validate_activity_file_sync(fh, "activity.gpx")
+```
+
+Calling a `*_sync` method on a thread running an asyncio event loop raises `RuntimeError`; await the async method there instead.
 
 ## Configuration
 

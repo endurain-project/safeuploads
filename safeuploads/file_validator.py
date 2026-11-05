@@ -1,13 +1,15 @@
 """Main file validator coordinating all security validations."""
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import os
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Generator
 from concurrent.futures import Executor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import magic
@@ -44,6 +46,7 @@ from .exceptions import (
 from .inspectors import ZipContentInspector
 from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
+from .protocols import SeekableFile
 from .utils import ResourceMonitor, bytes_to_mb, check_resource_limits
 from .validators import (
     CompressionSecurityValidator,
@@ -60,6 +63,19 @@ from .validators.xml_validator import XmlSecurityValidator
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+@dataclass
+class _ValidationRun:
+    """
+    Mutable state of one validation call.
+
+    Attributes:
+        filename: Name used in terminal audit events; the raw name
+            at first, the sanitized name once sanitization passed.
+    """
+
+    filename: str
 
 
 class FileValidator:
@@ -91,9 +107,11 @@ class FileValidator:
         Args:
             config: Optional configuration object defining file security
                 rules. Defaults to new FileSecurityConfig instance.
-            executor: Optional executor used to run blocking
+            executor: Optional executor used by the async
+                ``validate_*_file`` methods to run blocking
                 inspection off the event loop. Defaults to the
-                asyncio default thread pool.
+                asyncio default thread pool. The ``*_sync`` methods
+                never use it.
 
         Raises:
             FileSecurityConfigurationError: If the configuration
@@ -332,6 +350,44 @@ class FileValidator:
 
         return filename
 
+    def _validated_filename(self, filename: str | None) -> str:
+        """
+        Validate a filename and return its sanitized form.
+
+        Args:
+            filename: Filename supplied by the client.
+
+        Returns:
+            Sanitized filename.
+
+        Raises:
+            FilenameSecurityError: Filename is empty, invalid, or fails
+                sanitization.
+            FileProcessingError: Unexpected error during filename
+                validation.
+        """
+        # Check filename
+        if not filename:
+            raise FilenameSecurityError(
+                "Filename is required",
+                error_code=ErrorCode.FILENAME_EMPTY,
+            )
+
+        # Sanitize the filename to prevent security issues
+        try:
+            return self._sanitize_filename(filename)
+        except FileValidationError:
+            # Let FileValidationError and subclasses propagate
+            raise
+        except Exception as err:
+            logger.exception(
+                "Unexpected error during filename validation: %r", err
+            )
+            raise FileProcessingError(
+                "Filename validation failed due to internal error",
+                original_error=err,
+            ) from err
+
     def _validate_filename(self, file: UploadFile) -> None:
         """
         Validate filename of uploaded file and sanitize it in place.
@@ -346,30 +402,108 @@ class FileValidator:
             FileProcessingError: Unexpected error during filename
                 validation.
         """
-        # Check filename
-        if not file.filename:
-            raise FilenameSecurityError(
-                "Filename is required",
-                error_code=ErrorCode.FILENAME_EMPTY,
+        file.filename = self._validated_filename(file.filename)
+
+    @staticmethod
+    def _raise_if_too_large(total_bytes: int, max_file_size: int) -> None:
+        """
+        Raise when the bytes read so far exceed the size limit.
+
+        Args:
+            total_bytes: Bytes read so far.
+            max_file_size: Maximum allowed file size in bytes.
+
+        Raises:
+            FileSizeError: ``total_bytes`` exceeds ``max_file_size``.
+        """
+        if total_bytes > max_file_size:
+            raise FileSizeError(
+                f"File too large. Maximum: {bytes_to_mb(max_file_size)}MB",
+                size=total_bytes,
+                max_size=max_file_size,
             )
 
-        # Sanitize the filename to prevent security issues
-        try:
-            sanitized_filename = self._sanitize_filename(file.filename)
+    @staticmethod
+    def _raise_if_empty(total_bytes: int, max_file_size: int) -> None:
+        """
+        Raise when no bytes were read.
 
-            # Update the file object with sanitized filename
-            file.filename = sanitized_filename
-        except FileValidationError:
-            # Let FileValidationError and subclasses propagate
-            raise
-        except Exception as err:
-            logger.exception(
-                "Unexpected error during filename validation: %r", err
+        Args:
+            total_bytes: Total bytes read.
+            max_file_size: Maximum allowed file size in bytes.
+
+        Raises:
+            FileSizeError: ``total_bytes`` is zero.
+        """
+        if total_bytes == 0:
+            raise FileSizeError(
+                "Empty file not allowed",
+                size=0,
+                max_size=max_file_size,
+                error_code=ErrorCode.FILE_EMPTY,
             )
-            raise FileProcessingError(
-                "Filename validation failed due to internal error",
-                original_error=err,
-            ) from err
+
+    @staticmethod
+    def _read_up_to(file: SeekableFile, size: int) -> bytes:
+        """
+        Read ``size`` bytes, or up to end of file.
+
+        A raw stream may return fewer bytes than asked before its
+        end, so reading repeats until ``size`` bytes or EOF.
+
+        Args:
+            file: Seekable binary file.
+            size: Number of bytes to read.
+
+        Returns:
+            Bytes read; shorter than ``size`` only at end of file.
+        """
+        parts: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = file.read(remaining)
+            if not chunk:
+                break
+            parts.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(parts)
+
+    @staticmethod
+    async def _read_up_to_async(file: UploadFile, size: int) -> bytes:
+        """
+        Read ``size`` bytes from an upload, or up to end of file.
+
+        An upload may return fewer bytes than asked before its end,
+        so reading repeats until ``size`` bytes or EOF.
+
+        Args:
+            file: Uploaded file supporting asynchronous read.
+            size: Number of bytes to read.
+
+        Returns:
+            Bytes read; shorter than ``size`` only at end of file.
+        """
+        parts: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = await file.read(remaining)
+            if not chunk:
+                break
+            parts.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(parts)
+
+    def _new_spool(self) -> tempfile.SpooledTemporaryFile[bytes]:
+        """
+        Create the temp file that receives a streamed upload.
+
+        Returns:
+            Spooled temp file that spills to disk past
+            ``max_memory_buffer_size``.
+        """
+        return tempfile.SpooledTemporaryFile(
+            max_size=self.config.limits.max_memory_buffer_size
+        )
 
     async def _validate_file_size(
         self, file: UploadFile, max_file_size: int
@@ -393,7 +527,7 @@ class FileValidator:
         # Start at byte 0: the host may have left the stream
         # mid-file, which would hide the real header.
         await file.seek(0)
-        file_content = await file.read(8192)  # Read first 8KB
+        file_content = await self._read_up_to_async(file, 8192)
 
         # Reset file position
         await file.seek(0)
@@ -426,20 +560,51 @@ class FileValidator:
             file_size += len(chunk)
             if file_size > max_file_size:
                 await file.seek(0)
-                raise FileSizeError(
-                    f"File too large. Maximum: {bytes_to_mb(max_file_size)}MB",
-                    size=file_size,
-                    max_size=max_file_size,
-                )
+                self._raise_if_too_large(file_size, max_file_size)
         await file.seek(0)
 
-        if file_size == 0:
-            raise FileSizeError(
-                "Empty file not allowed",
-                size=0,
-                max_size=max_file_size,
-                error_code=ErrorCode.FILE_EMPTY,
-            )
+        self._raise_if_empty(file_size, max_file_size)
+
+        return file_content, file_size
+
+    def _validate_file_size_sync(
+        self, file: SeekableFile, max_file_size: int
+    ) -> tuple[bytes, int]:
+        """
+        Validate file size by streaming a seekable file.
+
+        Same rules as ``_validate_file_size`` except that there is
+        no declared size: the real byte count is always measured.
+
+        Args:
+            file: Seekable binary file.
+            max_file_size: Maximum allowed file size in bytes.
+
+        Returns:
+            Tuple containing first 8 KB of file content and detected
+            file size in bytes.
+
+        Raises:
+            FileSizeError: File size exceeds maximum or file is empty.
+        """
+        file.seek(0)
+        file_content = self._read_up_to(file, 8192)
+        file.seek(0)
+
+        chunk_size = self.config.limits.chunk_size
+        file_size = 0
+        while True:
+            chunk = file.read(chunk_size)
+            check_resource_limits()
+            if not chunk:
+                break
+            file_size += len(chunk)
+            if file_size > max_file_size:
+                file.seek(0)
+                self._raise_if_too_large(file_size, max_file_size)
+        file.seek(0)
+
+        self._raise_if_empty(file_size, max_file_size)
 
         return file_content, file_size
 
@@ -470,9 +635,7 @@ class FileValidator:
         closed (after an in-flight offloaded write finished) and
         the error propagates.
         """
-        temp = tempfile.SpooledTemporaryFile(  # noqa: SIM115
-            max_size=self.config.limits.max_memory_buffer_size
-        )
+        temp = self._new_spool()
         total_bytes = 0
         write_worker: asyncio.Future[int] | None = None
         spill_threshold = self.config.limits.max_memory_buffer_size
@@ -487,14 +650,7 @@ class FileValidator:
                 if not chunk:
                     break
                 total_bytes += len(chunk)
-                if total_bytes > max_file_size:
-                    raise FileSizeError(
-                        f"File too large. "
-                        f"Maximum: "
-                        f"{bytes_to_mb(max_file_size)}MB",
-                        size=total_bytes,
-                        max_size=max_file_size,
-                    )
+                self._raise_if_too_large(total_bytes, max_file_size)
                 if total_bytes > spill_threshold:
                     # Past the in-memory buffer the write is disk I/O
                     write_worker = self._submit(temp.write, chunk)
@@ -502,19 +658,62 @@ class FileValidator:
                 else:
                     temp.write(chunk)
 
-            if total_bytes == 0:
-                raise FileSizeError(
-                    "Empty file not allowed",
-                    size=0,
-                    max_size=max_file_size,
-                    error_code=ErrorCode.FILE_EMPTY,
-                )
+            self._raise_if_empty(total_bytes, max_file_size)
 
             temp.seek(0)
             await file.seek(0)
             return temp, total_bytes
         except BaseException:
             self._close_when_idle(temp, write_worker)
+            raise
+
+    def _stream_to_temp_file_sync(
+        self, file: SeekableFile, max_file_size: int
+    ) -> tuple[tempfile.SpooledTemporaryFile[bytes], int]:
+        """
+        Stream a seekable file to a SpooledTemporaryFile with size checks.
+
+        Same rules as ``_stream_to_temp_file``; every write happens
+        in the calling thread.
+
+        Args:
+            file: Seekable binary file.
+            max_file_size: Maximum allowed file size in bytes.
+
+        Returns:
+            Tuple of SpooledTemporaryFile positioned at start and
+            total bytes written. The original file is also seeked
+            back to position 0.
+
+        Raises:
+            FileSizeError: File exceeds maximum or is empty.
+
+        On any failure the temp file is closed and the error
+        propagates.
+        """
+        temp = self._new_spool()
+        total_bytes = 0
+        chunk_size = self.config.limits.chunk_size
+
+        file.seek(0)
+
+        try:
+            while True:
+                chunk = file.read(chunk_size)
+                check_resource_limits()
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                self._raise_if_too_large(total_bytes, max_file_size)
+                temp.write(chunk)
+
+            self._raise_if_empty(total_bytes, max_file_size)
+
+            temp.seek(0)
+            file.seek(0)
+            return temp, total_bytes
+        except BaseException:
+            temp.close()
             raise
 
     def _read_header_and_detect(
@@ -585,25 +784,25 @@ class FileValidator:
                 error_code=ErrorCode.CONTENT_THREAT_DETECTED,
             )
 
-    async def _run_validation(
-        self,
-        file: UploadFile,
-        file_type: str,
-        body: Callable[[UploadFile], Awaitable[None]],
-    ) -> None:
+    @contextlib.contextmanager
+    def _validation_run(
+        self, filename: str | None, file_type: str
+    ) -> Generator[_ValidationRun]:
         """
-        Run a validation body with audit logging and error mapping.
+        Wrap a validation with audit logging and error mapping.
 
-        Wraps a format-specific validation callback with
-        correlation-ID setup, an audit start event and one
-        terminal success, failure or resource-limit event, and
-        internal-error wrapping.
+        Binds a correlation ID, emits an audit start event and one
+        terminal success, failure or resource-limit event, wraps
+        unexpected errors in ``FileProcessingError`` and restores
+        the correlation ID on exit.
 
         Args:
-            file: Uploaded file being validated.
+            filename: Raw filename supplied by the client.
             file_type: Label used in log messages.
-            body: Async callback performing the format-specific
-                validation.
+
+        Yields:
+            Run state whose ``filename`` the body sets to the
+            sanitized name for the terminal audit event.
 
         Raises:
             FileValidationError: Propagated from the body.
@@ -612,45 +811,30 @@ class FileValidator:
                 unexpected internal error.
         """
         cid, cid_token = bind_correlation_id()
-        filename = file.filename or "unknown"
+        run = _ValidationRun(filename or "unknown")
         t0 = time.monotonic()
         try:
-            self._audit.start(filename, cid)
+            self._audit.start(run.filename, cid)
             logger.debug(
-                "Starting %s file validation: %r", file_type, filename
+                "Starting %s file validation: %r", file_type, run.filename
             )
-            await body(file)
+            yield run
             ms = (time.monotonic() - t0) * 1000
-            self._audit.success(file.filename or filename, cid, ms)
+            self._audit.success(run.filename, cid, ms)
         except ResourceLimitError as exc:
             ms = (time.monotonic() - t0) * 1000
-            self._audit.resource_limit(
-                file.filename or filename,
-                cid,
-                ms,
-                str(exc),
-            )
+            self._audit.resource_limit(run.filename, cid, ms, str(exc))
             raise
         except (
             FileValidationError,
             FileProcessingError,
         ) as exc:
             ms = (time.monotonic() - t0) * 1000
-            self._audit.failure(
-                file.filename or filename,
-                cid,
-                ms,
-                str(exc),
-            )
+            self._audit.failure(run.filename, cid, ms, str(exc))
             raise
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
-            self._audit.failure(
-                file.filename or filename,
-                cid,
-                ms,
-                "internal_error",
-            )
+            self._audit.failure(run.filename, cid, ms, "internal_error")
             logger.exception(
                 "Error during %s file validation: %r", file_type, err
             )
@@ -660,6 +844,74 @@ class FileValidator:
             ) from err
         finally:
             correlation_id_var.reset(cid_token)
+
+    @staticmethod
+    def _refuse_on_event_loop(sync_name: str, async_name: str) -> None:
+        """
+        Refuse a blocking call made on an event loop thread.
+
+        Args:
+            sync_name: Name of the blocking method being called.
+            async_name: Name of its async counterpart.
+
+        Raises:
+            RuntimeError: The calling thread runs an event loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise RuntimeError(
+            f"{sync_name}() blocks and cannot run on an event loop "
+            f"thread; await {async_name}() or run it in a worker thread"
+        )
+
+    def _inspect_image_sync(
+        self, header: bytes, sample: bytes | None, filename: str
+    ) -> str:
+        """
+        Run the image checks that follow the size check.
+
+        Checks, in order, MIME type, signature and content threats.
+        Blocking; the async path runs it in a worker thread.
+
+        Args:
+            header: First 8 KB of the file.
+            sample: Content sample for threat scanning, or None when
+                content analysis is disabled.
+            filename: Sanitized filename for context.
+
+        Returns:
+            Detected MIME type.
+
+        Raises:
+            MimeTypeError: If the MIME type is not allowed.
+            FileSignatureError: If the signature mismatches.
+            ContentThreatError: If content analysis finds threats.
+        """
+        detected_mime = self.mime_validator.detect(header, filename)
+        self.mime_validator.enforce(
+            detected_mime,
+            self.config.ALLOWED_IMAGE_MIMES,
+            filename,
+            error_code=ErrorCode.MIME_TYPE_MISMATCH,
+        )
+        self.signature_validator.validate(header, "image")
+        if sample is not None:
+            self._raise_on_content_threats(sample, filename, "image")
+        return detected_mime
+
+    def _resource_monitor(self) -> ResourceMonitor:
+        """
+        Create the resource monitor configured for one validation.
+
+        Returns:
+            Monitor with the configured time and memory budgets.
+        """
+        return ResourceMonitor(
+            max_time_seconds=self.config.limits.max_validation_time_seconds,
+            max_memory_mb=self.config.limits.max_validation_memory_mb,
+        )
 
     async def validate_image_file(self, file: UploadFile) -> None:
         """
@@ -682,76 +934,196 @@ class FileValidator:
             ContentThreatError: Content analysis found threats.
             FileProcessingError: Unexpected error during validation.
         """
-        await self._run_validation(file, "image", self._validate_image_body)
-
-    async def _validate_image_body(self, file: UploadFile) -> None:
-        """
-        Run image-specific validation steps.
-
-        Args:
-            file: Uploaded image file to validate.
-
-        Raises:
-            FileValidationError: If an image validation check fails.
-            ContentThreatError: If content analysis finds threats.
-        """
-        # Validate filename (raises exceptions on failure)
-        self._validate_filename(file)
-
-        # Validate file extension (raises exceptions on failure)
-        self.extension_validator.validate_allowed(
-            file.filename, self.config.ALLOWED_IMAGE_EXTENSIONS
-        )
-
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
-            # Validate file size (raises on failure,
-            # returns content and size on success)
-            file_content, file_size = await self._validate_file_size(
-                file, self.config.limits.max_image_size
-            )
-
-            # Detect MIME type
+        with self._validation_run(file.filename, "image") as run:
+            self._validate_filename(file)
             filename = file.filename or "unknown"
-            detected_mime = await self._to_thread(
-                self.mime_validator.detect, file_content, filename
+            run.filename = filename
+            self.extension_validator.validate_allowed(
+                filename, self.config.ALLOWED_IMAGE_EXTENSIONS
             )
 
-            self.mime_validator.enforce(
-                detected_mime,
-                self.config.ALLOWED_IMAGE_MIMES,
-                filename,
-                error_code=ErrorCode.MIME_TYPE_MISMATCH,
-            )
-
-            # Validate file signature (raises exceptions on failure)
-            self.signature_validator.validate(file_content, "image")
-
-            # Optional content analysis (offloaded — scans up to
-            # content_scan_max_size bytes and is CPU-bound)
-            if self.config.limits.enable_content_analysis:
-                scan_size = self.config.limits.content_scan_max_size
-                # file_content holds only the 8 KB header;
-                # re-read up to scan_size bytes so threats
-                # past the header (e.g. polyglots) are seen.
-                await file.seek(0)
-                sample = await file.read(scan_size)
-                await file.seek(0)
-                await self._to_thread(
-                    self._raise_on_content_threats,
-                    sample,
-                    filename,
-                    "image",
+            with self._resource_monitor():
+                header, file_size = await self._validate_file_size(
+                    file, self.config.limits.max_image_size
                 )
 
-            logger.debug(
-                "Image file validation passed: %r (%s, %s bytes)",
-                filename,
-                detected_mime,
-                file_size,
+                sample: bytes | None = None
+                if self.config.limits.enable_content_analysis:
+                    # header holds only the first 8 KB; re-read up
+                    # to scan_size bytes so threats past the header
+                    # (e.g. polyglots) are seen.
+                    await file.seek(0)
+                    sample = await self._read_up_to_async(
+                        file, self.config.limits.content_scan_max_size
+                    )
+                    await file.seek(0)
+
+                # One offloaded call: MIME detection and the content
+                # scan are CPU-bound.
+                detected_mime = await self._to_thread(
+                    self._inspect_image_sync, header, sample, filename
+                )
+
+                logger.debug(
+                    "Image file validation passed: %r (%s, %s bytes)",
+                    filename,
+                    detected_mime,
+                    file_size,
+                )
+
+    def validate_image_file_sync(
+        self, file: SeekableFile, filename: str
+    ) -> str:
+        """
+        Validate an image from a seekable file in the calling thread.
+
+        Runs the same checks, in the same order, as
+        ``validate_image_file``. It blocks, so it cannot run on an
+        event loop thread; await ``validate_image_file()`` or run
+        this in a worker thread. The file is rewound to position 0
+        on success and is never closed.
+
+        Args:
+            file: Seekable binary file to validate.
+            filename: Filename supplied by the client.
+
+        Returns:
+            Sanitized filename.
+
+        Raises:
+            RuntimeError: Called on a thread running an event loop.
+            FilenameSecurityError: Filename is empty, invalid, or fails
+                security checks.
+            ExtensionSecurityError: File extension is not allowed or is
+                blocked.
+            FileSizeError: File size exceeds maximum or file is empty.
+            MimeTypeError: MIME type is not in allowed image types.
+            FileSignatureError: File signature doesn't match expected image
+                format.
+            ContentThreatError: Content analysis found threats.
+            FileProcessingError: Unexpected error during validation.
+        """
+        self._refuse_on_event_loop(
+            "validate_image_file_sync", "validate_image_file"
+        )
+        with self._validation_run(filename, "image") as run:
+            name = self._validated_filename(filename)
+            run.filename = name
+            self.extension_validator.validate_allowed(
+                name, self.config.ALLOWED_IMAGE_EXTENSIONS
             )
+
+            with self._resource_monitor():
+                header, file_size = self._validate_file_size_sync(
+                    file, self.config.limits.max_image_size
+                )
+
+                sample: bytes | None = None
+                if self.config.limits.enable_content_analysis:
+                    file.seek(0)
+                    sample = self._read_up_to(
+                        file, self.config.limits.content_scan_max_size
+                    )
+                    file.seek(0)
+
+                detected_mime = self._inspect_image_sync(header, sample, name)
+
+                logger.debug(
+                    "Image file validation passed: %r (%s, %s bytes)",
+                    name,
+                    detected_mime,
+                    file_size,
+                )
+        return name
+
+    async def _validate_streamed(
+        self,
+        file: UploadFile,
+        run: _ValidationRun,
+        allowed_extensions: frozenset[str],
+        max_file_size: int,
+        inspect: Callable[
+            [tempfile.SpooledTemporaryFile[bytes], int, str], None
+        ],
+    ) -> None:
+        """
+        Validate an upload that is streamed to a temp file.
+
+        Sanitizes the filename, checks its extension, streams the
+        upload under the size limit and runs ``inspect`` in a worker
+        thread.
+
+        Args:
+            file: Uploaded file to validate.
+            run: Run state; its ``filename`` is set to the
+                sanitized name.
+            allowed_extensions: Permitted file extensions.
+            max_file_size: Maximum allowed file size in bytes.
+            inspect: Blocking inspection of the temp file, taking
+                the temp file, its size and the sanitized name.
+
+        Raises:
+            FileValidationError: If a validation check fails.
+        """
+        self._validate_filename(file)
+        filename = file.filename or "unknown"
+        run.filename = filename
+        self.extension_validator.validate_allowed(filename, allowed_extensions)
+
+        with self._resource_monitor():
+            temp_file, file_size = await self._stream_to_temp_file(
+                file, max_file_size
+            )
+            await self._inspect_temp_file(
+                temp_file, inspect, file_size, filename
+            )
+
+    def _validate_streamed_sync(
+        self,
+        file: SeekableFile,
+        filename: str,
+        run: _ValidationRun,
+        allowed_extensions: frozenset[str],
+        max_file_size: int,
+        inspect: Callable[
+            [tempfile.SpooledTemporaryFile[bytes], int, str], None
+        ],
+    ) -> str:
+        """
+        Validate a seekable file by streaming it to a temp file.
+
+        Same steps as ``_validate_streamed`` with every step in the
+        calling thread.
+
+        Args:
+            file: Seekable binary file to validate.
+            filename: Filename supplied by the client.
+            run: Run state; its ``filename`` is set to the
+                sanitized name.
+            allowed_extensions: Permitted file extensions.
+            max_file_size: Maximum allowed file size in bytes.
+            inspect: Blocking inspection of the temp file, taking
+                the temp file, its size and the sanitized name.
+
+        Returns:
+            Sanitized filename.
+
+        Raises:
+            FileValidationError: If a validation check fails.
+        """
+        name = self._validated_filename(filename)
+        run.filename = name
+        self.extension_validator.validate_allowed(name, allowed_extensions)
+
+        with self._resource_monitor():
+            temp_file, file_size = self._stream_to_temp_file_sync(
+                file, max_file_size
+            )
+            try:
+                inspect(temp_file, file_size, name)
+            finally:
+                temp_file.close()
+        return name
 
     async def validate_zip_file(self, file: UploadFile) -> None:
         """
@@ -774,40 +1146,58 @@ class FileValidator:
             ContentThreatError: Content analysis found threats.
             FileProcessingError: Unexpected error during validation.
         """
-        await self._run_validation(file, "ZIP", self._validate_zip_body)
-
-    async def _validate_zip_body(self, file: UploadFile) -> None:
-        """
-        Run ZIP-specific validation steps.
-
-        Args:
-            file: Uploaded ZIP file to validate.
-
-        Raises:
-            FileValidationError: If a ZIP validation check fails.
-            ContentThreatError: If content analysis finds threats.
-        """
-        # Validate filename (raises exceptions on failure)
-        self._validate_filename(file)
-
-        # Validate file extension (raises exceptions on failure)
-        self.extension_validator.validate_allowed(
-            file.filename, self.config.ALLOWED_ZIP_EXTENSIONS
-        )
-
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
-            # Stream file to SpooledTemporaryFile with size validation
-            temp_file, file_size = await self._stream_to_temp_file(
-                file, self.config.limits.max_zip_size
+        with self._validation_run(file.filename, "ZIP") as run:
+            await self._validate_streamed(
+                file,
+                run,
+                self.config.ALLOWED_ZIP_EXTENSIONS,
+                self.config.limits.max_zip_size,
+                self._inspect_zip_sync,
             )
 
-            # Offload the CPU/IO-bound ZIP inspection off the loop
-            filename = file.filename or "unknown"
-            await self._inspect_temp_file(
-                temp_file, self._inspect_zip_sync, file_size, filename
+    def validate_zip_file_sync(self, file: SeekableFile, filename: str) -> str:
+        """
+        Validate a ZIP archive from a seekable file in the calling thread.
+
+        Runs the same checks, in the same order, as
+        ``validate_zip_file``. It blocks, so it cannot run on an
+        event loop thread; await ``validate_zip_file()`` or run
+        this in a worker thread. The file is rewound to position 0
+        on success and is never closed.
+
+        Args:
+            file: Seekable binary file to validate.
+            filename: Filename supplied by the client.
+
+        Returns:
+            Sanitized filename.
+
+        Raises:
+            RuntimeError: Called on a thread running an event loop.
+            FilenameSecurityError: Filename is empty, invalid, or fails
+                security checks.
+            ExtensionSecurityError: File extension is not allowed or is
+                blocked.
+            FileSizeError: File size exceeds maximum or file is empty.
+            MimeTypeError: MIME type is not in allowed ZIP types.
+            FileSignatureError: File signature doesn't match expected ZIP
+                format.
+            CompressionSecurityError: ZIP compression validation failed
+                (zip bomb detected).
+            ContentThreatError: Content analysis found threats.
+            FileProcessingError: Unexpected error during validation.
+        """
+        self._refuse_on_event_loop(
+            "validate_zip_file_sync", "validate_zip_file"
+        )
+        with self._validation_run(filename, "ZIP") as run:
+            return self._validate_streamed_sync(
+                file,
+                filename,
+                run,
+                self.config.ALLOWED_ZIP_EXTENSIONS,
+                self.config.limits.max_zip_size,
+                self._inspect_zip_sync,
             )
 
     def _inspect_zip_sync(
@@ -817,7 +1207,7 @@ class FileValidator:
         filename: str,
     ) -> None:
         """
-        Run synchronous ZIP inspection off the event loop.
+        Run blocking ZIP inspection on a temp file.
 
         Args:
             temp_file: Spooled temp file holding the ZIP data.
@@ -881,42 +1271,55 @@ class FileValidator:
             XmlSecurityError: The XML is forbidden or malformed.
             FileProcessingError: Unexpected error during validation.
         """
-        await self._run_validation(
-            file, "activity", self._validate_activity_body
-        )
-
-    async def _validate_activity_body(self, file: UploadFile) -> None:
-        """
-        Run activity-file-specific validation steps.
-
-        Handles XXE-safe XML parsing for GPX/TCX and binary
-        signature validation for FIT files.
-
-        Args:
-            file: Uploaded activity file to validate.
-
-        Raises:
-            FileValidationError: If an activity check fails.
-            XmlSecurityError: If the XML is forbidden or malformed.
-        """
-        self._validate_filename(file)
-        self.extension_validator.validate_allowed(
-            file.filename,
-            self.config.ALLOWED_ACTIVITY_EXTENSIONS,
-        )
-
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
-            temp_file, file_size = await self._stream_to_temp_file(
+        with self._validation_run(file.filename, "activity") as run:
+            await self._validate_streamed(
                 file,
+                run,
+                self.config.ALLOWED_ACTIVITY_EXTENSIONS,
                 self.config.limits.max_activity_file_size,
+                self._inspect_activity_sync,
             )
 
-            filename = file.filename or "unknown"
-            await self._inspect_temp_file(
-                temp_file, self._inspect_activity_sync, file_size, filename
+    def validate_activity_file_sync(
+        self, file: SeekableFile, filename: str
+    ) -> str:
+        """
+        Validate an activity file from a seekable file in this thread.
+
+        Runs the same checks, in the same order, as
+        ``validate_activity_file``. It blocks, so it cannot run on an
+        event loop thread; await ``validate_activity_file()`` or run
+        this in a worker thread. The file is rewound to position 0
+        on success and is never closed.
+
+        Args:
+            file: Seekable binary file to validate.
+            filename: Filename supplied by the client.
+
+        Returns:
+            Sanitized filename.
+
+        Raises:
+            RuntimeError: Called on a thread running an event loop.
+            FilenameSecurityError: Filename fails security.
+            ExtensionSecurityError: Extension not allowed.
+            FileSizeError: File exceeds size limit or empty.
+            MimeTypeError: MIME type not allowed.
+            FileSignatureError: Signature mismatch.
+            XmlSecurityError: The XML is forbidden or malformed.
+            FileProcessingError: Unexpected error during validation.
+        """
+        self._refuse_on_event_loop(
+            "validate_activity_file_sync", "validate_activity_file"
+        )
+        with self._validation_run(filename, "activity") as run:
+            return self._validate_streamed_sync(
+                file,
+                filename,
+                run,
+                self.config.ALLOWED_ACTIVITY_EXTENSIONS,
+                self.config.limits.max_activity_file_size,
+                self._inspect_activity_sync,
             )
 
     def _inspect_activity_sync(
@@ -926,7 +1329,7 @@ class FileValidator:
         filename: str,
     ) -> None:
         """
-        Run synchronous activity-file inspection off the loop.
+        Run blocking activity-file inspection on a temp file.
 
         Handles XXE-safe XML parsing for GPX/TCX and binary
         signature validation for FIT files.
@@ -1004,37 +1407,56 @@ class FileValidator:
             CompressionSecurityError: Invalid gzip structure.
             FileProcessingError: Unexpected error.
         """
-        await self._run_validation(file, "gzip", self._validate_gzip_body)
-
-    async def _validate_gzip_body(self, file: UploadFile) -> None:
-        """
-        Run gzip-specific validation steps.
-
-        Args:
-            file: Uploaded gzip file to validate.
-
-        Raises:
-            FileValidationError: If a gzip check fails.
-            ZipBombError: If a decompression bomb is detected.
-        """
-        self._validate_filename(file)
-        self.extension_validator.validate_allowed(
-            file.filename,
-            self.config.ALLOWED_GZIP_EXTENSIONS,
-        )
-
-        with ResourceMonitor(
-            max_time_seconds=self.config.limits.max_validation_time_seconds,
-            max_memory_mb=self.config.limits.max_validation_memory_mb,
-        ):
-            temp_file, file_size = await self._stream_to_temp_file(
+        with self._validation_run(file.filename, "gzip") as run:
+            await self._validate_streamed(
                 file,
+                run,
+                self.config.ALLOWED_GZIP_EXTENSIONS,
                 self.config.limits.max_gzip_size,
+                self._inspect_gzip_sync,
             )
 
-            filename = file.filename or "unknown"
-            await self._inspect_temp_file(
-                temp_file, self._inspect_gzip_sync, file_size, filename
+    def validate_gzip_file_sync(
+        self, file: SeekableFile, filename: str
+    ) -> str:
+        """
+        Validate a gzip archive from a seekable file in this thread.
+
+        Runs the same checks, in the same order, as
+        ``validate_gzip_file``. It blocks, so it cannot run on an
+        event loop thread; await ``validate_gzip_file()`` or run
+        this in a worker thread. The file is rewound to position 0
+        on success and is never closed.
+
+        Args:
+            file: Seekable binary file to validate.
+            filename: Filename supplied by the client.
+
+        Returns:
+            Sanitized filename.
+
+        Raises:
+            RuntimeError: Called on a thread running an event loop.
+            FilenameSecurityError: Filename fails security.
+            ExtensionSecurityError: Extension not allowed.
+            FileSizeError: File exceeds size limit or empty.
+            MimeTypeError: MIME type not allowed.
+            FileSignatureError: Signature mismatch.
+            ZipBombError: Decompression bomb detected.
+            CompressionSecurityError: Invalid gzip structure.
+            FileProcessingError: Unexpected error during validation.
+        """
+        self._refuse_on_event_loop(
+            "validate_gzip_file_sync", "validate_gzip_file"
+        )
+        with self._validation_run(filename, "gzip") as run:
+            return self._validate_streamed_sync(
+                file,
+                filename,
+                run,
+                self.config.ALLOWED_GZIP_EXTENSIONS,
+                self.config.limits.max_gzip_size,
+                self._inspect_gzip_sync,
             )
 
     def _inspect_gzip_sync(
@@ -1044,7 +1466,7 @@ class FileValidator:
         filename: str,
     ) -> None:
         """
-        Run synchronous gzip inspection off the event loop.
+        Run blocking gzip inspection on a temp file.
 
         Args:
             temp_file: Spooled temp file holding the gzip data.

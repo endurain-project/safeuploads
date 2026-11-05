@@ -7,7 +7,7 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "python-magic>=0.4.27,<0.5.0",
     "defusedxml>=0.7.1,<1.0.0",
@@ -46,7 +46,7 @@ exclude-newer = "7 days"
 
 [tool.ruff]
 line-length = 79
-target-version = "py313"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = [
@@ -155,7 +155,7 @@ exclude_lines = [
 ]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 incremental = false
 # strict = true enables the full strict bundle, including
 # disallow_any_generics, warn_return_any, disallow_untyped_calls,
@@ -174,7 +174,7 @@ ignore_missing_imports = true
 # ``ty`` runs beside mypy as an advisory, non-blocking CI job (it is pre-1.0);
 # mypy stays the gate. Same scope as ``[tool.mypy]``.
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.11"
 
 [tool.ty.src]
 include = ["safeuploads"]

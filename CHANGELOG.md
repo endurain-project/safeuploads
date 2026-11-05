@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [3.0.0] - 2026-11-05
 
+### Added
+
+- Support for Python 3.11 and 3.12; `requires-python` is now `>=3.11` and CI tests 3.11 to 3.15. A Python version stays supported until its CPython end of life and is dropped in the next minor release after that. The Unicode checks use the running Python's Unicode database, so a character assigned after that database's version is rejected as unassigned (for example U+1FAE8 on 3.11).
+
 ### Removed
 
 - **Breaking:** the `ConfigValidationError` alias, deprecated in 2.2.0, is removed from `safeuploads` and `safeuploads.exceptions`. Use `ConfigValidationIssue`.

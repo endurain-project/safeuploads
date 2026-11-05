@@ -59,6 +59,11 @@ is `.exe`.
   rejected with `UnicodeSecurityError`; none is stripped. A
   filename containing an emoji ZWJ sequence is therefore
   rejected.
+- Categories come from the running Python's Unicode database
+  (14.0 on Python 3.11, 15.0 on 3.12, 15.1 on 3.13), so a
+  character assigned in a later Unicode version is unassigned
+  (Cn) and rejected on an older Python. Older versions only
+  reject more.
 - The Windows reserved-name and extension checks run on the NFC
   name and on its NFKC form, so fullwidth letters or
   superscript digits cannot disguise `CON`, `COM1` or `.php`.

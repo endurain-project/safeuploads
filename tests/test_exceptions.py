@@ -13,7 +13,7 @@ import safeuploads
 from safeuploads import exceptions as exceptions_module
 from safeuploads.exceptions import (
     CompressionSecurityError,
-    ConfigValidationError,
+    ConfigValidationIssue,
     ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
@@ -469,12 +469,12 @@ class TestFileProcessingError:
         assert isinstance(error, FileSecurityError)
 
 
-class TestConfigValidationError:
-    """Test ConfigValidationError dataclass."""
+class TestConfigValidationIssue:
+    """Test ConfigValidationIssue dataclass."""
 
     def test_initialization(self):
         """Test dataclass initialization."""
-        error = ConfigValidationError(
+        error = ConfigValidationIssue(
             error_type="invalid_config",
             message="Config is invalid",
             severity="error",
@@ -489,7 +489,7 @@ class TestConfigValidationError:
 
     def test_default_recommendation(self):
         """Test default empty recommendation."""
-        error = ConfigValidationError(
+        error = ConfigValidationIssue(
             error_type="test",
             message="Test message",
             severity="warning",
@@ -504,13 +504,13 @@ class TestFileSecurityConfigurationError:
     def test_initialization_with_errors(self):
         """Test initialization with error list."""
         errors = [
-            ConfigValidationError(
+            ConfigValidationIssue(
                 error_type="test1",
                 message="Error 1",
                 severity="error",
                 component="comp1",
             ),
-            ConfigValidationError(
+            ConfigValidationIssue(
                 error_type="test2",
                 message="Error 2",
                 severity="warning",
@@ -688,8 +688,8 @@ class TestPickling:
     def test_configuration_error_round_trip(self, round_trip):
         """FileSecurityConfigurationError keeps its errors."""
         errors = [
-            ConfigValidationError("t", "msg", "error", "comp", "fix"),
-            ConfigValidationError("t2", "msg2", "warning", "comp2"),
+            ConfigValidationIssue("t", "msg", "error", "comp", "fix"),
+            ConfigValidationIssue("t2", "msg2", "warning", "comp2"),
         ]
         (clone,) = round_trip(FileSecurityConfigurationError(errors))
         assert isinstance(clone, FileSecurityConfigurationError)
@@ -702,8 +702,8 @@ class TestPickling:
         assert clone.errors == []
 
     def test_config_validation_error_round_trip(self, round_trip):
-        """The ConfigValidationError dataclass pickles."""
-        item = ConfigValidationError("t", "msg", "info", "comp", "fix")
+        """The ConfigValidationIssue dataclass pickles."""
+        item = ConfigValidationIssue("t", "msg", "info", "comp", "fix")
         assert round_trip(item) == [item]
 
 
@@ -739,6 +739,7 @@ class TestPackageExports:
             "ContentThreatError",
             "UploadFileProtocol",
             "SeekableFile",
+            "ConfigValidationIssue",
         ],
     )
     def test_names_exported(self, name):
@@ -746,7 +747,44 @@ class TestPackageExports:
         assert name in safeuploads.__all__
         assert getattr(safeuploads, name) is not None
 
-    @pytest.mark.parametrize("name", ["log_extra", "reset_correlation_id"])
+    @pytest.mark.parametrize(
+        "name",
+        ["log_extra", "reset_correlation_id", "ConfigValidationError"],
+    )
     def test_internal_names_not_exported(self, name):
-        """Internal helpers stay out of ``__all__``."""
+        """Internal helpers and deprecated aliases stay out of ``__all__``."""
         assert name not in safeuploads.__all__
+
+
+class TestDeprecatedConfigValidationError:
+    """``ConfigValidationError`` is a deprecated alias of the issue record."""
+
+    @pytest.mark.parametrize("module", [safeuploads, exceptions_module])
+    def test_alias_warns_and_resolves(self, module):
+        """Attribute access warns at the caller and returns the new class."""
+        with pytest.warns(
+            DeprecationWarning, match="use ConfigValidationIssue"
+        ) as record:
+            alias = module.ConfigValidationError
+        assert alias is ConfigValidationIssue
+        assert record[0].filename == __file__
+
+    def test_from_import_warns(self):
+        """``from safeuploads import ConfigValidationError`` warns."""
+        with pytest.warns(DeprecationWarning, match="removed in safeuploads"):
+            from safeuploads import ConfigValidationError
+        assert ConfigValidationError is ConfigValidationIssue
+
+    def test_public_names_do_not_warn(self, recwarn):
+        """Every ``__all__`` name, as ``import *`` reads them, is silent."""
+        for name in safeuploads.__all__:
+            getattr(safeuploads, name)
+        assert not [
+            w for w in recwarn if issubclass(w.category, DeprecationWarning)
+        ]
+
+    @pytest.mark.parametrize("module", [safeuploads, exceptions_module])
+    def test_unknown_attribute_raises(self, module):
+        """Other missing names still raise ``AttributeError``."""
+        with pytest.raises(AttributeError, match="no attribute 'Missing'"):
+            _ = module.Missing

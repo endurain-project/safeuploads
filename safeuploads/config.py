@@ -11,7 +11,7 @@ from .enums import (
     DangerousExtensionCategory,
     UnicodeAttackCategory,
 )
-from .exceptions import ConfigValidationError, FileSecurityConfigurationError
+from .exceptions import ConfigValidationIssue, FileSecurityConfigurationError
 from .utils import bytes_to_mb
 
 logger = logging.getLogger(__name__)
@@ -23,9 +23,9 @@ def _config_error(
     component: str,
     recommendation: str,
     severity: str = "error",
-) -> ConfigValidationError:
+) -> ConfigValidationIssue:
     """
-    Build a ConfigValidationError with a default severity.
+    Build a ConfigValidationIssue with a default severity.
 
     Centralizes construction so the many validation branches
     share one call shape instead of repeating every field.
@@ -38,9 +38,9 @@ def _config_error(
         severity: Severity level ('error', 'warning', 'info').
 
     Returns:
-        Populated ConfigValidationError instance.
+        Populated ConfigValidationIssue instance.
     """
-    return ConfigValidationError(
+    return ConfigValidationIssue(
         error_type=error_type,
         message=message,
         severity=severity,
@@ -451,7 +451,7 @@ class FileSecurityConfig:
         return None
 
     @classmethod
-    def validate_configuration(cls) -> list[ConfigValidationError]:
+    def validate_configuration(cls) -> list[ConfigValidationIssue]:
         """
         Validate the class-level default configuration.
 
@@ -460,7 +460,7 @@ class FileSecurityConfig:
         """
         return cls._collect_errors(cls, cls.limits)
 
-    def validate_instance(self) -> list[ConfigValidationError]:
+    def validate_instance(self) -> list[ConfigValidationIssue]:
         """
         Validate this instance's configuration.
 
@@ -479,7 +479,7 @@ class FileSecurityConfig:
         cls,
         config: "FileSecurityConfig | type[FileSecurityConfig]",
         limits: SecurityLimits,
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Run all validation routines for the given configuration.
 
@@ -495,7 +495,7 @@ class FileSecurityConfig:
         Returns:
             List of detected validation errors.
         """
-        errors: list[ConfigValidationError] = []
+        errors: list[ConfigValidationIssue] = []
 
         # Validate limit types first so the range checks below
         # never compare a wrongly typed value.
@@ -530,7 +530,7 @@ class FileSecurityConfig:
     @staticmethod
     def _validate_limit_types(
         limits: SecurityLimits,
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Validate that every limit holds a value of its declared type.
 
@@ -577,7 +577,7 @@ class FileSecurityConfig:
     @staticmethod
     def _validate_file_size_limits(
         limits: SecurityLimits,
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Validate the provided file size limits.
 
@@ -708,7 +708,7 @@ class FileSecurityConfig:
     @staticmethod
     def _validate_streaming_limits(
         limits: SecurityLimits,
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Validate streaming, resource and content scan limits.
 
@@ -788,7 +788,7 @@ class FileSecurityConfig:
     @staticmethod
     def _validate_mime_configurations(
         config: "FileSecurityConfig | type[FileSecurityConfig]",
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Validate MIME type configurations.
 
@@ -876,7 +876,7 @@ class FileSecurityConfig:
     @staticmethod
     def _validate_extension_configurations(
         config: "FileSecurityConfig | type[FileSecurityConfig]",
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Validate file extension configurations.
 
@@ -1028,7 +1028,7 @@ class FileSecurityConfig:
     @staticmethod
     def _validate_compression_settings(
         limits: SecurityLimits,
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Validate the provided compression-related limits.
 
@@ -1240,7 +1240,7 @@ class FileSecurityConfig:
         return errors
 
     @classmethod
-    def _validate_enum_consistency(cls) -> list[ConfigValidationError]:
+    def _validate_enum_consistency(cls) -> list[ConfigValidationIssue]:
         """
         Validate enum categories for emptiness and overlaps.
 
@@ -1345,7 +1345,7 @@ class FileSecurityConfig:
     @staticmethod
     def _validate_cross_dependencies(
         config: "FileSecurityConfig | type[FileSecurityConfig]",
-    ) -> list[ConfigValidationError]:
+    ) -> list[ConfigValidationIssue]:
         """
         Validate cross-field configuration constraints.
 
@@ -1452,7 +1452,7 @@ class FileSecurityConfig:
 
     @staticmethod
     def _report_errors(
-        errors: list[ConfigValidationError], strict: bool
+        errors: list[ConfigValidationIssue], strict: bool
     ) -> None:
         """
         Log validation issues and optionally raise.

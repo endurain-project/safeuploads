@@ -1,7 +1,9 @@
 """File security exception classes and error codes."""
 
+import warnings
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 # ============================================================================
 # Configuration Validation
@@ -9,9 +11,13 @@ from enum import StrEnum
 
 
 @dataclass
-class ConfigValidationError:
+class ConfigValidationIssue:
     """
     Configuration validation issue with severity and recommendation.
+
+    A plain record, not an exception: ``validate_instance()`` and
+    ``validate_configuration()`` return a list of them, and
+    ``FileSecurityConfigurationError.errors`` carries them.
 
     Attributes:
         error_type: Type of the validation error.
@@ -28,18 +34,59 @@ class ConfigValidationError:
     recommendation: str = ""
 
 
+_DEPRECATED_NAMES = {"ConfigValidationError": "ConfigValidationIssue"}
+
+if TYPE_CHECKING:
+    # Deprecated alias; at runtime ``__getattr__`` resolves it with a
+    # DeprecationWarning. Removed in 3.0.
+    ConfigValidationError = ConfigValidationIssue
+else:
+
+    def _resolve_deprecated(module: str, name: str) -> object:
+        """
+        Return the object a deprecated name stands for, with a warning.
+
+        Args:
+            module: Name of the module the attribute was looked up on.
+            name: Attribute name being looked up.
+
+        Returns:
+            The object that replaces the deprecated name.
+
+        Raises:
+            AttributeError: ``name`` is not a deprecated name.
+        """
+        new_name = _DEPRECATED_NAMES.get(name)
+        if new_name is None:
+            raise AttributeError(
+                f"module {module!r} has no attribute {name!r}"
+            )
+        warnings.warn(
+            f"{name} is deprecated and will be removed in safeuploads"
+            f" 3.0; use {new_name}",
+            DeprecationWarning,
+            # Skip this helper and the module ``__getattr__``
+            stacklevel=3,
+        )
+        return globals()[new_name]
+
+    def __getattr__(name: str) -> object:
+        """Resolve deprecated module attributes (PEP 562)."""
+        return _resolve_deprecated(__name__, name)
+
+
 class FileSecurityConfigurationError(Exception):
     """
     Configuration validation failed with aggregated errors.
 
     Args:
-        errors: List of ConfigValidationError instances.
+        errors: List of ConfigValidationIssue instances.
 
     Attributes:
         errors: List of validation errors that caused failure.
     """
 
-    def __init__(self, errors: list[ConfigValidationError]):
+    def __init__(self, errors: list[ConfigValidationIssue]):
         """Initialize with validation errors."""
         self.errors = errors
         error_messages = [
@@ -49,7 +96,7 @@ class FileSecurityConfigurationError(Exception):
             f"Configuration validation failed: {'; '.join(error_messages)}"
         )
 
-    def __reduce__(self) -> tuple[type, tuple[list[ConfigValidationError]]]:
+    def __reduce__(self) -> tuple[type, tuple[list[ConfigValidationIssue]]]:
         """Rebuild from ``errors`` so pickling round-trips."""
         return (type(self), (self.errors,))
 

@@ -817,7 +817,7 @@ class TestValidateAndReportLogging:
         """
         import logging
 
-        from safeuploads.exceptions import ConfigValidationError
+        from safeuploads.exceptions import ConfigValidationIssue
 
         original = FileSecurityConfig._validate_enum_consistency
 
@@ -825,7 +825,7 @@ class TestValidateAndReportLogging:
         def _force_info(cls):
             results = original.__func__(cls)
             results.append(
-                ConfigValidationError(
+                ConfigValidationIssue(
                     error_type="test_info",
                     message="Test info message",
                     severity="info",

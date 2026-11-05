@@ -6,6 +6,7 @@ validating uploads and preventing attacks.
 """
 
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING
 
 from .audit import (
     AuditEvent,
@@ -28,7 +29,7 @@ from .enums import (
 )
 from .exceptions import (
     CompressionSecurityError,
-    ConfigValidationError,
+    ConfigValidationIssue,
     ContentThreatError,
     ErrorCode,
     ExtensionSecurityError,
@@ -75,6 +76,16 @@ from .validators import (
     XmlSecurityValidator,
 )
 
+if TYPE_CHECKING:
+    # Deprecated alias, resolved by ``__getattr__`` at runtime
+    from .exceptions import ConfigValidationError as ConfigValidationError
+else:
+    from .exceptions import _resolve_deprecated
+
+    def __getattr__(name: str) -> object:
+        """Resolve deprecated package attributes (PEP 562)."""
+        return _resolve_deprecated(__name__, name)
+
 # Configuration is validated explicitly rather than at import
 # time: FileValidator validates its config on construction, and
 # callers can invoke FileSecurityConfig.validate_and_report() or
@@ -95,7 +106,7 @@ __all__ = [
     "SeekableFile",
     "UploadFileProtocol",
     # Exceptions
-    "ConfigValidationError",
+    "ConfigValidationIssue",
     "FileSecurityConfigurationError",
     "ErrorCode",
     "FileSecurityError",

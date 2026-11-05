@@ -51,7 +51,7 @@ safeuploads/
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |
 | `FitSecurityValidator` | Checks the FIT container: headers, header CRC, data size, CRC-16 per section, and that the sections cover the file exactly. |
-| `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures. With `allow_nested_archives`, inspects every inner ZIP like the top level. |
+| `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures, and runs the top-level Unicode, Windows reserved-name and blocked-extension checks on each entry name. With `allow_nested_archives`, inspects every inner ZIP like the top level. |
 | `GzipContentInspector` | Streams gzip decompression, checking ratio and size progressively. |
 | `ContentSecurityInspector` | Scans raw bytes for structurally verified executable headers, web shells, and polyglot patterns (image and activity uploads). |
 | `ResourceMonitor` | Context manager enforcing wall-clock time and peak-RSS memory limits at loop boundaries and on exit. |
@@ -181,7 +181,11 @@ UploadFile
 │    │   ├── Null bytes       │
 │    │   ├── Path traversal   │
 │    │   ├── Absolute paths   │
-│    │   └── Symlinks         │
+│    │   ├── Symlinks         │
+│    │   └── Top-level name   │
+│    │       checks (Unicode, │
+│    │       Windows names,   │
+│    │       blocked exts)    │
 │    ├── Dangerous entry types│
 │    ├── Binary signatures    │
 │    ├── Nested archive magic │

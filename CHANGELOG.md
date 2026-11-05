@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `FileValidator.validate_image_file_sync`, `validate_zip_file_sync`, `validate_activity_file_sync` and `validate_gzip_file_sync`: synchronous counterparts of the async `validate_*_file` methods, each taking `(file: SeekableFile, filename: str)` and returning the sanitized filename as `str`. They run the same checks, order, exceptions, error codes and audit events and block the calling thread without the worker-thread offload (the `executor` option applies only to the async methods); called on a thread with a running asyncio event loop they raise `RuntimeError` before reading the file.
 
+### Security
+
+- `validate_image_file` reads the 8 KB header and the content-analysis sample until the requested size or end of file. An upload object whose `read(n)` returned fewer than `n` bytes before its end left the rest of the sample unscanned, so a polyglot signature past the first short read was accepted.
+
 ## [2.0.0] - 2026-11-01
 
 ### Added

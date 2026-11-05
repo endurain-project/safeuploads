@@ -468,6 +468,31 @@ class FileValidator:
             remaining -= len(chunk)
         return b"".join(parts)
 
+    @staticmethod
+    async def _read_up_to_async(file: UploadFile, size: int) -> bytes:
+        """
+        Read ``size`` bytes from an upload, or up to end of file.
+
+        An upload may return fewer bytes than asked before its end,
+        so reading repeats until ``size`` bytes or EOF.
+
+        Args:
+            file: Uploaded file supporting asynchronous read.
+            size: Number of bytes to read.
+
+        Returns:
+            Bytes read; shorter than ``size`` only at end of file.
+        """
+        parts: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = await file.read(remaining)
+            if not chunk:
+                break
+            parts.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(parts)
+
     def _new_spool(self) -> tempfile.SpooledTemporaryFile[bytes]:
         """
         Create the temp file that receives a streamed upload.
@@ -502,7 +527,7 @@ class FileValidator:
         # Start at byte 0: the host may have left the stream
         # mid-file, which would hide the real header.
         await file.seek(0)
-        file_content = await file.read(8192)  # Read first 8KB
+        file_content = await self._read_up_to_async(file, 8192)
 
         # Reset file position
         await file.seek(0)
@@ -928,8 +953,8 @@ class FileValidator:
                     # to scan_size bytes so threats past the header
                     # (e.g. polyglots) are seen.
                     await file.seek(0)
-                    sample = await file.read(
-                        self.config.limits.content_scan_max_size
+                    sample = await self._read_up_to_async(
+                        file, self.config.limits.content_scan_max_size
                     )
                     await file.seek(0)
 

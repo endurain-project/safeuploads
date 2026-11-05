@@ -1764,6 +1764,40 @@ class TestImageContentAnalysisIntegration:
         file = mock_upload_file(filename="clean.jpg", content=jpeg)
         await validator.validate_image_file(file)
 
+    @staticmethod
+    def _short_read_upload(mock_upload_file, filename: str, content: bytes):
+        """Build an upload returning at most 4096 bytes per read."""
+
+        class ShortReadUpload(mock_upload_file):
+            async def read(self, size: int = -1) -> bytes:
+                if size < 0 or size > 4096:
+                    size = 4096
+                return await super().read(size)
+
+        return ShortReadUpload(filename=filename, content=content)
+
+    @pytest.mark.asyncio
+    async def test_polyglot_past_short_read_is_detected(
+        self, mock_upload_file
+    ):
+        """A polyglot past the first short read is still caught."""
+        validator = self._content_analysis_validator()
+        jpeg = (
+            b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04" + b"\xff\xd9"
+        )
+        file = self._short_read_upload(mock_upload_file, "poly.jpg", jpeg)
+        with pytest.raises(ContentThreatError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    @pytest.mark.asyncio
+    async def test_clean_image_with_short_reads_passes(self, mock_upload_file):
+        """A clean image read in short pieces passes analysis."""
+        validator = self._content_analysis_validator()
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"\xff\xd9"
+        file = self._short_read_upload(mock_upload_file, "clean.jpg", jpeg)
+        await validator.validate_image_file(file)
+
 
 class TestConcurrentValidation:
     """Validation is offloaded to threads and safe under load."""

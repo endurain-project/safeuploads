@@ -128,11 +128,11 @@ def test_multipart_round_trip(valid_jpeg_bytes):
     """
     Drive validation through a real FastAPI multipart request.
 
-    Skips when the HTTP test stack (``httpx`` and
+    Skips when the HTTP test stack (``httpx2`` and
     ``python-multipart``) is unavailable, so it runs in fuller CI
     environments while staying optional locally.
     """
-    pytest.importorskip("httpx")
+    pytest.importorskip("httpx2")
     pytest.importorskip("multipart")
 
     from fastapi import FastAPI, HTTPException

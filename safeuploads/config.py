@@ -18,6 +18,20 @@ from .utils import allowed_extensions, bytes_to_mb
 
 logger = logging.getLogger(__name__)
 
+# Allow-list settings removed in 4.0.0, mapped to their replacement.
+# Nothing reads them, so a configuration that still sets one would
+# silently fall back to the defaults; validation rejects it instead.
+_REMOVED_SETTINGS: dict[str, str] = {
+    "ALLOWED_IMAGE_MIMES": "ALLOWED_IMAGE_TYPES",
+    "ALLOWED_IMAGE_EXTENSIONS": "ALLOWED_IMAGE_TYPES",
+    "ALLOWED_ZIP_MIMES": "ALLOWED_ZIP_TYPES",
+    "ALLOWED_ZIP_EXTENSIONS": "ALLOWED_ZIP_TYPES",
+    "ALLOWED_ACTIVITY_MIMES": "ALLOWED_ACTIVITY_TYPES",
+    "ALLOWED_ACTIVITY_EXTENSIONS": "ALLOWED_ACTIVITY_TYPES",
+    "ALLOWED_GZIP_MIMES": "ALLOWED_GZIP_TYPES",
+    "ALLOWED_GZIP_EXTENSIONS": "ALLOWED_GZIP_TYPES",
+}
+
 
 def _config_error(
     error_type: str,
@@ -483,6 +497,9 @@ class FileSecurityConfig:
         """
         errors: list[ConfigValidationIssue] = []
 
+        # A removed setting would otherwise be ignored
+        errors.extend(cls._validate_removed_settings(config))
+
         # Validate limit types first so the range checks below
         # never compare a wrongly typed value.
         type_errors = cls._validate_limit_types(limits)
@@ -512,6 +529,37 @@ class FileSecurityConfig:
         errors.extend(cls._validate_cross_dependencies(config))
 
         return errors
+
+    @staticmethod
+    def _validate_removed_settings(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+    ) -> list[ConfigValidationIssue]:
+        """
+        Reject allow-list settings that were removed in 4.0.0.
+
+        Args:
+            config: Class or instance to check for removed names.
+
+        Returns:
+            One issue per removed name the configuration sets.
+        """
+        return [
+            _config_error(
+                "removed_setting",
+                (
+                    f"{name} was removed in 4.0.0 and is not read;"
+                    " the default allow-list would apply instead"
+                ),
+                "configuration",
+                (
+                    f"Move the allowed MIME types and extensions to"
+                    f" {replacement}, mapping each MIME type to its"
+                    " extensions"
+                ),
+            )
+            for name, replacement in _REMOVED_SETTINGS.items()
+            if hasattr(config, name)
+        ]
 
     @staticmethod
     def _validate_limit_types(

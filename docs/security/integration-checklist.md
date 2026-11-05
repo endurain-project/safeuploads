@@ -51,8 +51,10 @@ that addresses it.
   your application accepts and the extensions each may carry.
 - [ ] `FileSecurityConfigurationError` from the `FileValidator`
   constructor handled at startup: it is raised for any
-  error-severity configuration issue (invalid limit types,
-  non-positive limits, an empty allowed-types mapping, a MIME
+  error-severity configuration issue (a removed
+  `ALLOWED_*_MIMES` or `ALLOWED_*_EXTENSIONS` setting, invalid
+  limit types, non-positive limits, an empty allowed-types
+  mapping, a MIME
   type with no extensions, empty or uppercase extension entries,
   empty block lists or reserved names, reserved names that are
   not lowercase, a content scan window smaller than an image or

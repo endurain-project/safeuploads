@@ -1211,3 +1211,64 @@ class TestContentScanWindowValidation:
         with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileValidator(config=config)
         assert "content_scan_window_too_small" in _error_types(exc_info)
+
+
+_REMOVED_SETTINGS = {
+    "ALLOWED_IMAGE_MIMES": "ALLOWED_IMAGE_TYPES",
+    "ALLOWED_IMAGE_EXTENSIONS": "ALLOWED_IMAGE_TYPES",
+    "ALLOWED_ZIP_MIMES": "ALLOWED_ZIP_TYPES",
+    "ALLOWED_ZIP_EXTENSIONS": "ALLOWED_ZIP_TYPES",
+    "ALLOWED_ACTIVITY_MIMES": "ALLOWED_ACTIVITY_TYPES",
+    "ALLOWED_ACTIVITY_EXTENSIONS": "ALLOWED_ACTIVITY_TYPES",
+    "ALLOWED_GZIP_MIMES": "ALLOWED_GZIP_TYPES",
+    "ALLOWED_GZIP_EXTENSIONS": "ALLOWED_GZIP_TYPES",
+}
+
+
+class TestRemovedSettings:
+    """A removed allow-list setting fails instead of being ignored."""
+
+    @pytest.mark.parametrize("name", _REMOVED_SETTINGS)
+    def test_instance_setting_rejected(self, name):
+        """An instance still setting a removed name cannot be used."""
+        config = FileSecurityConfig()
+        setattr(config, name, frozenset({".png"}))
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert "removed_setting" in _error_types(exc_info)
+
+    @pytest.mark.parametrize("name", _REMOVED_SETTINGS)
+    def test_subclass_setting_rejected(self, name):
+        """A subclass still defining a removed name cannot be used."""
+        sub = type("Sub", (FileSecurityConfig,), {name: frozenset({".png"})})
+
+        assert "removed_setting" in [
+            e.error_type for e in sub.validate_configuration()
+        ]
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=sub())
+        assert "removed_setting" in _error_types(exc_info)
+
+    @pytest.mark.parametrize(
+        ("name", "replacement"), _REMOVED_SETTINGS.items()
+    )
+    def test_issue_names_the_replacement(self, name, replacement):
+        """The issue is an error that points to the new mapping."""
+        config = FileSecurityConfig()
+        setattr(config, name, frozenset({".png"}))
+
+        [issue] = [
+            e
+            for e in config.validate_instance()
+            if e.error_type == "removed_setting"
+        ]
+        assert issue.severity == "error"
+        assert name in issue.message
+        assert replacement in issue.recommendation
+
+    def test_default_config_has_no_removed_settings(self):
+        """The default configuration sets none of the removed names."""
+        assert "removed_setting" not in [
+            e.error_type for e in FileSecurityConfig().validate_instance()
+        ]

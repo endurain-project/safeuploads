@@ -24,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
-- **Breaking:** `FileSecurityConfig.ALLOWED_IMAGE_MIMES`, `ALLOWED_ZIP_MIMES`, `ALLOWED_ACTIVITY_MIMES`, `ALLOWED_GZIP_MIMES`, `ALLOWED_IMAGE_EXTENSIONS`, `ALLOWED_ZIP_EXTENSIONS`, `ALLOWED_ACTIVITY_EXTENSIONS` and `ALLOWED_GZIP_EXTENSIONS`. Each pair is replaced by one `ALLOWED_*_TYPES` mapping, so a MIME type and its extensions can no longer be changed apart. Migrate a narrowed allow-list such as
+- **Breaking:** `FileSecurityConfig.ALLOWED_IMAGE_MIMES`, `ALLOWED_ZIP_MIMES`, `ALLOWED_ACTIVITY_MIMES`, `ALLOWED_GZIP_MIMES`, `ALLOWED_IMAGE_EXTENSIONS`, `ALLOWED_ZIP_EXTENSIONS`, `ALLOWED_ACTIVITY_EXTENSIONS` and `ALLOWED_GZIP_EXTENSIONS`. Each pair is replaced by one `ALLOWED_*_TYPES` mapping, so a MIME type and its extensions can no longer be changed apart. A configuration that still sets one of the removed names, on a subclass or an instance, fails validation with `removed_setting`, so `FileValidator` raises `FileSecurityConfigurationError` instead of silently applying the default allow-list. Migrate a narrowed allow-list such as
 
   ```python
   config.ALLOWED_IMAGE_MIMES = frozenset({"image/png"})

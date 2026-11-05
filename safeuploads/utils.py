@@ -11,20 +11,30 @@ from types import TracebackType
 from .exceptions import ErrorCode, ResourceLimitError
 from .protocols import SeekableFile
 
-try:
-    # ``resource`` is a Unix-only stdlib module and is absent on
-    # Windows; memory accounting degrades to a no-op there while
-    # the wall-clock timeout keeps working.
-    import resource
-except ImportError:  # pragma: no cover - platform-specific (Windows)
-    resource = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
 
 # ``resource.getrusage`` reports peak RSS (``ru_maxrss``) in bytes on
 # macOS but in kilobytes on Linux/BSD. Normalize to bytes with a
 # platform-specific multiplier resolved once at import time.
 _RSS_UNIT_BYTES: int = 1 if sys.platform == "darwin" else 1024
+
+try:
+    # ``resource`` is a Unix-only stdlib module and is absent on
+    # Windows; memory accounting degrades to a no-op there while
+    # the wall-clock timeout keeps working.
+    import resource
+except ImportError:  # pragma: no cover - platform-specific (Windows)
+
+    def _read_peak_rss_bytes() -> int:
+        """Return 0: this platform has no ``resource`` module."""
+        return 0
+
+else:
+
+    def _read_peak_rss_bytes() -> int:
+        """Return the process peak RSS in bytes from ``getrusage``."""
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        return usage.ru_maxrss * _RSS_UNIT_BYTES
 
 
 def bytes_to_mb(num_bytes: int) -> int:
@@ -316,10 +326,7 @@ class ResourceMonitor:
             module (e.g. Windows), which disables memory-limit
             enforcement while leaving the timeout active.
         """
-        if resource is None:  # pragma: no cover - platform-specific
-            return 0
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        return usage.ru_maxrss * _RSS_UNIT_BYTES
+        return _read_peak_rss_bytes()
 
 
 _active_monitor: contextvars.ContextVar[ResourceMonitor | None] = (

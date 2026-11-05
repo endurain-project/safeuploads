@@ -373,7 +373,7 @@ Exception
 All `FileSecurityError` subclasses carry an `error_code` from
 `ErrorCode` for machine-readable classification.
 `FileSecurityConfigurationError` is separate and exposes its
-`errors` list instead. When no code is passed, the default is:
+`errors` list of `ConfigValidationIssue` records instead. When no code is passed, the default is:
 
 | Exception | Default `ErrorCode` |
 |---|---|

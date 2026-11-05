@@ -1,6 +1,6 @@
 [project]
 name = "safeuploads"
-version = "2.1.0"
+version = "2.2.0"
 description = "A comprehensive file security system for validating uploads and preventing attacks"
 authors = [
     {name = "João Vitória Silva",email = "joao@endurain.com"}
@@ -27,7 +27,7 @@ dev = [
     "ty>=0.0.83",
     "types-defusedxml",
     # HTTP stack for the FastAPI multipart integration test
-    "httpx>=0.27,<1.0",
+    "httpx2>=2.16,<3.0",
     "python-multipart>=0.0.9,<1.0",
 ]
 docs = [
@@ -118,6 +118,10 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "-ra",
+    # Benchmarks assert wall-clock bounds that depend on the machine;
+    # run them explicitly with `pytest -m performance`.
+    "-m",
+    "not performance",
     "--cov=safeuploads",
     "--cov-report=term-missing",
     "--cov-report=html",

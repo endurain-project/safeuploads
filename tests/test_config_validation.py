@@ -15,6 +15,7 @@ from safeuploads.enums import (
     UnicodeAttackCategory,
 )
 from safeuploads.exceptions import (
+    ErrorCode,
     FileSecurityConfigurationError,
     WindowsReservedNameError,
 )
@@ -817,7 +818,7 @@ class TestValidateAndReportLogging:
         """
         import logging
 
-        from safeuploads.exceptions import ConfigValidationError
+        from safeuploads.exceptions import ConfigValidationIssue
 
         original = FileSecurityConfig._validate_enum_consistency
 
@@ -825,7 +826,7 @@ class TestValidateAndReportLogging:
         def _force_info(cls):
             results = original.__func__(cls)
             results.append(
-                ConfigValidationError(
+                ConfigValidationIssue(
                     error_type="test_info",
                     message="Test info message",
                     severity="info",
@@ -1086,8 +1087,9 @@ class TestInstanceOverrideValidation:
         assert config.validate_instance() == []
         validator = FileValidator(config=config)
 
-        with pytest.raises(WindowsReservedNameError):
+        with pytest.raises(WindowsReservedNameError) as exc_info:
             validator._sanitize_filename("con.png")
+        assert exc_info.value.error_code == ErrorCode.WINDOWS_RESERVED_NAME
         assert validator._sanitize_filename("photo.png") == "photo.png"
 
     def test_class_validation_still_reports_class_problems(self, monkeypatch):

@@ -422,10 +422,11 @@ class TestGzipMemberHandling:
         )
         member = gzip.compress(bytes(400 * 1024))
         data = member * 4
-        with pytest.raises(ZipBombError):
+        with pytest.raises(ZipBombError) as exc_info:
             GzipContentInspector(config).inspect_gzip_content(
                 io.BytesIO(data), len(data)
             )
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
 
     def test_ratio_limit_counts_all_members(self):
         """The ratio is checked on the output summed across members."""

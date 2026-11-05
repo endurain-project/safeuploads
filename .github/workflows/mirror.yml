@@ -18,13 +18,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        # Credentials go in per-host Authorization headers passed through
+        # GIT_CONFIG_* environment variables, so they never appear in a
+        # command line, a remote URL or the mirror's stored git config.
         run: |
           set -euo pipefail
+          github_auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          gitlab_auth="$(printf 'oauth2:%s' "$GITLAB_TOKEN" | base64 -w0)"
+          echo "::add-mask::${github_auth}"
+          echo "::add-mask::${gitlab_auth}"
+          export GIT_CONFIG_COUNT=2
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="Authorization: Basic ${github_auth}"
+          export GIT_CONFIG_KEY_1="http.https://gitlab.com/.extraheader"
+          export GIT_CONFIG_VALUE_1="Authorization: Basic ${gitlab_auth}"
           mirror_dir="$RUNNER_TEMP/safeuploads.git"
           git clone --mirror \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "$mirror_dir"
+            "https://github.com/${GITHUB_REPOSITORY}.git" "$mirror_dir"
           cd "$mirror_dir"
           git remote set-url --push origin \
-            "https://oauth2:${GITLAB_TOKEN}@gitlab.com/endurain-project/safeuploads.git"
+            "https://gitlab.com/endurain-project/safeuploads.git"
           git push --mirror

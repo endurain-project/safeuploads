@@ -2,7 +2,8 @@
 Performance tests for safeuploads.
 
 Tests measure execution time, memory usage, and throughput for various
-validation operations. Run with: pytest tests/test_performance.py -v
+validation operations. They are deselected by default; run them with
+``pytest -m performance``.
 """
 
 import asyncio

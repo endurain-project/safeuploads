@@ -1042,8 +1042,9 @@ class TestZipInspectorStructureGaps:
 
         monkeypatch.setattr(zipfile.ZipFile, "open", _mock_open)
         caplog.set_level("WARNING", logger=zip_inspector.__name__)
-        with pytest.raises(ZipContentError):
+        with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_zip_content(io.BytesIO(zip_data))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         messages = [
             r.getMessage()
@@ -1318,8 +1319,9 @@ class TestZipInspectorNestedArchives:
 
         monkeypatch.setattr(zipfile.ZipFile, "open", _fail_open)
         caplog.set_level("WARNING", logger=zip_inspector.__name__)
-        with pytest.raises(ZipContentError):
+        with pytest.raises(ZipContentError) as exc_info:
             inspector.inspect_nested_archives(io.BytesIO(outer_bytes))
+        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
         messages = [
             r.getMessage()

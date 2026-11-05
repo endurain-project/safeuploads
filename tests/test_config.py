@@ -6,7 +6,7 @@ import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
-    ConfigValidationError,
+    ConfigValidationIssue,
     FileSecurityConfigurationError,
 )
 
@@ -171,8 +171,8 @@ class TestConfigurationValidation:
             pytest.fail("Should not raise for valid configuration")
 
     def test_config_validation_error_attributes(self):
-        """Test ConfigValidationError attributes."""
-        error = ConfigValidationError(
+        """Test ConfigValidationIssue attributes."""
+        error = ConfigValidationIssue(
             error_type="test_error",
             message="Test message",
             severity="error",
@@ -187,8 +187,8 @@ class TestConfigurationValidation:
         assert error.recommendation == "Test recommendation"
 
     def test_config_validation_error_string_representation(self):
-        """Test ConfigValidationError string representation."""
-        error = ConfigValidationError(
+        """Test ConfigValidationIssue string representation."""
+        error = ConfigValidationIssue(
             error_type="test_error",
             message="Test message",
             severity="error",
@@ -269,13 +269,13 @@ class TestConfigurationValidation:
 
     def test_file_security_configuration_error_with_errors(self):
         """Test FileSecurityConfigurationError with error list."""
-        error1 = ConfigValidationError(
+        error1 = ConfigValidationIssue(
             error_type="test1",
             message="Error 1",
             severity="error",
             component="test",
         )
-        error2 = ConfigValidationError(
+        error2 = ConfigValidationIssue(
             error_type="test2",
             message="Error 2",
             severity="warning",
@@ -368,7 +368,7 @@ class TestConfigInstanceIsolation:
             config.ALLOWED_ACTIVITY_EXTENSIONS.add(".evil")
 
 
-def _errors_for(**overrides: Any) -> list[ConfigValidationError]:
+def _errors_for(**overrides: Any) -> list[ConfigValidationIssue]:
     """
     Validate an instance whose limits carry the given overrides.
 

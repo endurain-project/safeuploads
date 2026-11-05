@@ -23,6 +23,7 @@ from safeuploads.exceptions import (
     FileSignatureError,
     FileSizeError,
     FileValidationError,
+    ImageDimensionError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -32,22 +33,25 @@ from safeuploads.exceptions import (
     ZipContentError,
 )
 from safeuploads.file_validator import FileValidator, ValidationResult
+from tests import images
 from tests.validators.test_fit_validator import build_fit
 
 # ---------------------------------------------------------------------------
 # Payloads
 # ---------------------------------------------------------------------------
 
-_JPEG = (
-    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
-    b"\xff\xd9"
-)
-_POLYGLOT_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04\xff\xd9"
-_WEBP = (
-    b"RIFF\x1a\x00\x00\x00WEBPVP8L\x0d\x00\x00\x00"
-    b"\x2f\x00\x00\x00\x10\x07\x10\x11\x11\x88\x88\xfe\x07\x00"
-)
+_JPEG = images.jpeg()
+_POLYGLOT_JPEG = images.jpeg(body=b"\x00" * 9000 + b"PK\x03\x04")
+_WEBP = images.webp()
 _POLYGLOT_WEBP = _WEBP + b"\x00" * 9000 + b"PK\x03\x04"
+_PIXEL_BOMB_PNG = images.png(60000, 60000)
+# The frame header sits past a 20 KB EXIF segment
+_PIXEL_BOMB_JPEG = images.jpeg(
+    30000,
+    30000,
+    before_frame=images.jpeg_segment(0xE1, b"Exif\x00\x00" + b"\x00" * 20000),
+)
+_FRAMELESS_JPEG = images.JPEG_PREFIX + b"\xff\xda" + b"\x00" * 64
 _AVI = b"RIFF\x24\x00\x00\x00AVI LIST" + b"\x00" * 28
 _GPX = (
     b'<?xml version="1.0" encoding="UTF-8"?>'
@@ -270,6 +274,22 @@ class TestSyncImageRejects:
             _run_sync(FileValidator(), "image", name, payload)
         assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
 
+    @pytest.mark.parametrize(
+        ("name", "payload"),
+        [("bomb.png", _PIXEL_BOMB_PNG), ("bomb.jpg", _PIXEL_BOMB_JPEG)],
+    )
+    def test_pixel_bomb_raises(self, name, payload):
+        """An image declaring too many pixels fails the pixel limit."""
+        with pytest.raises(ImageDimensionError) as exc_info:
+            _run_sync(FileValidator(), "image", name, payload)
+        assert exc_info.value.error_code == ErrorCode.IMAGE_DIMENSIONS_EXCEEDED
+
+    def test_jpeg_without_frame_header_raises(self):
+        """A JPEG reaching scan data with no frame header fails."""
+        with pytest.raises(FileSignatureError) as exc_info:
+            _run_sync(FileValidator(), "image", "a.jpg", _FRAMELESS_JPEG)
+        assert exc_info.value.error_code == ErrorCode.IMAGE_INVALID_STRUCTURE
+
     def test_avi_named_webp_raises(self):
         """AVI content under a .webp name fails the MIME check."""
         with pytest.raises(MimeTypeError) as exc_info:
@@ -463,6 +483,9 @@ _PARITY = [
     ("image", "photo.txt", _JPEG),
     ("image", "photo.jpg", _WEBP),
     ("image", "photo.png", _JPEG),
+    ("image", "bomb.png", _PIXEL_BOMB_PNG),
+    ("image", "bomb.jpg", _PIXEL_BOMB_JPEG),
+    ("image", "frameless.jpg", _FRAMELESS_JPEG),
     ("activity", "ride.gpx", _FIT),
     ("activity", "track.fit", _GPX),
     ("zip", "t.zip", _ZIP_TRAVERSAL),

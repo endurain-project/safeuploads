@@ -20,6 +20,7 @@ class TestSecurityLimits:
         limits = SecurityLimits()
 
         assert limits.max_image_size == 20 * 1024 * 1024
+        assert limits.max_image_pixels == 89_478_485
         assert limits.max_zip_size == 500 * 1024 * 1024
         assert limits.max_compression_ratio == 100
         assert limits.max_uncompressed_size == 1024 * 1024 * 1024

@@ -24,6 +24,7 @@ from safeuploads.exceptions import (
     FileSignatureError,
     FileSizeError,
     FileValidationError,
+    ImageDimensionError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -68,6 +69,10 @@ class TestErrorCode:
         # File signature errors
         assert hasattr(ErrorCode, "FILE_SIGNATURE_MISSING")
         assert hasattr(ErrorCode, "FILE_SIGNATURE_MISMATCH")
+        assert hasattr(ErrorCode, "IMAGE_INVALID_STRUCTURE")
+
+        # Image dimension errors
+        assert hasattr(ErrorCode, "IMAGE_DIMENSIONS_EXCEEDED")
 
         # ZIP errors
         assert hasattr(ErrorCode, "ZIP_BOMB_DETECTED")
@@ -352,6 +357,42 @@ class TestFileSignatureError:
         assert isinstance(error, FileValidationError)
 
 
+class TestImageDimensionError:
+    """Test ImageDimensionError exception."""
+
+    def test_initialization(self):
+        """Dimension attributes default to None."""
+        error = ImageDimensionError("Too many pixels")
+        assert error.message == "Too many pixels"
+        assert error.width is None
+        assert error.height is None
+        assert error.max_pixels is None
+
+    def test_initialization_with_dimensions(self):
+        """Filename and dimension attributes are stored."""
+        error = ImageDimensionError(
+            "Too many pixels",
+            filename="bomb.png",
+            width=60000,
+            height=50000,
+            max_pixels=1000,
+        )
+        assert error.filename == "bomb.png"
+        assert (error.width, error.height) == (60000, 50000)
+        assert error.max_pixels == 1000
+
+    def test_error_code(self):
+        """The default code is IMAGE_DIMENSIONS_EXCEEDED."""
+        error = ImageDimensionError("Too many pixels")
+        assert error.error_code == ErrorCode.IMAGE_DIMENSIONS_EXCEEDED
+
+    def test_inheritance(self):
+        """It is a validation error, not a size error."""
+        error = ImageDimensionError("Test")
+        assert isinstance(error, FileValidationError)
+        assert not isinstance(error, FileSizeError)
+
+
 class TestCompressionSecurityError:
     """Test CompressionSecurityError exception."""
 
@@ -540,6 +581,7 @@ _DEFAULT_CODES = {
     FileSizeError: ErrorCode.FILE_TOO_LARGE,
     MimeTypeError: ErrorCode.MIME_TYPE_INVALID,
     FileSignatureError: ErrorCode.FILE_SIGNATURE_MISMATCH,
+    ImageDimensionError: ErrorCode.IMAGE_DIMENSIONS_EXCEEDED,
     CompressionSecurityError: ErrorCode.ZIP_INVALID_STRUCTURE,
     ZipBombError: ErrorCode.ZIP_BOMB_DETECTED,
     ZipContentError: ErrorCode.ZIP_CONTENT_THREAT,
@@ -645,6 +687,7 @@ def _sample_instances() -> list[FileSecurityError]:
         FileSizeError("m", "f", 10, 5),
         MimeTypeError("m", "f", "text/plain", ["image/png"]),
         FileSignatureError("m", "f", "png"),
+        ImageDimensionError("m", "f.png", 60000, 50000, 1000),
         CompressionSecurityError("m", "f.zip"),
         ZipBombError("m", "f.zip", 99.5, 1000, 50.0, 500),
         ZipContentError("m", "f.zip", ["t1", "t2"]),
@@ -740,6 +783,8 @@ class TestPackageExports:
             "UploadFileProtocol",
             "SeekableFile",
             "ConfigValidationIssue",
+            "ImageDimensionError",
+            "ImageDimensionValidator",
         ],
     )
     def test_names_exported(self, name):

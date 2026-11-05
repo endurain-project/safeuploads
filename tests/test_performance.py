@@ -16,11 +16,12 @@ import pytest
 
 from safeuploads import FileValidator
 from safeuploads.config import FileSecurityConfig, SecurityLimits
+from tests import images
 
 
 def create_test_image(size_kb: int) -> bytes:
     """
-    Create a minimal valid JPEG image of approximately specified size.
+    Create a JPEG with a frame header of approximately specified size.
 
     Args:
         size_kb: Approximate size in kilobytes.
@@ -28,39 +29,8 @@ def create_test_image(size_kb: int) -> bytes:
     Returns:
         JPEG image bytes.
     """
-    # Minimal JPEG header and footer
-    jpeg_header = bytes(
-        [
-            0xFF,
-            0xD8,
-            0xFF,
-            0xE0,
-            0x00,
-            0x10,
-            0x4A,
-            0x46,
-            0x49,
-            0x46,
-            0x00,
-            0x01,
-            0x01,
-            0x00,
-            0x00,
-            0x01,
-            0x00,
-            0x01,
-            0x00,
-            0x00,
-        ]
-    )
-    jpeg_footer = bytes([0xFF, 0xD9])
-
-    # Add padding to reach desired size
-    target_size = size_kb * 1024
-    padding_size = max(0, target_size - len(jpeg_header) - len(jpeg_footer))
-    padding = b"\x00" * padding_size
-
-    return jpeg_header + padding + jpeg_footer
+    padding_size = max(0, size_kb * 1024 - len(images.jpeg()))
+    return images.jpeg(body=b"\x00" * padding_size)
 
 
 def create_test_zip(num_files: int, file_size_kb: int = 1) -> bytes:

@@ -62,6 +62,40 @@ class TestFileSizeLimitValidation:
         ]
         assert len(warnings) >= 1
 
+    @staticmethod
+    def _pixel_issues(max_image_pixels: int) -> list[tuple[str, str]]:
+        """Return (error_type, severity) of the pixel limit issues."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_pixels=max_image_pixels)
+        return [
+            (e.error_type, e.severity)
+            for e in config.validate_instance()
+            if "max_image_pixels" in e.message
+        ]
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_non_positive_pixel_limit_generates_error(self, value):
+        """A pixel limit of zero or less is an error."""
+        assert self._pixel_issues(value) == [("invalid_pixel_limit", "error")]
+
+    def test_non_positive_pixel_limit_blocks_validator(self):
+        """FileValidator refuses a configuration with no pixel budget."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_pixels=0)
+        with pytest.raises(FileSecurityConfigurationError):
+            FileValidator(config)
+
+    @pytest.mark.parametrize("value", [1, 89_478_485, 2 * 89_478_485])
+    def test_pixel_limit_in_range_has_no_issue(self, value):
+        """Positive limits up to twice Pillow's default are accepted."""
+        assert self._pixel_issues(value) == []
+
+    def test_excessive_pixel_limit_generates_warning(self):
+        """A limit above twice Pillow's default is only a warning."""
+        assert self._pixel_issues(2 * 89_478_485 + 1) == [
+            ("excessive_pixel_limit", "warning")
+        ]
+
     def test_negative_zip_size_generates_error(self, monkeypatch):
         """
         Test that a non-positive ZIP size limit generates an error.

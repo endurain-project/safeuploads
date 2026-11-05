@@ -88,6 +88,7 @@ validator = FileValidator()
 # Or customize limits
 config = FileSecurityConfig()
 config.limits.max_image_size = 10 * 1024 * 1024  # 10 MiB
+config.limits.max_image_pixels = 40_000_000  # 40 megapixels
 config.limits.max_compression_ratio = 50
 
 # Allowed content: each MIME type maps to the extensions its
@@ -145,6 +146,7 @@ except FileValidationError as err:
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip, with the extension required to match the detected type
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
 - **Resource Monitoring**: wall-clock time and memory limits enforced via `ResourceMonitor` during the work
+- **Image Dimension Limits**: Header-only pixel count check for PNG, JPEG and WebP that rejects decompression (pixel) bombs before the host decodes them
 - **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing and FIT structure checks
 - **Gzip Support**: Gzip archive validation with decompression bomb detection
 - **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
@@ -157,6 +159,7 @@ except FileValidationError as err:
 
 - No built-in rate limiting (application-level concern — see [Rate Limiting](rate-limiting.md) guide)
 - MIME detection covers first 8 KB; advanced polyglot attacks may require `enable_content_analysis`
+- Images are not decoded: only their dimension headers are checked, so decode and re-encode uploads in an isolated process (see the integration checklist)
 - `SpooledTemporaryFile` uses the system default temp directory
 
 ## Documentation

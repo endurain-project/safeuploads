@@ -72,6 +72,8 @@ class SecurityLimits:
 
     Attributes:
         max_image_size: Maximum size in bytes for image files.
+        max_image_pixels: Maximum pixel count (width times height)
+            an image header may declare.
         max_zip_size: Maximum size in bytes for ZIP archives.
         max_activity_file_size: Maximum size in bytes for
             GPX/TCX/FIT activity files.
@@ -114,6 +116,9 @@ class SecurityLimits:
 
     # File size limits (in bytes)
     max_image_size: int = 20 * 1024 * 1024  # 20MB for images
+    # Pillow's default MAX_IMAGE_PIXELS: about 256 MB decoded at
+    # 24 bits per pixel
+    max_image_pixels: int = 89_478_485
     max_zip_size: int = 500 * 1024 * 1024  # 500MB for ZIP files
     max_activity_file_size: int = 50 * 1024 * 1024  # 50MB for GPX/TCX/FIT
     max_gzip_size: int = 500 * 1024 * 1024  # 500MB for gzip files
@@ -648,6 +653,38 @@ class FileSecurityConfig:
                         "Consider reducing image size"
                         " limit to prevent resource"
                         " exhaustion"
+                    ),
+                    severity="warning",
+                )
+            )
+
+        # Check the image pixel limit
+        if limits.max_image_pixels <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_pixel_limit",
+                    "max_image_pixels must be greater than 0",
+                    "file_sizes",
+                    (
+                        "Set max_image_pixels to a positive value"
+                        " (e.g., 89478485)"
+                    ),
+                )
+            )
+
+        # Pillow refuses to open images above twice its default
+        if limits.max_image_pixels > 2 * 89_478_485:
+            errors.append(
+                _config_error(
+                    "excessive_pixel_limit",
+                    (
+                        f"max_image_pixels ({limits.max_image_pixels})"
+                        " is very large"
+                    ),
+                    "file_sizes",
+                    (
+                        "Consider reducing the pixel limit to prevent"
+                        " memory exhaustion when images are decoded"
                     ),
                     severity="warning",
                 )

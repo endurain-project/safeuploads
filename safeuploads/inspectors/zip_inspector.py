@@ -547,8 +547,8 @@ class ZipContentInspector(BaseInspector):
         the Windows reserved-name check and a file's base name the
         blocked and compound extension checks, all driven by the
         configuration. Name checks run on the NFC name and on its NFKC
-        form. Trailing dots and spaces are stripped from each component
-        because Windows drops them on extraction.
+        form; both validators ignore the trailing dots and spaces that
+        Windows drops on extraction.
 
         Args:
             entry: ZIP entry whose name is checked.
@@ -559,10 +559,7 @@ class ZipContentInspector(BaseInspector):
         try:
             name = self._unicode.validate_unicode_security(entry.filename)
             self._unicode.compatibility_form(name)
-            components = [
-                part.rstrip(". ")
-                for part in name.replace("\\", "/").split("/")
-            ]
+            components = name.replace("\\", "/").split("/")
             for component in components:
                 for form in (
                     component,

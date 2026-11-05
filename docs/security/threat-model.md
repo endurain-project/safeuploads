@@ -104,6 +104,11 @@ improperly.
   files, drivers, themes, and help files.
 - Compound extensions (`.tar.gz`, `.user.js`, `.min.css`) are
   checked via `CompoundExtensionCategory`.
+- Trailing dots and spaces are ignored by the blocked-extension
+  check, because Windows drops them when it saves a file. The
+  check also runs on the NFKC form, so `run.exe ` or
+  `invoice.docm` followed by U+3000 (an ideographic space that
+  NFKC folds to a space) is rejected.
 - Allowed extensions are validated against a configurable
   allowlist per file type.
 

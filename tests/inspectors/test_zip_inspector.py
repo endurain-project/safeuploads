@@ -1688,6 +1688,9 @@ class TestEntryNamesGetFilenameChecks:
             "theme.min.css",
             # Fullwidth compatibility characters
             "invoice.\uff44\uff4f\uff43\uff4d",
+            # Spaces that NFKC folds to a trailing ASCII space
+            "invoice.docm\u3000",
+            "invoice.docm\u00a0",
             # Dangerous Unicode anywhere in the path
             "photo\u202egpj.pdf",
             "dir\u202e/notes.txt",

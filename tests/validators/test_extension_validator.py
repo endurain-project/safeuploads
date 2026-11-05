@@ -244,6 +244,49 @@ class TestCompoundExtensionCase:
         assert error.extension == ".tar.z"
 
 
+class TestTrailingDotsAndSpaces:
+    """Trailing dots and spaces cannot hide a blocked extension."""
+
+    @pytest.mark.parametrize(
+        ("filename", "extension"),
+        [
+            ("run.exe ", ".exe"),
+            ("run.exe   ", ".exe"),
+            ("RUN.EXE . ", ".exe"),
+            ("invoice.docm ", ".docm"),
+            ("invoice.docm .", ".docm"),
+        ],
+    )
+    def test_blocked_extension_rejected(
+        self, default_config, filename, extension
+    ):
+        """Windows drops trailing dots and spaces, exposing the extension."""
+        validator = ExtensionSecurityValidator(default_config)
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_extensions(filename)
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+        assert exc_info.value.extension == extension
+
+    def test_compound_extension_rejected(self, default_config):
+        """A compound extension followed by spaces is rejected."""
+        validator = ExtensionSecurityValidator(default_config)
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_extensions("backup.tar.gz  ")
+
+        error = exc_info.value
+        assert error.error_code == ErrorCode.COMPOUND_EXTENSION_BLOCKED
+        assert error.extension == ".tar.gz"
+
+    @pytest.mark.parametrize("filename", ["notes.txt ", "notes.txt. "])
+    def test_safe_extension_accepted(self, default_config, filename):
+        """A safe extension followed by dots or spaces is accepted."""
+        validator = ExtensionSecurityValidator(default_config)
+        validator.validate_extensions(filename)
+
+
 class TestAddedBlockedExtensions:
     """Server-side script and Windows script variants are blocked."""
 

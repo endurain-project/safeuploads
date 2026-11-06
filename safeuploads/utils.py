@@ -1,11 +1,11 @@
-"""Utility helpers for resource monitoring and content scanning."""
+"""Utility helpers for allow-lists, resource monitoring and scanning."""
 
 import contextvars
 import logging
 import sys
 import time
 import zlib
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from types import TracebackType
 
 from .exceptions import ErrorCode, ResourceLimitError
@@ -48,6 +48,22 @@ def bytes_to_mb(num_bytes: int) -> int:
         Size in whole megabytes using floor division.
     """
     return num_bytes // (1024 * 1024)
+
+
+def allowed_extensions(
+    allowed_types: Mapping[str, frozenset[str]],
+) -> frozenset[str]:
+    """
+    Collect every extension an allowed-types mapping permits.
+
+    Args:
+        allowed_types: Allowed MIME types mapped to the extensions
+            each one permits.
+
+    Returns:
+        Union of the mapping's extension sets.
+    """
+    return frozenset().union(*allowed_types.values())
 
 
 def matches_signature_prefix(

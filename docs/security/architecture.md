@@ -25,6 +25,7 @@ safeuploads/
 │   ├── mime_validator.py      # Content MIME detection and enforcement
 │   ├── windows_validator.py   # Windows reserved name checks
 │   ├── fit_validator.py       # FIT container structure checks
+│   ├── image_dimension_validator.py # Pixel count from image headers
 │   ├── compression_validator.py # ZIP bomb detection
 │   └── xml_validator.py       # XXE-safe XML parsing
 └── inspectors/
@@ -39,18 +40,19 @@ safeuploads/
 | Component | Responsibility |
 |---|---|
 | `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring and audit events, and delegates to validators/inspectors. The async methods offload blocking inspection to a worker thread (or a configured `executor`); the `*_sync` methods run the same pipeline in the calling thread and refuse to run on an event-loop thread. Exposes them as `filename_validator`, `signature_validator`, `mime_validator` and the other validator attributes; `magic_mime` and `magic_available` are properties that delegate to `mime_validator`. |
-| `FileSecurityConfig` | Centralizes all configuration: allowed MIME types, extensions, blocked extensions, Unicode characters, and Windows reserved names. |
+| `FileSecurityConfig` | Centralizes all configuration: allowed MIME types mapped to the extensions each permits, blocked extensions, Unicode characters, and Windows reserved names. |
 | `SecurityLimits` | Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps. |
 | `BaseValidator` | Abstract base class; validators inherit and implement `validate()`. |
 | `UnicodeSecurityValidator` | NFC normalization and dangerous character detection (rejects with `UnicodeSecurityError`). |
 | `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. `validate_allowed` checks an extension against the allowlist and the blocked list. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
 | `FilenameSecurityValidator` | Strips path components and dangerous characters from a filename and limits its length to `max_sanitized_name_length`. |
-| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image, ZIP, gzip, activity or FIT). |
-| `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename) and enforces the allowed MIME types. |
+| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image: JPEG, PNG or WebP; ZIP, gzip, activity or FIT). |
+| `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename), enforces the allowed MIME types and requires the filename's extension to be one listed for the detected type. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |
 | `FitSecurityValidator` | Checks the FIT container: headers, header CRC, data size, CRC-16 per section, and that the sections cover the file exactly. |
+| `ImageDimensionValidator` | Reads width and height from the PNG IHDR chunk, the first JPEG frame header (SOF) or the first WebP chunk (VP8, VP8L or VP8X canvas) without decoding pixels, and rejects an image whose pixel count exceeds `max_image_pixels` (raises `ImageDimensionError`). A missing or malformed dimension header raises `FileSignatureError` with `IMAGE_INVALID_STRUCTURE`. |
 | `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures, and runs the top-level Unicode, Windows reserved-name and blocked-extension checks on each entry name. With `allow_nested_archives`, inspects every inner ZIP like the top level. |
 | `GzipContentInspector` | Streams gzip decompression, checking ratio and size progressively. |
 | `ContentSecurityInspector` | Scans raw bytes for structurally verified executable headers, web shells, and polyglot patterns (image and activity uploads). |
@@ -61,7 +63,7 @@ safeuploads/
 
 ## Validation Pipelines
 
-The `validate_*_file_sync` methods run the identical steps listed below in the calling thread, without the worker-thread offload.
+The `validate_*_file_sync` methods run the identical steps listed below in the calling thread, without the worker-thread offload. Every method returns a `ValidationResult` with the sanitized filename and the detected MIME type.
 
 ### Image Validation (`validate_image_file`)
 
@@ -91,14 +93,18 @@ UploadFile
               │
               ▼
 ┌─────────────────────────────┐
-│ 4. File Size Check          │
-│    (chunked progressive)    │
+│ 4. Stream to SpooledTempFile│
+│    (size checked per chunk; │
+│    memory < 10MB → disk)    │
 └─────────────┬───────────────┘
               │
               ▼
 ┌─────────────────────────────┐
-│ 5. MIME Type Detection      │
+│ 5. MIME Type Check          │
 │    (python-magic, first 8KB)│
+│    ├── Type allowed         │
+│    └── Extension listed for │
+│        the detected type    │
 └─────────────┬───────────────┘
               │
               ▼
@@ -109,7 +115,18 @@ UploadFile
               │
               ▼
 ┌─────────────────────────────┐
-│ 7. Content Analysis         │
+│ 7. Dimension Check          │
+│    (header only, no decode) │
+│    ├── PNG IHDR             │
+│    ├── JPEG frame header    │
+│    ├── WebP VP8/VP8L/VP8X   │
+│    └── width × height ≤     │
+│        max_image_pixels     │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ 8. Content Analysis         │
 │    (if enabled)             │
 │    ├── Executable signatures│
 │    ├── Script injection     │
@@ -118,13 +135,13 @@ UploadFile
               │
               ▼
 ┌─────────────────────────────┐
-│ 8. ResourceMonitor END      │
+│ 9. ResourceMonitor END      │
 └─────────────┬───────────────┘
               │
               ▼
-┌─────────────────────────────┐
-│ 9. Audit: VALIDATION_SUCCESS│
-└─────────────────────────────┘
+┌──────────────────────────────┐
+│ 10. Audit: VALIDATION_SUCCESS│
+└──────────────────────────────┘
 ```
 
 ### ZIP Validation (`validate_zip_file`)
@@ -162,6 +179,8 @@ UploadFile
               ▼
 ┌─────────────────────────────┐
 │ 6. MIME + Signature Check   │
+│    (extension listed for    │
+│    the detected type)       │
 └─────────────┬───────────────┘
               │
               ▼
@@ -245,8 +264,10 @@ UploadFile (.gpx, .tcx, .fit)
 │ 5. MIME + Signature Check    │
 │    ├── FIT: binary signature │
 │    │   (.FIT at bytes 8-11)  │
-│    └── GPX/TCX: XML header   │
-│        (<?xml)               │
+│    ├── GPX/TCX: XML header   │
+│    │   (<?xml)               │
+│    └── Extension listed for  │
+│        the detected type     │
 └──────────────┬───────────────┘
                │
                ▼
@@ -310,6 +331,8 @@ UploadFile (.gz)
 ┌──────────────────────────────┐
 │ 5. MIME + Signature Check    │
 │    (gzip magic: \x1f\x8b)   │
+│    (extension listed for     │
+│    the detected type)        │
 └──────────────┬───────────────┘
                │
                ▼
@@ -337,8 +360,7 @@ UploadFile (.gz)
 
 | Stage | What is read | Buffer size |
 |---|---|---|
-| File size check | Chunked reads (`chunk_size`, 64 KB default) | Progressive, discarded after counting |
-| Stream to temp | Chunked reads to `SpooledTemporaryFile` | In-memory up to `max_memory_buffer_size` (10 MB), then disk |
+| Stream to temp (size check) | Chunked reads (`chunk_size`, 64 KB default) to `SpooledTemporaryFile`, counted against the type's size limit | In-memory up to `max_memory_buffer_size` (10 MB), then disk |
 | MIME detection | First 8 KB via `python-magic` | 8 KB |
 | Signature check | First 4-12 bytes depending on format | Minimal |
 | Compression validation | ZIP central directory, local headers and data descriptors | Metadata; entries with a data descriptor are inflated in `chunk_size` chunks |
@@ -347,6 +369,7 @@ UploadFile (.gz)
 | Gzip inspection | Chunked streaming decompression | `chunk_size` at a time |
 | XML validation | Chunked feed to `defusedxml`'s parser, no element tree built | `chunk_size` at a time |
 | FIT validation | Chunked CRC-16 over each section | `chunk_size` at a time |
+| Image dimension check | PNG and WebP: first 30 bytes. JPEG: the marker and length of each segment up to the frame header, skipping segment payloads by seek | Minimal; a run of 0xFF fill bytes is read `chunk_size` at a time |
 | Content analysis | Byte scan of image and activity uploads (not ZIP) | Bounded by `content_scan_max_size` (50 MB); about twice the sample while matching |
 
 ---
@@ -365,6 +388,7 @@ Exception
     │   ├── FileSizeError
     │   ├── MimeTypeError
     │   ├── FileSignatureError
+    │   ├── ImageDimensionError
     │   ├── CompressionSecurityError
     │   │   ├── ZipBombError
     │   │   └── ZipContentError
@@ -388,8 +412,9 @@ All `FileSecurityError` subclasses carry an `error_code` from
 | `ExtensionSecurityError` | `EXTENSION_BLOCKED` |
 | `WindowsReservedNameError` | `WINDOWS_RESERVED_NAME` |
 | `FileSizeError` | `FILE_TOO_LARGE` |
-| `MimeTypeError` | `MIME_TYPE_INVALID` (uploads whose detected MIME is not allowed are reported as `MIME_TYPE_MISMATCH`) |
-| `FileSignatureError` | `FILE_SIGNATURE_MISMATCH` |
+| `MimeTypeError` | `MIME_TYPE_INVALID` (uploads whose detected MIME is not allowed are reported as `MIME_TYPE_MISMATCH`, and an extension not listed for the detected MIME as `EXTENSION_MIME_MISMATCH`) |
+| `FileSignatureError` | `FILE_SIGNATURE_MISMATCH` (a missing or invalid FIT structure is reported as `FIT_INVALID_STRUCTURE`, and a missing or invalid image dimension header as `IMAGE_INVALID_STRUCTURE`) |
+| `ImageDimensionError` | `IMAGE_DIMENSIONS_EXCEEDED` |
 | `CompressionSecurityError` | `ZIP_INVALID_STRUCTURE` |
 | `ZipBombError` | `ZIP_BOMB_DETECTED` |
 | `ZipContentError` | `ZIP_CONTENT_THREAT` (the ZIP inspector passes the code of the first threat found) |

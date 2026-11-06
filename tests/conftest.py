@@ -8,6 +8,7 @@ import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.utils import ResourceMonitor
+from tests import images
 
 
 @pytest.fixture
@@ -101,19 +102,9 @@ def valid_jpeg_bytes() -> bytes:
     Provide valid JPEG file bytes.
 
     Returns:
-        Minimal valid JPEG file content.
+        SOI, APP0, a 1x1 frame header and EOI.
     """
-    # Minimal valid JPEG: SOI marker + APP0 segment + EOI marker
-    return (
-        b"\xff\xd8\xff\xe0"  # JPEG SOI + APP0
-        b"\x00\x10"  # APP0 length
-        b"JFIF\x00"  # JFIF identifier
-        b"\x01\x01"  # Version 1.1
-        b"\x00"  # Density units
-        b"\x00\x01\x00\x01"  # X and Y density
-        b"\x00\x00"  # Thumbnail dimensions
-        b"\xff\xd9"  # JPEG EOI
-    )
+    return images.jpeg()
 
 
 @pytest.fixture
@@ -122,22 +113,20 @@ def valid_png_bytes() -> bytes:
     Provide valid PNG file bytes.
 
     Returns:
-        Minimal valid PNG file content.
+        Signature, a 1x1 IHDR chunk and IEND.
     """
-    # Minimal valid PNG: signature + IHDR + IEND
-    return (
-        b"\x89PNG\r\n\x1a\n"  # PNG signature
-        b"\x00\x00\x00\x0d"  # IHDR chunk length
-        b"IHDR"  # IHDR chunk type
-        b"\x00\x00\x00\x01"  # Width: 1
-        b"\x00\x00\x00\x01"  # Height: 1
-        b"\x08\x02"  # Bit depth: 8, Color type: 2 (RGB)
-        b"\x00\x00\x00"  # Compression, filter, interlace
-        b"\x90\x77\x53\xde"  # IHDR CRC
-        b"\x00\x00\x00\x00"  # IEND chunk length
-        b"IEND"  # IEND chunk type
-        b"\xae\x42\x60\x82"  # IEND CRC
-    )
+    return images.png()
+
+
+@pytest.fixture
+def valid_webp_bytes() -> bytes:
+    """
+    Provide valid WebP file bytes.
+
+    Returns:
+        RIFF header and a 1x1 lossless VP8L chunk.
+    """
+    return images.webp()
 
 
 @pytest.fixture

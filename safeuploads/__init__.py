@@ -39,6 +39,7 @@ from .exceptions import (
     FileSignatureError,
     FileSizeError,
     FileValidationError,
+    ImageDimensionError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -49,7 +50,7 @@ from .exceptions import (
 )
 
 # Main validator
-from .file_validator import FileValidator
+from .file_validator import FileValidator, ValidationResult
 
 # Inspectors
 from .inspectors import (
@@ -69,6 +70,7 @@ from .validators import (
     FilenameSecurityValidator,
     FileSignatureValidator,
     FitSecurityValidator,
+    ImageDimensionValidator,
     MimeTypeValidator,
     UnicodeSecurityValidator,
     WindowsSecurityValidator,
@@ -107,6 +109,7 @@ __all__ = [
     "FileSizeError",
     "MimeTypeError",
     "FileSignatureError",
+    "ImageDimensionError",
     "CompressionSecurityError",
     "ZipBombError",
     "ZipContentError",
@@ -124,6 +127,7 @@ __all__ = [
     "MalwareSignatureCategory",
     # Main validator
     "FileValidator",
+    "ValidationResult",
     # Specialized validators
     "BaseValidator",
     "UnicodeSecurityValidator",
@@ -131,6 +135,7 @@ __all__ = [
     "WindowsSecurityValidator",
     "CompressionSecurityValidator",
     "FitSecurityValidator",
+    "ImageDimensionValidator",
     "FilenameSecurityValidator",
     "FileSignatureValidator",
     "MimeTypeValidator",

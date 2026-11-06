@@ -397,8 +397,17 @@ extension.
   validated.
 - The detected MIME type is validated against the allowlist for
   the file type being validated.
+- The filename's extension must be one the configuration lists
+  for the detected MIME type (`ALLOWED_*_TYPES`), so a file that
+  is a valid, allowed image under another image format's name
+  (for example a WebP named `photo.jpg`) is rejected with
+  `EXTENSION_MIME_MISMATCH`. Downstream tools that pick a decoder
+  or a `Content-Type` from the extension never see a name that
+  contradicts the content.
 - File signatures (magic bytes) are verified independently of
-  the MIME type.
+  the MIME type. A WebP must carry `WEBP` at bytes 8-11 of its
+  RIFF container, so WAV, AVI and other RIFF files are not
+  accepted as images.
 
 ### Polyglot Files
 
@@ -517,7 +526,8 @@ significantly during validation consumes all available memory.
   same process can also trip the limit; on Windows memory
   accounting is disabled.
 - The limit is checked at loop boundaries (upload streaming, ZIP
-  entry loops, gzip decompression, each XML chunk) and on exit,
+  entry loops, gzip decompression, each XML chunk, each JPEG
+  segment before the frame header) and on exit,
   and raises `ResourceLimitError` with
   `RESOURCE_MEMORY_EXCEEDED`. A single blocking call is not
   interrupted mid-call.
@@ -575,6 +585,73 @@ size, similar to ZIP bombs.
   without reading the rest of the stream.
 - Deflate data that `zlib` cannot decode is rejected with
   `CompressionSecurityError` (`ZIP_CORRUPT`).
+
+### Image Decompression Bombs (CWE-400)
+
+**Attack:** A small image whose header declares a huge canvas,
+such as a 50 KB PNG declaring 60,000 × 60,000 pixels or a WebP
+canvas of 16,777,216 × 16,777,216, passes every byte-level
+check and exhausts memory when the host decodes it, for example
+to make a thumbnail. A 24-bit decode needs 3 bytes per pixel,
+so 60,000 × 60,000 pixels is about 10 GB.
+
+**Mitigations:**
+
+- `ImageDimensionValidator` reads width and height from the
+  image header without decoding pixel data, and rejects an
+  image whose width × height exceeds `max_image_pixels` with
+  `ImageDimensionError` (`IMAGE_DIMENSIONS_EXCEEDED`). The
+  default, 89,478,485, is Pillow's `Image.MAX_IMAGE_PIXELS`,
+  about 256 MB decoded at 24 bits per pixel. Configuration
+  validation rejects a limit of 0 or less and warns above twice
+  the default, where Pillow refuses to open an image.
+- PNG: the first chunk must be IHDR with 13 bytes of data, and
+  width and height must be 1 to 2³¹ − 1.
+- JPEG: the marker segments are walked from the start of image
+  to the first frame header (SOF0 to SOF15, except DHT, JPG and
+  DAC). Each segment's payload is skipped by its length, so a
+  frame header behind large EXIF, XMP or ICC segments is still
+  found. Scan data or end of image before a frame header, a
+  truncated segment, a segment length below 2, a standalone
+  marker before the frame, and a zero width or height
+  (including a height deferred to a DNL segment) are rejected
+  with `FileSignatureError` (`IMAGE_INVALID_STRUCTURE`).
+- WebP: the first chunk after the `WEBP` form type must be
+  `VP8 ` (a key frame with a valid start code; the two
+  upscaling bits of each dimension are ignored), `VP8L`
+  (signature 0x2F, version 0) or `VP8X`, whose canvas size is
+  checked. Any other first chunk is rejected with
+  `IMAGE_INVALID_STRUCTURE`.
+- The check runs after the signature check and before content
+  analysis, on the upload streamed to a spooled temp file. The
+  JPEG walk checks the active `ResourceMonitor` on every
+  segment; its cost grows with the number of segments before
+  the frame header, so a 20 MB JPEG made only of 4-byte
+  segments takes seconds, bounded by `max_image_size` and
+  `max_validation_time_seconds`. A run of 0xFF fill bytes is
+  skipped `chunk_size` bytes at a time.
+
+**Decoding trust boundary:**
+
+- safeuploads does **not** decode images. Only the dimension
+  header is parsed: compressed pixel data, ancillary chunks and
+  metadata are not validated, so a truncated or corrupt image
+  body is accepted.
+- Bugs in image decoders (for example CVE-2023-4863 in libwebp)
+  are triggered by decoding. The library cannot detect them, and
+  decoding inside the validator would expose the validating
+  process to them.
+- Only the first image is checked. The APNG and WebP
+  specifications require animation frames to fit the declared
+  canvas, but the number of frames is not limited, and data
+  after a JPEG's end of image (such as the secondary images of
+  an MPO file) is not parsed.
+- A host that decodes uploads should decode in an isolated
+  worker process with a memory limit, keep the decoder's own
+  pixel limit set (for example Pillow's `Image.MAX_IMAGE_PIXELS`)
+  and store a re-encoded copy instead of the original bytes;
+  re-encoding also drops metadata and data appended to the
+  image. See the integration checklist.
 
 ---
 

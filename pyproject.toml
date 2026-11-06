@@ -1,6 +1,6 @@
 [project]
 name = "safeuploads"
-version = "3.0.0"
+version = "4.0.0"
 description = "A comprehensive file security system for validating uploads and preventing attacks"
 authors = [
     {name = "João Vitória Silva",email = "joao@endurain.com"}

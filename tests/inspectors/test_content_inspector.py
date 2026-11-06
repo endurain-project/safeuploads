@@ -13,6 +13,7 @@ from safeuploads.exceptions import ContentThreatError, ErrorCode
 from safeuploads.inspectors.content_inspector import (
     ContentSecurityInspector,
 )
+from tests import images
 
 
 def _sig(category: MalwareSignatureCategory) -> bytes:
@@ -20,7 +21,8 @@ def _sig(category: MalwareSignatureCategory) -> bytes:
     return next(iter(category.value))
 
 
-_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+# SOI, APP0 and a 1x1 frame header; callers append the body and EOI
+_JPEG = images.jpeg()[: -len(images.JPEG_EOI)]
 _PAD = b"\x00" * 64
 _LNK_CLSID = (
     b"\x01\x14\x02\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46"
@@ -314,14 +316,7 @@ class TestContentAnalysisIntegration:
         validator = FileValidator(config=config)
 
         sig = _HOSTILE_PAYLOADS["pe"]
-        content = (
-            b"\xff\xd8\xff\xe0"
-            b"\x00\x10"
-            b"JFIF\x00"
-            b"\x01\x01\x00"
-            b"\x00\x01\x00\x01"
-            b"\x00\x00" + b"\x00" * 50 + sig + b"\x00" * 50 + b"\xff\xd9"
-        )
+        content = images.jpeg(body=b"\x00" * 50 + sig + b"\x00" * 50)
         file = mock_upload_file(filename="bad.jpg", content=content)
         with pytest.raises(ContentThreatError) as exc:
             await validator.validate_image_file(file)
@@ -420,14 +415,7 @@ class TestContentAnalysisIntegration:
         validator = FileValidator(config=config)
 
         sig = _HOSTILE_PAYLOADS["pe"]
-        content = (
-            b"\xff\xd8\xff\xe0"
-            b"\x00\x10"
-            b"JFIF\x00"
-            b"\x01\x01\x00"
-            b"\x00\x01\x00\x01"
-            b"\x00\x00" + b"\x00" * 50 + sig + b"\x00" * 50 + b"\xff\xd9"
-        )
+        content = images.jpeg(body=b"\x00" * 50 + sig + b"\x00" * 50)
         file = mock_upload_file(filename="img.jpg", content=content)
         # Should pass — analysis disabled
         await validator.validate_image_file(file)

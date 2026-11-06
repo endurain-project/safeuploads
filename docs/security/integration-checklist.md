@@ -30,6 +30,12 @@ that addresses it.
   `FileSecurityConfig` (not relying solely on defaults).
 - [ ] `SecurityLimits` tuned for your use case:
     - `max_image_size` — appropriate for expected upload sizes.
+    - `max_image_pixels` — default 89,478,485 (Pillow's
+      `Image.MAX_IMAGE_PIXELS`); lower it to the largest image
+      your application needs. An image whose header declares
+      more pixels is rejected with `IMAGE_DIMENSIONS_EXCEEDED`,
+      and one whose dimension header is missing or malformed
+      with `IMAGE_INVALID_STRUCTURE`.
     - `max_zip_size` — set to the maximum acceptable ZIP size.
     - `max_activity_file_size` — set if accepting GPX/TCX/FIT.
       FIT uploads must be structurally valid (headers, CRCs,
@@ -47,12 +53,15 @@ that addresses it.
   raises `FileSecurityConfigurationError` otherwise), and every
   inner ZIP is inspected like the top level; one that is
   oversized, corrupt or uninspectable is rejected.
-- [ ] Allowed extensions and MIME types reviewed and narrowed
-  to only what your application accepts.
+- [ ] `ALLOWED_*_TYPES` reviewed and narrowed to the MIME types
+  your application accepts and the extensions each may carry.
 - [ ] `FileSecurityConfigurationError` from the `FileValidator`
   constructor handled at startup: it is raised for any
-  error-severity configuration issue (invalid limit types,
-  non-positive limits, empty or uppercase extension entries,
+  error-severity configuration issue (a removed
+  `ALLOWED_*_MIMES` or `ALLOWED_*_EXTENSIONS` setting, invalid
+  limit types, non-positive limits, an empty allowed-types
+  mapping, a MIME
+  type with no extensions, empty or uppercase extension entries,
   empty block lists or reserved names, reserved names that are
   not lowercase, a content scan window smaller than an image or
   activity size limit), including sets overridden on the
@@ -71,6 +80,25 @@ that addresses it.
 - [ ] Consider supplemental antivirus scanning (ClamAV or
   similar) for high-risk environments.
 
+## Image Processing
+
+safeuploads checks the dimensions an image header declares but
+does not decode pixel data, so decoder bugs and corrupt image
+bodies are not caught (see
+[Image Decompression Bombs](threat-model.md#image-decompression-bombs-cwe-400)).
+
+- [ ] Images are decoded, resized or re-encoded in an isolated
+  worker process or container with its own memory and time
+  limits, not in the process that serves requests.
+- [ ] The decoder's own pixel limit stays set at or below
+  `max_image_pixels` (with Pillow, keep `Image.MAX_IMAGE_PIXELS`;
+  never set it to `None`).
+- [ ] A re-encoded copy is stored or served instead of the
+  uploaded bytes, so metadata (EXIF, GPS), data appended to the
+  image and secondary images are dropped.
+- [ ] Image decoder libraries (Pillow, libjpeg-turbo, libpng,
+  libwebp) kept up to date.
+
 ## Audit Logging
 
 - [ ] `enable_audit_logging` set to `True` in production.
@@ -88,8 +116,9 @@ that addresses it.
 - [ ] Application catches specific exception types
   (`FileSizeError`, `ExtensionSecurityError`, etc.) and
   returns user-appropriate messages. Malformed or forbidden XML
-  (`XmlSecurityError`) and content threats
-  (`ContentThreatError`) are `FileValidationError` subclasses.
+  (`XmlSecurityError`), content threats (`ContentThreatError`)
+  and images over the pixel limit (`ImageDimensionError`) are
+  `FileValidationError` subclasses.
 - [ ] `FileProcessingError` (including `ResourceLimitError`) is
   caught as well: it is not a `FileValidationError`, and it is
   raised only for internal errors and exceeded resource limits.
@@ -108,13 +137,20 @@ that addresses it.
 - [ ] Uploaded files stored outside the web-accessible
   document root.
 - [ ] Uploaded files renamed to random identifiers (UUIDs);
-  original filenames stored in metadata only.
+  original filenames stored in metadata only. If the stored name
+  needs an extension, take it from `ValidationResult.filename`,
+  not from the uploaded name: it is sanitized, and its extension
+  is one the configuration lists for the detected MIME type.
+  `mime_type` alone cannot choose it, since GPX and TCX share
+  their XML types. Content is not checked as GPX rather than TCX,
+  so an importer must still handle XML that does not match its
+  extension.
 - [ ] Storage directory permissions restrict access to the
   application user only (`0700` or equivalent).
 - [ ] If serving uploaded files back to users, use:
     - `Content-Disposition: attachment` to force download.
-    - `Content-Type` set from validated MIME type, not from
-      the filename.
+    - `Content-Type` set from `ValidationResult.mime_type`,
+      not from the filename.
     - `X-Content-Type-Options: nosniff` header.
 
 ## Security Headers (for serving uploaded content)
@@ -137,7 +173,7 @@ that addresses it.
   only the time limit applies.
 - [ ] Both limits are checked at loop boundaries (upload
   streaming, ZIP entry loops, gzip decompression, each XML
-  chunk) and on exit; a single blocking call, such as one
+  chunk, each JPEG segment before the frame header) and on exit; a single blocking call, such as one
   `zipfile` central-directory parse or one libmagic call, is
   not interrupted mid-call. A `ResourceLimitError` keeps its
   own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED`

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import magic
 
 from ..exceptions import ErrorCode, MimeTypeError
+from ..utils import allowed_extensions
 from .base import BaseValidator
 
 if TYPE_CHECKING:
@@ -20,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class MimeTypeValidator(BaseValidator):
     """
-    Detects content MIME types with libmagic and checks allow-lists.
+    Detects content MIME types and checks them against extensions.
 
     Attributes:
         config: File security configuration settings.
@@ -108,43 +111,69 @@ class MimeTypeValidator(BaseValidator):
     def enforce(
         self,
         detected: str,
-        allowed: frozenset[str],
+        allowed_types: Mapping[str, frozenset[str]],
         filename: str,
         *,
         allow_octet_stream: bool = False,
         error_code: str | None = None,
     ) -> None:
         """
-        Raise if a detected MIME type is not permitted.
+        Raise unless the detected MIME type permits the extension.
+
+        The detected type must be allowed, and the filename's
+        extension must be one listed for it, so the name never
+        claims a format other than the content's.
 
         Args:
             detected: MIME type reported for the content.
-            allowed: Permitted MIME types for the category.
-            filename: Sanitized filename for error context.
+            allowed_types: Allowed MIME types for the category, each
+                mapped to the extensions its content may carry.
+            filename: Sanitized filename whose extension is checked.
             allow_octet_stream: Accept ``application/octet-stream``
-                when a valid magic signature already passed.
-            error_code: Optional error code for the raised error.
+                under any extension of the category when a valid
+                magic signature already passed.
+            error_code: Optional error code for a MIME type that is
+                not allowed.
 
         Raises:
-            MimeTypeError: If the MIME type is not allowed.
+            MimeTypeError: If the MIME type is not allowed, or with
+                ``ErrorCode.EXTENSION_MIME_MISMATCH`` if the
+                extension is not one listed for it.
         """
-        if detected in allowed:
-            return
-        if allow_octet_stream and detected == "application/octet-stream":
+        _, ext = os.path.splitext(filename.lower())
+        extensions = allowed_types.get(detected)
+        if extensions is None:
+            if not (
+                allow_octet_stream and detected == "application/octet-stream"
+            ):
+                raise MimeTypeError(
+                    "Invalid file type."
+                    f" Detected: {detected}."
+                    f" Allowed: {', '.join(sorted(allowed_types))}",
+                    filename=filename,
+                    detected_mime=detected,
+                    allowed_mimes=list(allowed_types),
+                    error_code=error_code,
+                )
             logger.debug(
                 "Accepting application/octet-stream for %r"
                 " on a valid signature",
                 filename,
             )
+            extensions = allowed_extensions(allowed_types)
+        if ext in extensions:
             return
+        matching = sorted(
+            mime for mime, exts in allowed_types.items() if ext in exts
+        )
         raise MimeTypeError(
-            "Invalid file type."
+            "File content does not match its extension."
             f" Detected: {detected}."
-            f" Allowed: {', '.join(sorted(allowed))}",
+            f" Allowed for '{ext}': {', '.join(matching) or 'none'}",
             filename=filename,
             detected_mime=detected,
-            allowed_mimes=list(allowed),
-            error_code=error_code,
+            allowed_mimes=matching,
+            error_code=ErrorCode.EXTENSION_MIME_MISMATCH,
         )
 
     def validate(self, content: bytes, filename: str) -> str:

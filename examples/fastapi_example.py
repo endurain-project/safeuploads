@@ -192,13 +192,14 @@ async def upload_image(file: UploadFile):
     Uses default validator configuration.
     """
     # Validate the uploaded file
-    await default_validator.validate_image_file(file)
+    result = await default_validator.validate_image_file(file)
 
     # If we get here, validation passed
     return {
         "status": "success",
         "message": "Image uploaded successfully",
-        "filename": file.filename,
+        "filename": result.filename,
+        "content_type": result.mime_type,
         "size": file.size,
     }
 
@@ -211,7 +212,7 @@ async def upload_image_strict(file: UploadFile):
     Uses strict validator with tighter size limits.
     """
     try:
-        await strict_validator.validate_image_file(file)
+        result = await strict_validator.validate_image_file(file)
     except FileSizeError as e:
         # Custom handling for size errors with helpful message
         if e.max_size and e.size:
@@ -236,7 +237,8 @@ async def upload_image_strict(file: UploadFile):
     return {
         "status": "success",
         "message": "Image uploaded successfully with strict validation",
-        "filename": file.filename,
+        "filename": result.filename,
+        "content_type": result.mime_type,
         "size": file.size,
     }
 
@@ -249,12 +251,13 @@ async def upload_zip(file: UploadFile):
     Performs comprehensive security checks including zip bomb detection
     and content inspection.
     """
-    await default_validator.validate_zip_file(file)
+    result = await default_validator.validate_zip_file(file)
 
     return {
         "status": "success",
         "message": "ZIP file uploaded and validated successfully",
-        "filename": file.filename,
+        "filename": result.filename,
+        "content_type": result.mime_type,
         "size": file.size,
     }
 
@@ -269,12 +272,13 @@ async def upload_zip_verified(file: UploadFile):
     whose real content does not match their declared metadata.
     Inspection runs on a dedicated thread pool.
     """
-    await hardened_validator.validate_zip_file(file)
+    result = await hardened_validator.validate_zip_file(file)
 
     return {
         "status": "success",
         "message": "ZIP verified with strict decompression checking",
-        "filename": file.filename,
+        "filename": result.filename,
+        "content_type": result.mime_type,
         "size": file.size,
     }
 
@@ -287,12 +291,13 @@ async def upload_activity(file: UploadFile):
     XML formats (GPX/TCX) are parsed with XXE protections;
     FIT files are validated by their binary signature.
     """
-    await default_validator.validate_activity_file(file)
+    result = await default_validator.validate_activity_file(file)
 
     return {
         "status": "success",
         "message": "Activity file uploaded and validated successfully",
-        "filename": file.filename,
+        "filename": result.filename,
+        "content_type": result.mime_type,
         "size": file.size,
     }
 
@@ -304,12 +309,13 @@ async def upload_gzip(file: UploadFile):
 
     Streams decompression to detect decompression bombs.
     """
-    await default_validator.validate_gzip_file(file)
+    result = await default_validator.validate_gzip_file(file)
 
     return {
         "status": "success",
         "message": "Gzip file uploaded and validated successfully",
-        "filename": file.filename,
+        "filename": result.filename,
+        "content_type": result.mime_type,
         "size": file.size,
     }
 
@@ -328,21 +334,22 @@ async def upload_multiple(files: list[UploadFile]):
             # Determine file type and validate accordingly
             name = (file.filename or "").lower()
             if name.endswith(".zip"):
-                await default_validator.validate_zip_file(file)
+                result = await default_validator.validate_zip_file(file)
                 file_type = "zip"
             elif name.endswith(".gz"):
-                await default_validator.validate_gzip_file(file)
+                result = await default_validator.validate_gzip_file(file)
                 file_type = "gzip"
             elif name.endswith((".gpx", ".tcx", ".fit")):
-                await default_validator.validate_activity_file(file)
+                result = await default_validator.validate_activity_file(file)
                 file_type = "activity"
             else:
-                await default_validator.validate_image_file(file)
+                result = await default_validator.validate_image_file(file)
                 file_type = "image"
 
             results.append(
                 {
-                    "filename": file.filename,
+                    "filename": result.filename,
+                    "content_type": result.mime_type,
                     "status": "success",
                     "type": file_type,
                     "size": file.size,
@@ -449,12 +456,13 @@ if SLOWAPI_AVAILABLE:
         Returns HTTP 429 when the limit is exceeded.
         Requires ``slowapi`` to be installed.
         """
-        await default_validator.validate_image_file(file)
+        result = await default_validator.validate_image_file(file)
 
         return {
             "status": "success",
             "message": "Rate-limited image upload succeeded",
-            "filename": file.filename,
+            "filename": result.filename,
+            "content_type": result.mime_type,
             "size": file.size,
         }
 

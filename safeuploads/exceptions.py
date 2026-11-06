@@ -69,10 +69,10 @@ class ErrorCode(StrEnum):
 
     Error codes are string-valued enum members grouped by
     validation failure type (filename, extension, MIME, size,
-    signature, compression, resource, and processing). As a
-    ``StrEnum`` each member compares equal to its string value,
-    so existing string comparisons and JSON serialization keep
-    working unchanged.
+    signature, image dimension, compression, resource, and
+    processing). As a ``StrEnum`` each member compares equal to
+    its string value, so existing string comparisons and JSON
+    serialization keep working unchanged.
     """
 
     # Filename validation errors
@@ -99,12 +99,17 @@ class ErrorCode(StrEnum):
     # MIME type errors
     MIME_TYPE_INVALID = "MIME_TYPE_INVALID"
     MIME_TYPE_MISMATCH = "MIME_TYPE_MISMATCH"
+    EXTENSION_MIME_MISMATCH = "EXTENSION_MIME_MISMATCH"
     MIME_DETECTION_FAILED = "MIME_DETECTION_FAILED"
 
     # File signature errors
     FILE_SIGNATURE_MISSING = "FILE_SIGNATURE_MISSING"
     FILE_SIGNATURE_MISMATCH = "FILE_SIGNATURE_MISMATCH"
     FIT_INVALID_STRUCTURE = "FIT_INVALID_STRUCTURE"
+    IMAGE_INVALID_STRUCTURE = "IMAGE_INVALID_STRUCTURE"
+
+    # Image dimension errors
+    IMAGE_DIMENSIONS_EXCEEDED = "IMAGE_DIMENSIONS_EXCEEDED"
 
     # XML security errors
     XML_DTD_FORBIDDEN = "XML_DTD_FORBIDDEN"
@@ -415,6 +420,45 @@ class FileSignatureError(FileValidationError):
             message,
             filename=filename,
             error_code=error_code or ErrorCode.FILE_SIGNATURE_MISMATCH,
+        )
+
+
+class ImageDimensionError(FileValidationError):
+    """
+    Image header declares more pixels than the configured limit.
+
+    Args:
+        message: Human-readable error description.
+        filename: Optional filename of the image.
+        width: Optional width declared in the image header.
+        height: Optional height declared in the image header.
+        max_pixels: Optional maximum allowed pixel count.
+        error_code: Optional error code (defaults to
+            IMAGE_DIMENSIONS_EXCEEDED).
+
+    Attributes:
+        width: Width declared in the image header.
+        height: Height declared in the image header.
+        max_pixels: Maximum allowed pixel count.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        max_pixels: int | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with dimension details."""
+        self.width = width
+        self.height = height
+        self.max_pixels = max_pixels
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.IMAGE_DIMENSIONS_EXCEEDED,
         )
 
 

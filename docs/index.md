@@ -54,14 +54,17 @@ validator = FileValidator()
 @app.post("/upload")
 async def upload_image(file: UploadFile):
     try:
-        await validator.validate_image_file(file)
+        result = await validator.validate_image_file(file)
     except FileValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
-    return {"status": "success", "filename": file.filename}
+
+    # Store under a generated name; serve with the detected type
+    return {"filename": result.filename, "content_type": result.mime_type}
 ```
 
-For synchronous code or worker threads, use the `*_sync` methods. They block the calling thread and return the sanitized filename:
+Every validation method returns a `ValidationResult` with the sanitized `filename` and the `mime_type` detected from the content. A file whose extension is not one allowed for its detected type, such as a WebP named `photo.jpg`, is rejected with `MimeTypeError` (`EXTENSION_MIME_MISMATCH`).
+
+For synchronous code or worker threads, use the `*_sync` methods. They block the calling thread and return the same result:
 
 ```python
 from safeuploads import FileValidator
@@ -69,7 +72,7 @@ from safeuploads import FileValidator
 validator = FileValidator()
 
 with open("activity.gpx", "rb") as fh:
-    safe_name = validator.validate_activity_file_sync(fh, "activity.gpx")
+    result = validator.validate_activity_file_sync(fh, "activity.gpx")
 ```
 
 Calling a `*_sync` method on a thread running an asyncio event loop raises `RuntimeError`; await the async method there instead.
@@ -85,7 +88,15 @@ validator = FileValidator()
 # Or customize limits
 config = FileSecurityConfig()
 config.limits.max_image_size = 10 * 1024 * 1024  # 10 MiB
+config.limits.max_image_pixels = 40_000_000  # 40 megapixels
 config.limits.max_compression_ratio = 50
+
+# Allowed content: each MIME type maps to the extensions its
+# content may carry
+config.ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": frozenset({".jpg", ".jpeg"}),
+    "image/png": frozenset({".png"}),
+}
 
 # Opt in to strict ZIP checking: decompress every entry to
 # reject archives with forged central-directory metadata
@@ -132,9 +143,10 @@ except FileValidationError as err:
 - **Extension Validation**: Allow/block lists with configurable rules, dangerous extension detection
 - **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits, optional strict decompression verification
 - **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits
-- **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip
+- **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip, with the extension required to match the detected type
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
 - **Resource Monitoring**: wall-clock time and memory limits enforced via `ResourceMonitor` during the work
+- **Image Dimension Limits**: Header-only pixel count check for PNG, JPEG and WebP that rejects decompression (pixel) bombs before the host decodes them
 - **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing and FIT structure checks
 - **Gzip Support**: Gzip archive validation with decompression bomb detection
 - **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
@@ -147,6 +159,7 @@ except FileValidationError as err:
 
 - No built-in rate limiting (application-level concern — see [Rate Limiting](rate-limiting.md) guide)
 - MIME detection covers first 8 KB; advanced polyglot attacks may require `enable_content_analysis`
+- Images are not decoded: only their dimension headers are checked, so decode and re-encode uploads in an isolated process (see the integration checklist)
 - `SpooledTemporaryFile` uses the system default temp directory
 
 ## Documentation

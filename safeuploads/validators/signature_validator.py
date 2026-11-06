@@ -86,6 +86,15 @@ class FileSignatureValidator(BaseValidator):
                 )
                 return
 
+        # WebP: a RIFF container whose form type at bytes 8-11 is
+        # "WEBP"; WAV and AVI share the "RIFF" prefix.
+        if (
+            expected_type == "image"
+            and content[:4] == b"RIFF"
+            and content[8:12] == b"WEBP"
+        ):
+            return
+
         # FIT files: ".FIT" at bytes 8-11
         if (
             expected_type == "fit"

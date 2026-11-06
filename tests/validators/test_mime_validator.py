@@ -102,15 +102,23 @@ class TestDetectMagicException:
 
 
 class TestEnforce:
-    """Tests for the allowed-MIME check."""
+    """Tests for the allowed-MIME and extension-match check."""
 
-    def test_enforce_mime_allows_permitted_type(self):
-        """Permitted MIME types pass without raising."""
+    def test_enforce_mime_allows_permitted_pair(self):
+        """A permitted MIME type with one of its extensions passes."""
         validator = MimeTypeValidator(FileSecurityConfig())
         validator.enforce(
             "application/zip",
-            validator.config.ALLOWED_ZIP_MIMES,
+            validator.config.ALLOWED_ZIP_TYPES,
             "a.zip",
+        )
+
+    @pytest.mark.parametrize("name", ["a.jpg", "a.jpeg", "A.JPG"])
+    def test_enforce_accepts_every_listed_extension(self, name):
+        """Each extension listed for the MIME type passes, any case."""
+        validator = MimeTypeValidator(FileSecurityConfig())
+        validator.enforce(
+            "image/jpeg", validator.config.ALLOWED_IMAGE_TYPES, name
         )
 
     def test_enforce_mime_allows_octet_stream_when_enabled(self):
@@ -118,7 +126,7 @@ class TestEnforce:
         validator = MimeTypeValidator(FileSecurityConfig())
         validator.enforce(
             "application/octet-stream",
-            validator.config.ALLOWED_ZIP_MIMES,
+            validator.config.ALLOWED_ZIP_TYPES,
             "a.zip",
             allow_octet_stream=True,
         )
@@ -129,7 +137,7 @@ class TestEnforce:
         with pytest.raises(MimeTypeError) as exc_info:
             validator.enforce(
                 "application/octet-stream",
-                validator.config.ALLOWED_ZIP_MIMES,
+                validator.config.ALLOWED_ZIP_TYPES,
                 "a.zip",
             )
         assert exc_info.value.error_code == ErrorCode.MIME_TYPE_INVALID
@@ -140,8 +148,68 @@ class TestEnforce:
         with pytest.raises(MimeTypeError) as exc_info:
             validator.enforce(
                 "text/plain",
-                validator.config.ALLOWED_ZIP_MIMES,
+                validator.config.ALLOWED_ZIP_TYPES,
                 "a.zip",
                 error_code=ErrorCode.MIME_TYPE_MISMATCH,
             )
         assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.detected_mime == "text/plain"
+        assert sorted(exc_info.value.allowed_mimes) == sorted(
+            validator.config.ALLOWED_ZIP_TYPES
+        )
+
+    @pytest.mark.parametrize(
+        ("detected", "name", "allowed"),
+        [
+            ("image/webp", "a.jpg", ["image/jpeg"]),
+            ("image/png", "a.jpeg", ["image/jpeg"]),
+            ("image/jpeg", "a.png", ["image/png"]),
+            ("image/png", "a.webp", ["image/webp"]),
+        ],
+    )
+    def test_enforce_rejects_extension_of_another_type(
+        self, detected, name, allowed
+    ):
+        """Content of one allowed type under another's extension fails."""
+        validator = MimeTypeValidator(FileSecurityConfig())
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator.enforce(
+                detected,
+                validator.config.ALLOWED_IMAGE_TYPES,
+                name,
+                error_code=ErrorCode.MIME_TYPE_MISMATCH,
+            )
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+        assert exc_info.value.detected_mime == detected
+        assert exc_info.value.allowed_mimes == allowed
+        assert exc_info.value.filename == name
+
+    @pytest.mark.parametrize(
+        ("detected", "name"),
+        [
+            ("text/xml", "ride.fit"),
+            ("application/octet-stream", "track.gpx"),
+            ("application/octet-stream", "workout.tcx"),
+        ],
+    )
+    def test_enforce_rejects_activity_mismatch(self, detected, name):
+        """XML under .fit, or binary under .gpx/.tcx, fails."""
+        validator = MimeTypeValidator(FileSecurityConfig())
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator.enforce(
+                detected, validator.config.ALLOWED_ACTIVITY_TYPES, name
+            )
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+
+    def test_enforce_octet_stream_allowance_still_checks_extension(self):
+        """Allowed octet-stream still needs an allowed extension."""
+        validator = MimeTypeValidator(FileSecurityConfig())
+        with pytest.raises(MimeTypeError) as exc_info:
+            validator.enforce(
+                "application/octet-stream",
+                validator.config.ALLOWED_ZIP_TYPES,
+                "a.gz",
+                allow_octet_stream=True,
+            )
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+        assert exc_info.value.allowed_mimes == []

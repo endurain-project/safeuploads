@@ -23,6 +23,7 @@ from safeuploads.exceptions import (
     FileSecurityConfigurationError,
     FileSignatureError,
     FileSizeError,
+    ImageDimensionError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -31,8 +32,9 @@ from safeuploads.exceptions import (
     ZipBombError,
     ZipContentError,
 )
-from safeuploads.file_validator import FileValidator
+from safeuploads.file_validator import FileValidator, ValidationResult
 from safeuploads.utils import ResourceMonitor, check_resource_limits
+from tests import images
 from tests.validators.test_fit_validator import build_fit
 
 
@@ -396,52 +398,11 @@ class TestValidateFilename:
         assert file.filename == "file__.txt"  # Dangerous chars replaced
 
 
-class TestValidateFileSize:
-    """Test file size validation."""
+class TestStreamedSizeCheck:
+    """Test the size check applied while streaming an upload."""
 
     @pytest.mark.asyncio
-    async def test_validate_size_within_limit(self, mock_upload_file):
-        """Test that file within size limit passes."""
-        validator = FileValidator()
-        content = b"x" * 1024  # 1KB
-        file = mock_upload_file(filename="small.jpg", content=content)
-
-        file_content, file_size = await validator._validate_file_size(
-            file, max_file_size=10 * 1024
-        )
-
-        assert file_size == 1024
-        assert file_content == content[:8192]  # First 8KB
-
-    @pytest.mark.asyncio
-    async def test_validate_size_empty_file(self, mock_upload_file):
-        """Test that empty file is rejected."""
-        validator = FileValidator()
-        file = mock_upload_file(filename="empty.jpg", content=b"")
-
-        with pytest.raises(FileSizeError, match="Empty file"):
-            await validator._validate_file_size(file, max_file_size=10 * 1024)
-
-    @pytest.mark.asyncio
-    async def test_validate_size_exceeds_limit(self, mock_upload_file):
-        """Test that file exceeding limit is rejected."""
-        validator = FileValidator()
-        content = b"x" * 10 * 1024 * 1024  # 10MB
-        file = mock_upload_file(filename="large.jpg", content=content)
-
-        with pytest.raises(FileSizeError) as exc_info:
-            await validator._validate_file_size(
-                file, max_file_size=5 * 1024 * 1024
-            )
-        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
-
-        assert exc_info.value.size == 10 * 1024 * 1024
-        assert exc_info.value.max_size == 5 * 1024 * 1024
-
-    @pytest.mark.asyncio
-    async def test_validate_size_ignores_understated_size(
-        self, mock_upload_file
-    ):
+    async def test_understated_declared_size_ignored(self, mock_upload_file):
         """Under-reported declared size cannot bypass the limit."""
         validator = FileValidator()
         # 2MB actual body but the client claims only 10 bytes.
@@ -451,7 +412,7 @@ class TestValidateFileSize:
         )
 
         with pytest.raises(FileSizeError) as exc_info:
-            await validator._validate_file_size(
+            await validator._stream_to_temp_file(
                 file, max_file_size=1 * 1024 * 1024
             )
         assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
@@ -510,6 +471,77 @@ class TestValidateImageFile:
 
         # Should not raise
         await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
+    async def test_validate_valid_webp(
+        self, mock_upload_file, valid_webp_bytes
+    ):
+        """A valid WebP image is accepted."""
+        validator = FileValidator()
+        file = mock_upload_file(
+            filename="image.webp", content=valid_webp_bytes
+        )
+
+        # Should not raise
+        await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("fixture", "filename", "detected"),
+        [
+            ("valid_webp_bytes", "photo.jpg", "image/webp"),
+            ("valid_png_bytes", "photo.jpg", "image/png"),
+            ("valid_jpeg_bytes", "photo.png", "image/jpeg"),
+            ("valid_webp_bytes", "photo.png", "image/webp"),
+            ("valid_jpeg_bytes", "photo.webp", "image/jpeg"),
+        ],
+    )
+    async def test_image_under_another_types_extension_rejected(
+        self, request, mock_upload_file, fixture, filename, detected
+    ):
+        """An allowed image under another format's extension fails."""
+        validator = FileValidator()
+        content = request.getfixturevalue(fixture)
+        file = mock_upload_file(filename=filename, content=content)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+        assert exc_info.value.detected_mime == detected
+        assert exc_info.value.filename == filename
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("filename", ["photo.jpeg", "PHOTO.JPG"])
+    async def test_jpeg_under_any_jpeg_extension_accepted(
+        self, mock_upload_file, valid_jpeg_bytes, filename
+    ):
+        """Every extension listed for image/jpeg is accepted."""
+        validator = FileValidator()
+        file = mock_upload_file(filename=filename, content=valid_jpeg_bytes)
+
+        result = await validator.validate_image_file(file)
+
+        assert result == ValidationResult(filename, "image/jpeg")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"RIFF\x24\x00\x00\x00AVI LIST" + b"\x00" * 28,
+            b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 28,
+        ],
+        ids=["avi", "wav"],
+    )
+    async def test_riff_media_named_webp_rejected(
+        self, mock_upload_file, content
+    ):
+        """AVI or WAV content under a .webp name is rejected."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="fake.webp", content=content)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_validate_image_missing_filename(
@@ -612,6 +644,101 @@ class TestValidateImageFile:
         with pytest.raises(MimeTypeError) as exc_info:
             await validator.validate_image_file(file)
         assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+
+
+class TestImagePixelLimit:
+    """validate_image_file enforces max_image_pixels on every format."""
+
+    @staticmethod
+    def _validator(max_image_pixels: int) -> FileValidator:
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_pixels=max_image_pixels)
+        return FileValidator(config=config)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("filename", "build"),
+        [
+            ("a.png", images.png),
+            ("a.jpg", images.jpeg),
+            ("a.webp", images.webp),
+        ],
+    )
+    async def test_limit_is_inclusive(self, mock_upload_file, filename, build):
+        """An image at the limit passes and one pixel more fails."""
+        content = build(100, 50)
+        result = await self._validator(5000).validate_image_file(
+            mock_upload_file(filename=filename, content=content)
+        )
+        assert result.filename == filename
+
+        with pytest.raises(ImageDimensionError) as exc_info:
+            await self._validator(4999).validate_image_file(
+                mock_upload_file(filename=filename, content=content)
+            )
+        assert exc_info.value.error_code == ErrorCode.IMAGE_DIMENSIONS_EXCEEDED
+        assert (exc_info.value.width, exc_info.value.height) == (100, 50)
+        assert exc_info.value.filename == filename
+
+    @pytest.mark.asyncio
+    async def test_jpeg_frame_past_header_window_checked(
+        self, mock_upload_file
+    ):
+        """A frame header after a large EXIF segment is still read."""
+        exif = images.jpeg_segment(0xE1, b"Exif\x00\x00" + b"\x00" * 40000)
+        content = images.jpeg(30000, 30000, before_frame=exif)
+        file = mock_upload_file(filename="bomb.jpg", content=content)
+
+        with pytest.raises(ImageDimensionError):
+            await FileValidator().validate_image_file(file)
+
+    @pytest.mark.asyncio
+    async def test_jpeg_without_frame_header_rejected(self, mock_upload_file):
+        """A JPEG that reaches scan data without a frame is invalid."""
+        content = images.JPEG_PREFIX + b"\xff\xda" + b"\x00" * 64
+        file = mock_upload_file(filename="a.jpg", content=content)
+
+        with pytest.raises(FileSignatureError) as exc_info:
+            await FileValidator().validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.IMAGE_INVALID_STRUCTURE
+
+    @pytest.mark.asyncio
+    async def test_mime_checked_before_dimensions(self, mock_upload_file):
+        """A wrong MIME type is reported before the dimension check."""
+        file = mock_upload_file(
+            filename="a.jpg", content=b"not an image" + images.jpeg()
+        )
+        with pytest.raises(MimeTypeError):
+            await FileValidator().validate_image_file(file)
+
+    @pytest.mark.asyncio
+    async def test_dimensions_checked_before_content_scan(
+        self, mock_upload_file
+    ):
+        """A pixel bomb with a polyglot fails the cheaper pixel check."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_content_analysis=True)
+        content = images.png(60000, 60000, body=b"PK\x03\x04" + b"\x00" * 64)
+        file = mock_upload_file(filename="bomb.png", content=content)
+
+        with pytest.raises(ImageDimensionError):
+            await FileValidator(config=config).validate_image_file(file)
+
+    @pytest.mark.asyncio
+    async def test_failure_is_audited(self, mock_upload_file, caplog):
+        """A pixel bomb produces a failure audit event."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        file = mock_upload_file(
+            filename="bomb.png", content=images.png(60000, 60000)
+        )
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(ImageDimensionError),
+        ):
+            await FileValidator(config=config).validate_image_file(file)
+        assert "validation_failure" in caplog.text
 
 
 class TestValidateZipFile:
@@ -834,59 +961,6 @@ class TestValidateFilenameExceptionWrapping:
         assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
 
-class TestValidateFileSizeFullReadPath:
-    """Tests for _validate_file_size when file.size is unavailable."""
-
-    async def test_full_read_used_when_size_is_none(self, mock_upload_file):
-        """
-        Test that file is fully read when size attribute is None/falsy.
-
-        When file.size is falsy the implementation reads everything to
-        compute file_size. For files smaller than 8 KB the initial chunk
-        already contains all bytes, so the "remaining" read re-reads the
-        whole content; the returned file_size is therefore the sum of
-        both reads (double the actual content length for tiny files).
-        We simply verify that the function returns without raising and
-        that the computed size is a positive integer.
-
-        Args:
-            mock_upload_file: File factory fixture.
-        """
-        content = b"x" * 2048
-        file = mock_upload_file(filename="test.jpg", content=content)
-        file.size = None  # Force the full-read path
-
-        validator = FileValidator()
-        file_content, file_size = await validator._validate_file_size(
-            file,
-            max_file_size=100 * 1024,  # Generous limit
-        )
-
-        assert file_size > 0
-        assert len(file_content) == len(content)  # First 8 KB chunk
-
-    async def test_full_read_detects_oversized_file_when_size_none(
-        self, mock_upload_file
-    ):
-        """
-        Test that oversized files are detected via full-read path.
-
-        Args:
-            mock_upload_file: File factory fixture.
-        """
-        content = b"x" * (3 * 1024)  # 3 KB
-        file = mock_upload_file(filename="test.jpg", content=content)
-        file.size = None  # Force the full-read calculation
-
-        validator = FileValidator()
-        with pytest.raises(FileSizeError) as exc_info:
-            await validator._validate_file_size(
-                file,
-                max_file_size=1 * 1024,  # 1 KB limit
-            )
-        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
-
-
 class TestValidateImageFileExceptionWrapping:
     """Tests for validate_image_file unexpected exception wrapping."""
 
@@ -906,9 +980,9 @@ class TestValidateImageFileExceptionWrapping:
         file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
 
         async def _explode(f, max_size):
-            raise RuntimeError("unexpected error in size check")
+            raise RuntimeError("unexpected streaming error")
 
-        monkeypatch.setattr(validator, "_validate_file_size", _explode)
+        monkeypatch.setattr(validator, "_stream_to_temp_file", _explode)
 
         with pytest.raises(FileProcessingError) as exc_info:
             await validator.validate_image_file(file)
@@ -1004,52 +1078,6 @@ class TestStreamToTempFile:
 
 class TestFileSizeLimitBoundaries:
     """Tests that the size limit accepts its value and rejects the next."""
-
-    @pytest.mark.asyncio
-    async def test_declared_size_at_limit_accepted(self, mock_upload_file):
-        """A declared size equal to the limit is not rejected up front."""
-        validator = FileValidator()
-        file = mock_upload_file(filename="a.jpg", content=b"x" * 1024)
-
-        _, file_size = await validator._validate_file_size(file, 1024)
-
-        assert file_size == 1024
-
-    @pytest.mark.asyncio
-    async def test_declared_size_over_limit_rejected(self, mock_upload_file):
-        """A declared size above the limit is rejected before reading."""
-        validator = FileValidator()
-        file = mock_upload_file(filename="a.jpg", content=b"x", size=1025)
-
-        with pytest.raises(FileSizeError) as exc_info:
-            await validator._validate_file_size(file, 1024)
-
-        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
-        assert exc_info.value.size == 1025
-
-    @pytest.mark.asyncio
-    async def test_streamed_size_at_limit_accepted(self, mock_upload_file):
-        """A counted size equal to the limit passes without a declared one."""
-        validator = FileValidator()
-        file = mock_upload_file(filename="a.jpg", content=b"x" * 1024)
-        file.size = None
-
-        _, file_size = await validator._validate_file_size(file, 1024)
-
-        assert file_size == 1024
-
-    @pytest.mark.asyncio
-    async def test_streamed_size_over_limit_rejected(self, mock_upload_file):
-        """A counted size one byte over the limit is rejected."""
-        validator = FileValidator()
-        file = mock_upload_file(filename="a.jpg", content=b"x" * 1025)
-        file.size = None
-
-        with pytest.raises(FileSizeError) as exc_info:
-            await validator._validate_file_size(file, 1024)
-
-        assert exc_info.value.error_code == ErrorCode.FILE_TOO_LARGE
-        assert exc_info.value.size == 1025
 
     @pytest.mark.asyncio
     async def test_spooled_stream_at_limit_accepted(self, mock_upload_file):
@@ -1435,7 +1463,7 @@ class TestResourceLimitsEnforcedDuringWork:
 
         assert type(exc_info.value) is ResourceLimitError
         assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
-        assert "_validate_file_size" in _raised_in(exc_info)
+        assert "_stream_to_temp_file" in _raised_in(exc_info)
         assert "resource_limit" in caplog.text
 
 
@@ -1508,7 +1536,7 @@ class TestWiredErrorCodes:
         validator = FileValidator()
         file = mock_upload_file(filename="empty.jpg", content=b"")
         with pytest.raises(FileSizeError) as exc_info:
-            await validator._validate_file_size(file, max_file_size=1024)
+            await validator._stream_to_temp_file(file, max_file_size=1024)
         assert exc_info.value.error_code == ErrorCode.FILE_EMPTY
 
     def test_read_header_keeps_signature_error_code(self):
@@ -1763,9 +1791,7 @@ class TestImageContentAnalysisIntegration:
         validator = self._content_analysis_validator()
         # Valid JPEG header, 9 KB filler, then a ZIP (GIFAR)
         # polyglot signature well past the 8 KB read window.
-        jpeg = (
-            b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04" + b"\xff\xd9"
-        )
+        jpeg = images.jpeg(body=b"\x00" * 9000 + b"PK\x03\x04")
         file = mock_upload_file(filename="poly.jpg", content=jpeg)
         with pytest.raises(ContentThreatError) as exc_info:
             await validator.validate_image_file(file)
@@ -1775,10 +1801,31 @@ class TestImageContentAnalysisIntegration:
         assert "Content analysis" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_webp_polyglot_is_detected(
+        self, mock_upload_file, valid_webp_bytes
+    ):
+        """A ZIP signature appended to a valid WebP is caught."""
+        validator = self._content_analysis_validator()
+        webp = valid_webp_bytes + b"\x00" * 9000 + b"PK\x03\x04"
+        file = mock_upload_file(filename="poly.webp", content=webp)
+        with pytest.raises(ContentThreatError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    @pytest.mark.asyncio
+    async def test_clean_webp_passes(self, mock_upload_file, valid_webp_bytes):
+        """A clean WebP passes content analysis."""
+        validator = self._content_analysis_validator()
+        file = mock_upload_file(
+            filename="clean.webp", content=valid_webp_bytes
+        )
+        await validator.validate_image_file(file)
+
+    @pytest.mark.asyncio
     async def test_clean_large_image_passes(self, mock_upload_file):
         """A clean image larger than 8 KB passes analysis."""
         validator = self._content_analysis_validator()
-        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"\xff\xd9"
+        jpeg = images.jpeg(body=b"\x00" * 9000)
         file = mock_upload_file(filename="clean.jpg", content=jpeg)
         await validator.validate_image_file(file)
 
@@ -1800,9 +1847,7 @@ class TestImageContentAnalysisIntegration:
     ):
         """A polyglot past the first short read is still caught."""
         validator = self._content_analysis_validator()
-        jpeg = (
-            b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04" + b"\xff\xd9"
-        )
+        jpeg = images.jpeg(body=b"\x00" * 9000 + b"PK\x03\x04")
         file = self._short_read_upload(mock_upload_file, "poly.jpg", jpeg)
         with pytest.raises(ContentThreatError) as exc_info:
             await validator.validate_image_file(file)
@@ -1812,7 +1857,7 @@ class TestImageContentAnalysisIntegration:
     async def test_clean_image_with_short_reads_passes(self, mock_upload_file):
         """A clean image read in short pieces passes analysis."""
         validator = self._content_analysis_validator()
-        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"\xff\xd9"
+        jpeg = images.jpeg(body=b"\x00" * 9000)
         file = self._short_read_upload(mock_upload_file, "clean.jpg", jpeg)
         await validator.validate_image_file(file)
 

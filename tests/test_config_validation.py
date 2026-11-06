@@ -62,6 +62,40 @@ class TestFileSizeLimitValidation:
         ]
         assert len(warnings) >= 1
 
+    @staticmethod
+    def _pixel_issues(max_image_pixels: int) -> list[tuple[str, str]]:
+        """Return (error_type, severity) of the pixel limit issues."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_pixels=max_image_pixels)
+        return [
+            (e.error_type, e.severity)
+            for e in config.validate_instance()
+            if "max_image_pixels" in e.message
+        ]
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_non_positive_pixel_limit_generates_error(self, value):
+        """A pixel limit of zero or less is an error."""
+        assert self._pixel_issues(value) == [("invalid_pixel_limit", "error")]
+
+    def test_non_positive_pixel_limit_blocks_validator(self):
+        """FileValidator refuses a configuration with no pixel budget."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_pixels=0)
+        with pytest.raises(FileSecurityConfigurationError):
+            FileValidator(config)
+
+    @pytest.mark.parametrize("value", [1, 89_478_485, 2 * 89_478_485])
+    def test_pixel_limit_in_range_has_no_issue(self, value):
+        """Positive limits up to twice Pillow's default are accepted."""
+        assert self._pixel_issues(value) == []
+
+    def test_excessive_pixel_limit_generates_warning(self):
+        """A limit above twice Pillow's default is only a warning."""
+        assert self._pixel_issues(2 * 89_478_485 + 1) == [
+            ("excessive_pixel_limit", "warning")
+        ]
+
     def test_negative_zip_size_generates_error(self, monkeypatch):
         """
         Test that a non-positive ZIP size limit generates an error.
@@ -144,12 +178,12 @@ class TestMimeConfigurationValidation:
 
     def test_empty_allowed_image_mimes_generates_error(self, monkeypatch):
         """
-        Test that empty ALLOWED_IMAGE_MIMES generates an error.
+        Test that empty ALLOWED_IMAGE_TYPES generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set())
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_TYPES", {})
         errors = FileSecurityConfig.validate_configuration()
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "empty_mime_set" in error_types
@@ -163,8 +197,8 @@ class TestMimeConfigurationValidation:
         """
         monkeypatch.setattr(
             FileSecurityConfig,
-            "ALLOWED_IMAGE_MIMES",
-            {"application/pdf"},
+            "ALLOWED_IMAGE_TYPES",
+            {"application/pdf": frozenset({".pdf"})},
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [e for e in errors if e.error_type == "invalid_image_mime"]
@@ -172,12 +206,12 @@ class TestMimeConfigurationValidation:
 
     def test_empty_allowed_zip_mimes_generates_error(self, monkeypatch):
         """
-        Test that empty ALLOWED_ZIP_MIMES generates an error.
+        Test that empty ALLOWED_ZIP_TYPES generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_ZIP_MIMES", set())
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_ZIP_TYPES", {})
         errors = FileSecurityConfig.validate_configuration()
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "empty_mime_set" in error_types
@@ -192,13 +226,16 @@ class TestMimeConfigurationValidation:
         shared = "application/zip"
         monkeypatch.setattr(
             FileSecurityConfig,
-            "ALLOWED_IMAGE_MIMES",
-            {"image/jpeg", shared},
+            "ALLOWED_IMAGE_TYPES",
+            {
+                "image/jpeg": frozenset({".jpg"}),
+                shared: frozenset({".jpg"}),
+            },
         )
         monkeypatch.setattr(
             FileSecurityConfig,
-            "ALLOWED_ZIP_MIMES",
-            {shared},
+            "ALLOWED_ZIP_TYPES",
+            {shared: frozenset({".zip"})},
         )
         errors = FileSecurityConfig.validate_configuration()
         warnings = [
@@ -212,13 +249,15 @@ class TestExtensionConfigurationValidation:
 
     def test_empty_image_extensions_generates_error(self, monkeypatch):
         """
-        Test that empty ALLOWED_IMAGE_EXTENSIONS generates an error.
+        Test that a MIME type with no extensions generates an error.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
         monkeypatch.setattr(
-            FileSecurityConfig, "ALLOWED_IMAGE_EXTENSIONS", set()
+            FileSecurityConfig,
+            "ALLOWED_IMAGE_TYPES",
+            {"image/jpeg": frozenset()},
         )
         errors = FileSecurityConfig.validate_configuration()
         error_types = [e.error_type for e in errors if e.severity == "error"]
@@ -233,8 +272,8 @@ class TestExtensionConfigurationValidation:
         """
         monkeypatch.setattr(
             FileSecurityConfig,
-            "ALLOWED_IMAGE_EXTENSIONS",
-            {"jpg"},  # Missing leading dot
+            "ALLOWED_IMAGE_TYPES",
+            {"image/jpeg": frozenset({"jpg"})},  # Missing leading dot
         )
         errors = FileSecurityConfig.validate_configuration()
         error_types = [e.error_type for e in errors if e.severity == "error"]
@@ -485,7 +524,7 @@ class TestValidateAndReport:
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set())
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_TYPES", {})
         with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileSecurityConfig.validate_and_report(strict=True)
         assert len(exc_info.value.errors) >= 1
@@ -519,7 +558,7 @@ class TestValidateAndReport:
         Args:
             monkeypatch: pytest monkeypatch fixture.
         """
-        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_MIMES", set())
+        monkeypatch.setattr(FileSecurityConfig, "ALLOWED_IMAGE_TYPES", {})
         try:
             FileSecurityConfig.validate_and_report(strict=False)
         except FileSecurityConfigurationError:
@@ -775,8 +814,8 @@ class TestValidateAndReportLogging:
 
         monkeypatch.setattr(
             FileSecurityConfig,
-            "ALLOWED_IMAGE_MIMES",
-            set(),
+            "ALLOWED_IMAGE_TYPES",
+            {},
         )
         with caplog.at_level(logging.ERROR, logger="safeuploads.config"):
             FileSecurityConfig.validate_and_report(
@@ -1011,10 +1050,10 @@ class TestInstanceOverrideValidation:
                 frozenset(),
                 "empty_dangerous_unicode_chars",
             ),
-            ("ALLOWED_IMAGE_MIMES", frozenset(), "empty_mime_set"),
+            ("ALLOWED_IMAGE_TYPES", {}, "empty_mime_set"),
             (
-                "ALLOWED_IMAGE_EXTENSIONS",
-                frozenset({".jpg", ".php"}),
+                "ALLOWED_IMAGE_TYPES",
+                {"image/jpeg": frozenset({".jpg", ".php"})},
                 "extension_conflict",
             ),
             (
@@ -1082,7 +1121,7 @@ class TestInstanceOverrideValidation:
         """A valid lowercase reserved name override is enforced."""
         config = FileSecurityConfig()
         config.WINDOWS_RESERVED_NAMES = frozenset({"con"})
-        config.ALLOWED_IMAGE_EXTENSIONS = frozenset({".png"})
+        config.ALLOWED_IMAGE_TYPES = {"image/png": frozenset({".png"})}
 
         assert config.validate_instance() == []
         validator = FileValidator(config=config)
@@ -1206,3 +1245,64 @@ class TestContentScanWindowValidation:
         with pytest.raises(FileSecurityConfigurationError) as exc_info:
             FileValidator(config=config)
         assert "content_scan_window_too_small" in _error_types(exc_info)
+
+
+_REMOVED_SETTINGS = {
+    "ALLOWED_IMAGE_MIMES": "ALLOWED_IMAGE_TYPES",
+    "ALLOWED_IMAGE_EXTENSIONS": "ALLOWED_IMAGE_TYPES",
+    "ALLOWED_ZIP_MIMES": "ALLOWED_ZIP_TYPES",
+    "ALLOWED_ZIP_EXTENSIONS": "ALLOWED_ZIP_TYPES",
+    "ALLOWED_ACTIVITY_MIMES": "ALLOWED_ACTIVITY_TYPES",
+    "ALLOWED_ACTIVITY_EXTENSIONS": "ALLOWED_ACTIVITY_TYPES",
+    "ALLOWED_GZIP_MIMES": "ALLOWED_GZIP_TYPES",
+    "ALLOWED_GZIP_EXTENSIONS": "ALLOWED_GZIP_TYPES",
+}
+
+
+class TestRemovedSettings:
+    """A removed allow-list setting fails instead of being ignored."""
+
+    @pytest.mark.parametrize("name", _REMOVED_SETTINGS)
+    def test_instance_setting_rejected(self, name):
+        """An instance still setting a removed name cannot be used."""
+        config = FileSecurityConfig()
+        setattr(config, name, frozenset({".png"}))
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert "removed_setting" in _error_types(exc_info)
+
+    @pytest.mark.parametrize("name", _REMOVED_SETTINGS)
+    def test_subclass_setting_rejected(self, name):
+        """A subclass still defining a removed name cannot be used."""
+        sub = type("Sub", (FileSecurityConfig,), {name: frozenset({".png"})})
+
+        assert "removed_setting" in [
+            e.error_type for e in sub.validate_configuration()
+        ]
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=sub())
+        assert "removed_setting" in _error_types(exc_info)
+
+    @pytest.mark.parametrize(
+        ("name", "replacement"), _REMOVED_SETTINGS.items()
+    )
+    def test_issue_names_the_replacement(self, name, replacement):
+        """The issue is an error that points to the new mapping."""
+        config = FileSecurityConfig()
+        setattr(config, name, frozenset({".png"}))
+
+        [issue] = [
+            e
+            for e in config.validate_instance()
+            if e.error_type == "removed_setting"
+        ]
+        assert issue.severity == "error"
+        assert name in issue.message
+        assert replacement in issue.recommendation
+
+    def test_default_config_has_no_removed_settings(self):
+        """The default configuration sets none of the removed names."""
+        assert "removed_setting" not in [
+            e.error_type for e in FileSecurityConfig().validate_instance()
+        ]

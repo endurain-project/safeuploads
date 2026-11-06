@@ -23,6 +23,7 @@ from safeuploads.exceptions import (
     FileSignatureError,
     FileSizeError,
     FileValidationError,
+    ImageDimensionError,
     MimeTypeError,
     ResourceLimitError,
     UnicodeSecurityError,
@@ -31,18 +32,27 @@ from safeuploads.exceptions import (
     ZipBombError,
     ZipContentError,
 )
-from safeuploads.file_validator import FileValidator
+from safeuploads.file_validator import FileValidator, ValidationResult
+from tests import images
 from tests.validators.test_fit_validator import build_fit
 
 # ---------------------------------------------------------------------------
 # Payloads
 # ---------------------------------------------------------------------------
 
-_JPEG = (
-    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
-    b"\xff\xd9"
+_JPEG = images.jpeg()
+_POLYGLOT_JPEG = images.jpeg(body=b"\x00" * 9000 + b"PK\x03\x04")
+_WEBP = images.webp()
+_POLYGLOT_WEBP = _WEBP + b"\x00" * 9000 + b"PK\x03\x04"
+_PIXEL_BOMB_PNG = images.png(60000, 60000)
+# The frame header sits past a 20 KB EXIF segment
+_PIXEL_BOMB_JPEG = images.jpeg(
+    30000,
+    30000,
+    before_frame=images.jpeg_segment(0xE1, b"Exif\x00\x00" + b"\x00" * 20000),
 )
-_POLYGLOT_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 9000 + b"PK\x03\x04\xff\xd9"
+_FRAMELESS_JPEG = images.JPEG_PREFIX + b"\xff\xda" + b"\x00" * 64
+_AVI = b"RIFF\x24\x00\x00\x00AVI LIST" + b"\x00" * 28
 _GPX = (
     b'<?xml version="1.0" encoding="UTF-8"?>'
     b"<gpx><trk><trkseg>"
@@ -91,6 +101,7 @@ _BOMB_LIMITS = {
 # (method stem, valid filename, valid payload)
 _VALID = [
     ("image", "photo.jpg", _JPEG),
+    ("image", "photo.webp", _WEBP),
     ("zip", "archive.zip", _ZIP),
     ("activity", "track.gpx", _GPX),
     ("activity", "workout.tcx", _TCX),
@@ -98,6 +109,27 @@ _VALID = [
     ("gzip", "archive.gz", _GZIP),
 ]
 _VALID_IDS = [f"{stem}-{name}" for stem, name, _ in _VALID]
+
+# MIME type libmagic reports for each _VALID payload, in order
+_VALID_MIMES = [
+    "image/jpeg",
+    "image/webp",
+    "application/zip",
+    "text/xml",
+    "text/xml",
+    "application/octet-stream",
+    "application/gzip",
+]
+_RESULTS = [
+    (stem, name, payload, ValidationResult(name, mime))
+    for (stem, name, payload), mime in zip(_VALID, _VALID_MIMES, strict=True)
+]
+
+# (method stem, valid filename, valid payload, signature MIME type)
+_ARCHIVES = [
+    ("zip", "archive.zip", _ZIP, "application/zip"),
+    ("gzip", "archive.gz", _GZIP, "application/gzip"),
+]
 
 _STEMS = ["image", "zip", "activity", "gzip"]
 _STEM_FILES = {
@@ -115,17 +147,16 @@ def _make_validator(**limits) -> FileValidator:
     return FileValidator(config=config)
 
 
-def _run_sync(validator, stem, name, payload) -> str:
+def _run_sync(validator, stem, name, payload) -> ValidationResult:
     """Call ``validate_<stem>_file_sync`` on an in-memory file."""
     method = getattr(validator, f"validate_{stem}_file_sync")
     return method(io.BytesIO(payload), name)
 
 
 async def _run_async(validator, mock_upload_file, stem, name, payload):
-    """Call ``validate_<stem>_file`` and return the sanitized name."""
+    """Call ``validate_<stem>_file`` and return its result."""
     upload = mock_upload_file(name, payload)
-    await getattr(validator, f"validate_{stem}_file")(upload)
-    return upload.filename
+    return await getattr(validator, f"validate_{stem}_file")(upload)
 
 
 class _SpyFile(io.BytesIO):
@@ -157,12 +188,34 @@ class TestSyncAccepts:
     )
     def test_valid_payload_returns_filename(self, stem, name, payload):
         """A valid payload returns its (unchanged) filename."""
-        assert _run_sync(FileValidator(), stem, name, payload) == name
+        result = _run_sync(FileValidator(), stem, name, payload)
+        assert result.filename == name
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "expected"), _RESULTS, ids=_VALID_IDS
+    )
+    def test_valid_payload_returns_detected_mime(
+        self, stem, name, payload, expected
+    ):
+        """The result carries the name and the detected MIME type."""
+        assert _run_sync(FileValidator(), stem, name, payload) == expected
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "expected"), _RESULTS, ids=_VALID_IDS
+    )
+    async def test_async_returns_same_result(
+        self, mock_upload_file, stem, name, payload, expected
+    ):
+        """The async method returns the same result as the sync one."""
+        result = await _run_async(
+            FileValidator(), mock_upload_file, stem, name, payload
+        )
+        assert result == expected
 
     def test_returns_sanitized_filename(self):
         """Path components are stripped from the returned name."""
         result = _run_sync(FileValidator(), "image", "../a/photo.jpg", _JPEG)
-        assert result == "photo.jpg"
+        assert result.filename == "photo.jpg"
 
     @pytest.mark.parametrize(
         ("stem", "name", "payload"), _VALID, ids=_VALID_IDS
@@ -185,8 +238,60 @@ class TestSyncAccepts:
         result = getattr(FileValidator(), f"validate_{stem}_file_sync")(
             f, name
         )
-        assert result == name
+        assert result.filename == name
         assert f.tell() == 0
+
+
+class TestOctetStreamFallback:
+    """
+    An archive libmagic reports only as application/octet-stream.
+
+    libmagic 5.46 reports every ZIP this way, so the result carries
+    the type the magic signature confirmed instead.
+    """
+
+    @staticmethod
+    def _octet_stream_validator(monkeypatch) -> FileValidator:
+        validator = FileValidator()
+        monkeypatch.setattr(
+            validator.mime_validator,
+            "detect",
+            lambda content, filename: "application/octet-stream",
+        )
+        return validator
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "mime"), _ARCHIVES, ids=["zip", "gzip"]
+    )
+    def test_reports_signature_type(
+        self, monkeypatch, stem, name, payload, mime
+    ):
+        validator = self._octet_stream_validator(monkeypatch)
+        result = _run_sync(validator, stem, name, payload)
+        assert result == ValidationResult(name, mime)
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "mime"), _ARCHIVES, ids=["zip", "gzip"]
+    )
+    async def test_async_reports_signature_type(
+        self, monkeypatch, mock_upload_file, stem, name, payload, mime
+    ):
+        validator = self._octet_stream_validator(monkeypatch)
+        result = await _run_async(
+            validator, mock_upload_file, stem, name, payload
+        )
+        assert result == ValidationResult(name, mime)
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "mime"), _ARCHIVES, ids=["zip", "gzip"]
+    )
+    def test_wrong_signature_still_rejected(
+        self, monkeypatch, stem, name, payload, mime
+    ):
+        validator = self._octet_stream_validator(monkeypatch)
+        with pytest.raises(FileSignatureError) as exc_info:
+            _run_sync(validator, stem, name, b"\x00" * 64)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +314,45 @@ class TestSyncImageRejects:
         with pytest.raises(ContentThreatError) as exc_info:
             _run_sync(validator, "image", "poly.jpg", _POLYGLOT_JPEG)
         assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    def test_webp_polyglot_content_threat_raises(self):
+        """A ZIP signature appended to a WebP is a content threat."""
+        validator = _make_validator(enable_content_analysis=True)
+        with pytest.raises(ContentThreatError) as exc_info:
+            _run_sync(validator, "image", "poly.webp", _POLYGLOT_WEBP)
+        assert exc_info.value.error_code == ErrorCode.CONTENT_THREAT_DETECTED
+
+    @pytest.mark.parametrize(
+        ("name", "payload"),
+        [("photo.jpg", _WEBP), ("photo.png", _JPEG), ("photo.webp", _JPEG)],
+    )
+    def test_extension_of_another_type_raises(self, name, payload):
+        """An allowed image under another format's extension fails."""
+        with pytest.raises(MimeTypeError) as exc_info:
+            _run_sync(FileValidator(), "image", name, payload)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+
+    @pytest.mark.parametrize(
+        ("name", "payload"),
+        [("bomb.png", _PIXEL_BOMB_PNG), ("bomb.jpg", _PIXEL_BOMB_JPEG)],
+    )
+    def test_pixel_bomb_raises(self, name, payload):
+        """An image declaring too many pixels fails the pixel limit."""
+        with pytest.raises(ImageDimensionError) as exc_info:
+            _run_sync(FileValidator(), "image", name, payload)
+        assert exc_info.value.error_code == ErrorCode.IMAGE_DIMENSIONS_EXCEEDED
+
+    def test_jpeg_without_frame_header_raises(self):
+        """A JPEG reaching scan data with no frame header fails."""
+        with pytest.raises(FileSignatureError) as exc_info:
+            _run_sync(FileValidator(), "image", "a.jpg", _FRAMELESS_JPEG)
+        assert exc_info.value.error_code == ErrorCode.IMAGE_INVALID_STRUCTURE
+
+    def test_avi_named_webp_raises(self):
+        """AVI content under a .webp name fails the MIME check."""
+        with pytest.raises(MimeTypeError) as exc_info:
+            _run_sync(FileValidator(), "image", "clip.webp", _AVI)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     def test_oversize_raises(self):
         """A file over max_image_size raises FILE_TOO_LARGE."""
@@ -395,6 +539,13 @@ _PARITY = [
     ("image", "doc‮txt.jpg", _JPEG),
     ("image", "x.php.jpg", _JPEG),
     ("image", "photo.txt", _JPEG),
+    ("image", "photo.jpg", _WEBP),
+    ("image", "photo.png", _JPEG),
+    ("image", "bomb.png", _PIXEL_BOMB_PNG),
+    ("image", "bomb.jpg", _PIXEL_BOMB_JPEG),
+    ("image", "frameless.jpg", _FRAMELESS_JPEG),
+    ("activity", "ride.gpx", _FIT),
+    ("activity", "track.fit", _GPX),
     ("zip", "t.zip", _ZIP_TRAVERSAL),
     ("zip", "a.zip", b"Hello World"),
     ("zip", "a.zip", b""),
@@ -513,7 +664,8 @@ class TestSyncShortReads:
         validator = _make_validator(enable_content_analysis=True)
         payload = _JPEG[:-2] + b"\x00" * 9000 + b"\xff\xd9"
         f = _ShortReadRaw(payload)
-        assert validator.validate_image_file_sync(f, "a.jpg") == "a.jpg"
+        result = validator.validate_image_file_sync(f, "a.jpg")
+        assert result == ValidationResult("a.jpg", "image/jpeg")
         assert f.tell() == 0
 
     def test_polyglot_past_first_read_rejected(self):
@@ -539,7 +691,7 @@ class TestSyncFileObjects:
             result = getattr(FileValidator(), f"validate_{stem}_file_sync")(
                 f, name
             )
-            assert result == name
+            assert result.filename == name
             assert not f.closed
             assert f.tell() == 0
 
@@ -553,7 +705,7 @@ class TestSyncFileObjects:
             result = getattr(FileValidator(), f"validate_{stem}_file_sync")(
                 f, name
             )
-            assert result == name
+            assert result.filename == name
             assert not f.closed
             assert f.tell() == 0
 
@@ -563,7 +715,7 @@ class TestSyncFileObjects:
             f.write(_ZIP)
             f.seek(0)
             result = FileValidator().validate_zip_file_sync(f, "a.zip")
-            assert result == "a.zip"
+            assert result.filename == "a.zip"
             assert not f.closed
 
     @pytest.mark.parametrize(
@@ -604,7 +756,7 @@ class TestSyncNoOffload:
             raise AssertionError("worker-thread offload used")
 
         monkeypatch.setattr(validator, "_submit", _boom)
-        assert _run_sync(validator, stem, name, payload) == name
+        assert _run_sync(validator, stem, name, payload).filename == name
 
 
 class TestSyncRunningLoopGuard:
@@ -630,7 +782,7 @@ class TestSyncRunningLoopGuard:
         validator = FileValidator()
         method = getattr(validator, f"validate_{stem}_file_sync")
         result = await asyncio.to_thread(method, io.BytesIO(payload), name)
-        assert result == name
+        assert result.filename == name
 
 
 # ---------------------------------------------------------------------------
@@ -787,7 +939,7 @@ class TestSyncResourceLimits:
         result = _run_sync(
             FileValidator(), "zip", "a.zip", self._many_entries_zip()
         )
-        assert result == "a.zip"
+        assert result.filename == "a.zip"
 
 
 class TestSyncInternalErrors:

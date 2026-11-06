@@ -5,9 +5,17 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from safeuploads.file_validator import FileValidator
+from tests import images
 from tests.fuzz.helpers import MockFile, accepted_async
 
 _IMAGE_SIGNATURES = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")
+
+
+def _is_known_image(content):
+    """Return whether content starts like a JPEG, PNG or WebP."""
+    if content.startswith(_IMAGE_SIGNATURES):
+        return True
+    return content[:4] == b"RIFF" and content[8:12] == b"WEBP"
 
 
 async def _assert_accepts_only_images(filename, content):
@@ -15,7 +23,7 @@ async def _assert_accepts_only_images(filename, content):
     validator = FileValidator()
     file = MockFile(filename, content)
     if await accepted_async(validator.validate_image_file(file)):
-        assert content.startswith(_IMAGE_SIGNATURES)
+        assert _is_known_image(content)
         assert len(content) <= validator.config.limits.max_image_size
 
 
@@ -26,6 +34,9 @@ _JPEG_HDR = (
 
 # PNG header prefix
 _PNG_HDR = b"\x89PNG\r\n\x1a\n"
+
+# WebP header prefix: RIFF container, WEBP form, VP8L chunk
+_WEBP_HDR = b"RIFF\x00\x00\x00\x00WEBPVP8L"
 
 
 @pytest.mark.fuzz
@@ -47,6 +58,14 @@ class TestFuzzImageValidation:
         """Mutated PNG content must not crash."""
         content = _PNG_HDR + padding
         await _assert_accepts_only_images("fuzz.png", content)
+
+    @given(padding=st.binary(min_size=0, max_size=2000))
+    @settings(max_examples=200, deadline=3000)
+    @pytest.mark.asyncio
+    async def test_mutated_webp_never_crashes(self, padding):
+        """Mutated WebP content must not crash."""
+        content = _WEBP_HDR + padding
+        await _assert_accepts_only_images("fuzz.webp", content)
 
     @given(data=st.binary(min_size=1, max_size=500))
     @settings(max_examples=200, deadline=3000)
@@ -84,3 +103,35 @@ class TestFuzzImageValidation:
             + b"\x00\x00\x00\x00"
         )
         await _assert_accepts_only_images("dims.png", content)
+
+    @given(
+        build=st.sampled_from(
+            [
+                ("a.png", images.png, 2**31 - 1),
+                ("a.jpg", images.jpeg, 2**16 - 1),
+                ("a.webp", images.webp, 2**14),
+            ]
+        ),
+        data=st.data(),
+    )
+    @settings(max_examples=200, deadline=3000)
+    @pytest.mark.asyncio
+    async def test_accepted_iff_within_pixel_limit(self, build, data):
+        """An image passes exactly when it fits max_image_pixels."""
+        filename, builder, max_side = build
+        side = st.integers(min_value=1, max_value=max_side)
+        width, height = data.draw(side), data.draw(side)
+        validator = FileValidator()
+        file = MockFile(filename, builder(width, height))
+        limit = validator.config.limits.max_image_pixels
+        assert await accepted_async(validator.validate_image_file(file)) == (
+            width * height <= limit
+        )
+
+    @given(segments=st.binary(min_size=0, max_size=2000))
+    @settings(max_examples=200, deadline=3000)
+    @pytest.mark.asyncio
+    async def test_mutated_segments_before_frame_never_crash(self, segments):
+        """Arbitrary bytes between APP0 and the frame must not crash."""
+        content = images.jpeg(8, 8, before_frame=segments)
+        await _assert_accepts_only_images("fuzz.jpg", content)

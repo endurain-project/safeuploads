@@ -9,6 +9,7 @@ from safeuploads.exceptions import (
     ConfigValidationIssue,
     FileSecurityConfigurationError,
 )
+from safeuploads.utils import allowed_extensions
 
 
 class TestSecurityLimits:
@@ -19,6 +20,7 @@ class TestSecurityLimits:
         limits = SecurityLimits()
 
         assert limits.max_image_size == 20 * 1024 * 1024
+        assert limits.max_image_pixels == 89_478_485
         assert limits.max_zip_size == 500 * 1024 * 1024
         assert limits.max_compression_ratio == 100
         assert limits.max_uncompressed_size == 1024 * 1024 * 1024
@@ -64,6 +66,14 @@ class TestSecurityLimits:
         assert limits.scan_zip_content is False
 
 
+_TYPE_MAPS = [
+    "ALLOWED_IMAGE_TYPES",
+    "ALLOWED_ZIP_TYPES",
+    "ALLOWED_ACTIVITY_TYPES",
+    "ALLOWED_GZIP_TYPES",
+]
+
+
 class TestFileSecurityConfig:
     """Test suite for FileSecurityConfig class."""
 
@@ -72,39 +82,50 @@ class TestFileSecurityConfig:
         config = FileSecurityConfig()
 
         assert isinstance(config.limits, SecurityLimits)
-        assert len(config.ALLOWED_IMAGE_MIMES) > 0
-        assert len(config.ALLOWED_ZIP_MIMES) > 0
-        assert len(config.ALLOWED_IMAGE_EXTENSIONS) > 0
-        assert len(config.ALLOWED_ZIP_EXTENSIONS) > 0
+        assert len(config.ALLOWED_IMAGE_TYPES) > 0
+        assert len(config.ALLOWED_ZIP_TYPES) > 0
 
-    def test_allowed_image_mimes(self):
-        """Test allowed image MIME types."""
+    def test_allowed_image_types(self):
+        """Each image MIME type maps to its own extensions."""
         config = FileSecurityConfig()
 
-        assert "image/jpeg" in config.ALLOWED_IMAGE_MIMES
-        assert "image/jpg" in config.ALLOWED_IMAGE_MIMES
-        assert "image/png" in config.ALLOWED_IMAGE_MIMES
+        assert dict(config.ALLOWED_IMAGE_TYPES) == {
+            "image/jpeg": frozenset({".jpg", ".jpeg"}),
+            "image/png": frozenset({".png"}),
+            "image/webp": frozenset({".webp"}),
+        }
 
-    def test_allowed_zip_mimes(self):
-        """Test allowed ZIP MIME types."""
+    def test_allowed_zip_types(self):
+        """ZIP MIME types map to .zip."""
         config = FileSecurityConfig()
 
-        assert "application/zip" in config.ALLOWED_ZIP_MIMES
-        assert "application/x-zip-compressed" in config.ALLOWED_ZIP_MIMES
+        assert dict(config.ALLOWED_ZIP_TYPES) == {
+            "application/zip": frozenset({".zip"}),
+            "application/x-zip-compressed": frozenset({".zip"}),
+            "multipart/x-zip": frozenset({".zip"}),
+        }
 
-    def test_allowed_image_extensions(self):
-        """Test allowed image extensions."""
+    def test_allowed_activity_types(self):
+        """XML types map to .gpx/.tcx and binary to .fit."""
+        config = FileSecurityConfig()
+        xml = frozenset({".gpx", ".tcx"})
+
+        assert dict(config.ALLOWED_ACTIVITY_TYPES) == {
+            "application/gpx+xml": xml,
+            "application/xml": xml,
+            "text/xml": xml,
+            "text/plain": xml,
+            "application/octet-stream": frozenset({".fit"}),
+        }
+
+    def test_allowed_gzip_types(self):
+        """gzip MIME types map to .gz."""
         config = FileSecurityConfig()
 
-        assert ".jpg" in config.ALLOWED_IMAGE_EXTENSIONS
-        assert ".jpeg" in config.ALLOWED_IMAGE_EXTENSIONS
-        assert ".png" in config.ALLOWED_IMAGE_EXTENSIONS
-
-    def test_allowed_zip_extensions(self):
-        """Test allowed ZIP extensions."""
-        config = FileSecurityConfig()
-
-        assert ".zip" in config.ALLOWED_ZIP_EXTENSIONS
+        assert dict(config.ALLOWED_GZIP_TYPES) == {
+            "application/gzip": frozenset({".gz"}),
+            "application/x-gzip": frozenset({".gz"}),
+        }
 
     def test_blocked_extensions_generated(self):
         """Test that blocked extensions are generated from enums."""
@@ -236,7 +257,7 @@ class TestConfigurationValidation:
     def test_config_class_attributes_accessible(self):
         """Test that class-level attributes are accessible."""
         # Can access without instantiation
-        assert hasattr(FileSecurityConfig, "ALLOWED_IMAGE_MIMES")
+        assert hasattr(FileSecurityConfig, "ALLOWED_IMAGE_TYPES")
         assert hasattr(FileSecurityConfig, "BLOCKED_EXTENSIONS")
         assert hasattr(FileSecurityConfig, "WINDOWS_RESERVED_NAMES")
 
@@ -291,10 +312,10 @@ class TestConfigurationValidation:
 
     def test_allowed_sets_not_empty_by_default(self):
         """Test that all allowed sets have default values."""
-        assert len(FileSecurityConfig.ALLOWED_IMAGE_MIMES) > 0
-        assert len(FileSecurityConfig.ALLOWED_ZIP_MIMES) > 0
-        assert len(FileSecurityConfig.ALLOWED_IMAGE_EXTENSIONS) > 0
-        assert len(FileSecurityConfig.ALLOWED_ZIP_EXTENSIONS) > 0
+        for name in _TYPE_MAPS:
+            types = getattr(FileSecurityConfig, name)
+            assert len(types) > 0
+            assert all(len(exts) > 0 for exts in types.values())
 
     def test_blocked_sets_not_empty_by_default(self):
         """Test that blocked extension sets are populated."""
@@ -312,7 +333,7 @@ class TestConfigurationValidation:
 
     def test_extensions_include_dot(self):
         """Test that extensions include leading dot."""
-        for ext in FileSecurityConfig.ALLOWED_IMAGE_EXTENSIONS:
+        for ext in allowed_extensions(FileSecurityConfig.ALLOWED_IMAGE_TYPES):
             assert ext.startswith("."), (
                 f"Extension {ext} should start with dot"
             )
@@ -351,21 +372,21 @@ class TestConfigInstanceIsolation:
 
         assert FileSecurityConfig.limits.max_image_size == original
 
-    def test_allowed_mime_sets_are_immutable(self):
-        """Allow-list MIME sets must be immutable frozensets."""
-        config = FileSecurityConfig()
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
+    def test_allowed_type_maps_are_immutable(self, name):
+        """No MIME type can be added to a built-in allow-list."""
+        types = getattr(FileSecurityConfig(), name)
 
-        assert isinstance(config.ALLOWED_IMAGE_MIMES, frozenset)
-        with pytest.raises(AttributeError):
-            config.ALLOWED_IMAGE_MIMES.add("image/evil")
+        with pytest.raises(TypeError):
+            types["image/evil"] = frozenset({".evil"})
 
-    def test_allowed_extension_sets_are_immutable(self):
-        """Allow-list extension sets must be immutable frozensets."""
-        config = FileSecurityConfig()
-
-        assert isinstance(config.ALLOWED_ACTIVITY_EXTENSIONS, frozenset)
-        with pytest.raises(AttributeError):
-            config.ALLOWED_ACTIVITY_EXTENSIONS.add(".evil")
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
+    def test_allowed_extension_sets_are_immutable(self, name):
+        """The extensions of a built-in MIME type are frozensets."""
+        for exts in getattr(FileSecurityConfig(), name).values():
+            assert isinstance(exts, frozenset)
+            with pytest.raises(AttributeError):
+                exts.add(".evil")
 
 
 def _errors_for(**overrides: Any) -> list[ConfigValidationIssue]:
@@ -521,14 +542,7 @@ class TestLimitTypeValidation:
         assert FileSecurityConfig().validate_instance() == []
 
 
-_EXTENSION_SETS = [
-    "ALLOWED_IMAGE_EXTENSIONS",
-    "ALLOWED_ZIP_EXTENSIONS",
-    "ALLOWED_ACTIVITY_EXTENSIONS",
-    "ALLOWED_GZIP_EXTENSIONS",
-    "BLOCKED_EXTENSIONS",
-    "COMPOUND_BLOCKED_EXTENSIONS",
-]
+_BLOCK_SETS = ["BLOCKED_EXTENSIONS", "COMPOUND_BLOCKED_EXTENSIONS"]
 
 
 def _issue_types(**overrides: Any) -> list[str]:
@@ -545,50 +559,93 @@ def _issue_types(**overrides: Any) -> list[str]:
     return [e.error_type for e in config_cls().validate_instance()]
 
 
+def _with_extensions(name: str, exts: frozenset[str]) -> dict[str, Any]:
+    """
+    Build an override giving a type map's first MIME type ``exts``.
+
+    Args:
+        name: Name of the allowed-types mapping to override.
+        exts: Extensions for the mapping's first MIME type.
+
+    Returns:
+        Keyword overrides for ``_issue_types``.
+    """
+    types = dict(getattr(FileSecurityConfig, name))
+    types[next(iter(types))] = exts
+    return {name: types}
+
+
 class TestAllowListValidation:
-    """Activity and gzip allow-lists get the image/ZIP checks."""
+    """Every allowed-types mapping gets the same checks."""
 
-    @pytest.mark.parametrize(
-        "name", ["ALLOWED_ACTIVITY_EXTENSIONS", "ALLOWED_GZIP_EXTENSIONS"]
-    )
-    def test_empty_extension_set_rejected(self, name):
-        """An empty extension allow-list is an error."""
-        assert _issue_types(**{name: frozenset()}) == ["empty_extension_set"]
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
+    def test_empty_type_map_rejected(self, name):
+        """An empty allowed-types mapping is an error."""
+        assert _issue_types(**{name: {}}) == ["empty_mime_set"]
 
-    @pytest.mark.parametrize(
-        "name", ["ALLOWED_ACTIVITY_EXTENSIONS", "ALLOWED_GZIP_EXTENSIONS"]
-    )
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
+    def test_mime_without_extensions_rejected(self, name):
+        """A MIME type with no extension can never be accepted."""
+        assert _issue_types(**_with_extensions(name, frozenset())) == [
+            "empty_extension_set"
+        ]
+
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
     def test_extension_without_dot_rejected(self, name):
         """An extension without a leading dot is an error."""
-        assert _issue_types(**{name: frozenset({"gpx"})}) == [
-            "invalid_extension_format"
-        ]
+        override = _with_extensions(name, frozenset({"abc"}))
 
-    @pytest.mark.parametrize(
-        "name", ["ALLOWED_ACTIVITY_EXTENSIONS", "ALLOWED_GZIP_EXTENSIONS"]
-    )
+        assert _issue_types(**override) == ["invalid_extension_format"]
+
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
     def test_blocked_extension_conflict_rejected(self, name):
         """An allowed extension that is also blocked is an error."""
-        assert _issue_types(**{name: frozenset({".exe"})}) == [
-            "extension_conflict"
-        ]
+        override = _with_extensions(name, frozenset({".exe"}))
 
-    @pytest.mark.parametrize(
-        "name", ["ALLOWED_ACTIVITY_MIMES", "ALLOWED_GZIP_MIMES"]
-    )
-    def test_empty_mime_set_rejected(self, name):
-        """An empty MIME allow-list is an error."""
-        assert _issue_types(**{name: frozenset()}) == ["empty_mime_set"]
+        assert _issue_types(**override) == ["extension_conflict"]
 
-    @pytest.mark.parametrize("name", _EXTENSION_SETS)
-    def test_uppercase_extension_rejected(self, name):
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
+    def test_uppercase_allowed_extension_rejected(self, name):
         """Filenames are lowercased, so an uppercase entry is dead."""
+        override = _with_extensions(name, frozenset({".ABC"}))
+
+        assert _issue_types(**override) == ["uppercase_extension"]
+
+    @pytest.mark.parametrize("name", _BLOCK_SETS)
+    def test_uppercase_blocked_extension_rejected(self, name):
+        """An uppercase block-list entry is dead as well."""
         value = frozenset(getattr(FileSecurityConfig, name) | {".ABC"})
 
         assert _issue_types(**{name: value}) == ["uppercase_extension"]
 
-    @pytest.mark.parametrize("name", _EXTENSION_SETS)
-    def test_default_extension_sets_are_lowercase(self, name):
-        """No built-in extension entry contains uppercase."""
+    @pytest.mark.parametrize("name", _TYPE_MAPS)
+    def test_default_allowed_extensions_are_lowercase(self, name):
+        """No built-in allowed extension contains uppercase."""
+        for ext in allowed_extensions(getattr(FileSecurityConfig, name)):
+            assert ext == ext.lower()
+
+    @pytest.mark.parametrize("name", _BLOCK_SETS)
+    def test_default_blocked_extensions_are_lowercase(self, name):
+        """No built-in blocked extension contains uppercase."""
         for ext in getattr(FileSecurityConfig, name):
             assert ext == ext.lower()
+
+    def test_non_image_mime_in_image_map_warns(self):
+        """A non-image MIME type in the image mapping is a warning."""
+        types = {"application/pdf": frozenset({".pdf"})}
+
+        assert _issue_types(ALLOWED_IMAGE_TYPES=types) == [
+            "invalid_image_mime"
+        ]
+
+    def test_mime_in_two_categories_warns(self):
+        """A MIME type allowed in two categories is a warning."""
+        types = {
+            **FileSecurityConfig.ALLOWED_IMAGE_TYPES,
+            "application/zip": frozenset({".jpg"}),
+        }
+
+        assert _issue_types(ALLOWED_IMAGE_TYPES=types) == [
+            "invalid_image_mime",
+            "duplicate_mime_types",
+        ]

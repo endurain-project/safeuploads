@@ -125,6 +125,12 @@ _RESULTS = [
     for (stem, name, payload), mime in zip(_VALID, _VALID_MIMES, strict=True)
 ]
 
+# (method stem, valid filename, valid payload, signature MIME type)
+_ARCHIVES = [
+    ("zip", "archive.zip", _ZIP, "application/zip"),
+    ("gzip", "archive.gz", _GZIP, "application/gzip"),
+]
+
 _STEMS = ["image", "zip", "activity", "gzip"]
 _STEM_FILES = {
     "image": ("photo.jpg", _JPEG),
@@ -234,6 +240,58 @@ class TestSyncAccepts:
         )
         assert result.filename == name
         assert f.tell() == 0
+
+
+class TestOctetStreamFallback:
+    """
+    An archive libmagic reports only as application/octet-stream.
+
+    libmagic 5.46 reports every ZIP this way, so the result carries
+    the type the magic signature confirmed instead.
+    """
+
+    @staticmethod
+    def _octet_stream_validator(monkeypatch) -> FileValidator:
+        validator = FileValidator()
+        monkeypatch.setattr(
+            validator.mime_validator,
+            "detect",
+            lambda content, filename: "application/octet-stream",
+        )
+        return validator
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "mime"), _ARCHIVES, ids=["zip", "gzip"]
+    )
+    def test_reports_signature_type(
+        self, monkeypatch, stem, name, payload, mime
+    ):
+        validator = self._octet_stream_validator(monkeypatch)
+        result = _run_sync(validator, stem, name, payload)
+        assert result == ValidationResult(name, mime)
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "mime"), _ARCHIVES, ids=["zip", "gzip"]
+    )
+    async def test_async_reports_signature_type(
+        self, monkeypatch, mock_upload_file, stem, name, payload, mime
+    ):
+        validator = self._octet_stream_validator(monkeypatch)
+        result = await _run_async(
+            validator, mock_upload_file, stem, name, payload
+        )
+        assert result == ValidationResult(name, mime)
+
+    @pytest.mark.parametrize(
+        ("stem", "name", "payload", "mime"), _ARCHIVES, ids=["zip", "gzip"]
+    )
+    def test_wrong_signature_still_rejected(
+        self, monkeypatch, stem, name, payload, mime
+    ):
+        validator = self._octet_stream_validator(monkeypatch)
+        with pytest.raises(FileSignatureError) as exc_info:
+            _run_sync(validator, stem, name, b"\x00" * 64)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
 
 # ---------------------------------------------------------------------------

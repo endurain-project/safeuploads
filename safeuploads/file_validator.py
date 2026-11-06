@@ -93,7 +93,11 @@ class ValidationResult:
         filename: Sanitized filename. Its extension is one the
             configuration lists for ``mime_type``.
         mime_type: MIME type libmagic detected from the content,
-            for the ``Content-Type`` of a stored or served copy.
+            for the ``Content-Type`` of a stored or served copy. A
+            ZIP or gzip that libmagic reports only as
+            ``application/octet-stream`` carries the type its magic
+            signature confirmed (``application/zip`` or
+            ``application/gzip``).
     """
 
     filename: str
@@ -1086,7 +1090,8 @@ class FileValidator:
             filename: Sanitized filename for context.
 
         Returns:
-            Detected MIME type.
+            Detected MIME type, or ``application/zip`` when libmagic
+            reports only ``application/octet-stream``.
 
         Raises:
             MimeTypeError: If the MIME type is not allowed or does
@@ -1108,6 +1113,9 @@ class FileValidator:
             allow_octet_stream=True,
             error_code=ErrorCode.MIME_TYPE_MISMATCH,
         )
+        # The signature confirmed the type libmagic left generic
+        if detected_mime == "application/octet-stream":
+            detected_mime = "application/zip"
 
         # Validate ZIP compression ratio
         self.compression_validator.validate_zip_compression_ratio(
@@ -1359,7 +1367,8 @@ class FileValidator:
             filename: Sanitized filename for context.
 
         Returns:
-            Detected MIME type.
+            Detected MIME type, or ``application/gzip`` when libmagic
+            reports only ``application/octet-stream``.
 
         Raises:
             MimeTypeError: If the MIME type is not allowed or does
@@ -1380,6 +1389,9 @@ class FileValidator:
             allow_octet_stream=True,
             error_code=ErrorCode.MIME_TYPE_MISMATCH,
         )
+        # The signature confirmed the type libmagic left generic
+        if detected_mime == "application/octet-stream":
+            detected_mime = "application/gzip"
 
         # Decompression bomb check
         self.gzip_inspector.inspect_gzip_content(temp_file, file_size)

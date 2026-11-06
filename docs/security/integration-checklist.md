@@ -138,8 +138,13 @@ bodies are not caught (see
   document root.
 - [ ] Uploaded files renamed to random identifiers (UUIDs);
   original filenames stored in metadata only. If the stored name
-  needs an extension, derive it from `ValidationResult.mime_type`,
-  not from the uploaded name.
+  needs an extension, take it from `ValidationResult.filename`,
+  not from the uploaded name: it is sanitized, and its extension
+  is one the configuration lists for the detected MIME type.
+  `mime_type` alone cannot choose it, since GPX and TCX share
+  their XML types. Content is not checked as GPX rather than TCX,
+  so an importer must still handle XML that does not match its
+  extension.
 - [ ] Storage directory permissions restrict access to the
   application user only (`0700` or equivalent).
 - [ ] If serving uploaded files back to users, use:

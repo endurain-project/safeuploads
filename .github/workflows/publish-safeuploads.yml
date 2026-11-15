@@ -159,7 +159,7 @@ jobs:
           # This job never checks the repository out, so there is no
           # pyproject.toml to read `required-version` from; keep this in step
           # with the floor declared there.
-          version: "0.13.5"
+          version: "0.13.8"
           enable-cache: false
 
       - name: Download build artifacts

@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-11-15
+
+### Changed
+
+- Updated all dependency groups to their latest versions, including `opentelemetry-api` 1.45.2, which fixes CVE-2026-126360 in the locked docs toolchain.
+- Updated uv to 0.13.8.
+
 ## [4.0.0] - 2026-11-06
 
 ### Added
@@ -280,6 +287,8 @@ Initial release.
 - **MIME type verification:** magic-number validation for common file types.
 - Framework-agnostic async validation, a rich exception hierarchy with machine-readable error codes, secure defaults, and full type hints.
 
+[4.0.1]: https://github.com/endurain-project/safeuploads/compare/v4.0.0...v4.0.1
+[4.0.0]: https://github.com/endurain-project/safeuploads/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/endurain-project/safeuploads/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/endurain-project/safeuploads/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/endurain-project/safeuploads/compare/v2.0.0...v2.1.0

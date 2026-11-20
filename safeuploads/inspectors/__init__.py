@@ -8,11 +8,13 @@ and contents of uploaded files to detect potential security threats.
 from .base import BaseInspector
 from .content_inspector import ContentSecurityInspector
 from .gzip_inspector import GzipContentInspector
+from .pdf_inspector import PdfContentInspector
 from .zip_inspector import ZipContentInspector
 
 __all__ = [
     "BaseInspector",
     "ContentSecurityInspector",
     "GzipContentInspector",
+    "PdfContentInspector",
     "ZipContentInspector",
 ]

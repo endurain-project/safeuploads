@@ -41,6 +41,7 @@ from .exceptions import (
     FileValidationError,
     ImageDimensionError,
     MimeTypeError,
+    PdfSecurityError,
     ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
@@ -57,6 +58,7 @@ from .inspectors import (
     BaseInspector,
     ContentSecurityInspector,
     GzipContentInspector,
+    PdfContentInspector,
     ZipContentInspector,
 )
 from .protocols import SeekableFile, UploadFileProtocol
@@ -114,6 +116,7 @@ __all__ = [
     "ZipBombError",
     "ZipContentError",
     "XmlSecurityError",
+    "PdfSecurityError",
     "ContentThreatError",
     "FileProcessingError",
     "ResourceLimitError",
@@ -144,6 +147,7 @@ __all__ = [
     "BaseInspector",
     "ZipContentInspector",
     "GzipContentInspector",
+    "PdfContentInspector",
     "ContentSecurityInspector",
     # Utilities
     "ResourceMonitor",

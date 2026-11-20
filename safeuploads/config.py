@@ -3,6 +3,7 @@
 import itertools
 import logging
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, replace
 from types import MappingProxyType
@@ -17,6 +18,12 @@ from .exceptions import ConfigValidationIssue, FileSecurityConfigurationError
 from .utils import allowed_extensions, bytes_to_mb
 
 logger = logging.getLogger(__name__)
+
+# A PDF name as the lexer decodes it: printable ASCII without
+# whitespace, delimiters or the "#" escape character, and without
+# the leading "/".
+_PDF_NAME = re.compile(r"[!-~]+")
+_PDF_NAME_EXCLUDED = frozenset("()<>[]{}/%#")
 
 # Allow-list settings removed in 4.0.0, mapped to their replacement.
 # Nothing reads them, so a configuration that still sets one would
@@ -78,6 +85,9 @@ class SecurityLimits:
         max_activity_file_size: Maximum size in bytes for
             GPX/TCX/FIT activity files.
         max_gzip_size: Maximum size in bytes for gzip files.
+        max_pdf_size: Maximum size in bytes for PDF files.
+        max_pdf_uncompressed_size: Maximum total size in bytes of
+            the decoded streams of one PDF.
         max_memory_buffer_size: Bytes kept in memory before a
             streamed upload spills to a temporary file on disk.
         chunk_size: Chunk size in bytes for streaming reads.
@@ -85,7 +95,8 @@ class SecurityLimits:
             during a single validation.
         max_validation_time_seconds: Overall validation timeout
             in seconds.
-        max_compression_ratio: Maximum expansion ratio for ZIP files.
+        max_compression_ratio: Maximum expansion ratio for ZIP,
+            gzip and PDF files.
         max_uncompressed_size: Maximum cumulative size of ZIP contents.
         max_individual_file_size: Maximum size of single file in ZIP.
         max_zip_entries: Maximum number of file entries in ZIP.
@@ -122,6 +133,9 @@ class SecurityLimits:
     max_zip_size: int = 500 * 1024 * 1024  # 500MB for ZIP files
     max_activity_file_size: int = 50 * 1024 * 1024  # 50MB for GPX/TCX/FIT
     max_gzip_size: int = 500 * 1024 * 1024  # 500MB for gzip files
+    max_pdf_size: int = 50 * 1024 * 1024  # 50MB for PDF files
+    # Total decoded size of the Flate streams in one PDF
+    max_pdf_uncompressed_size: int = 200 * 1024 * 1024
 
     # Streaming validation settings
     max_memory_buffer_size: int = (
@@ -195,6 +209,10 @@ class FileSecurityConfig:
         ALLOWED_ACTIVITY_TYPES: Permitted activity file (GPX/TCX/FIT)
             MIME types and extensions.
         ALLOWED_GZIP_TYPES: Permitted gzip MIME types and extensions.
+        ALLOWED_PDF_TYPES: Permitted PDF MIME types and extensions.
+        BLOCKED_PDF_NAMES: PDF names, without the leading "/", that
+            reject a PDF wherever they occur outside strings,
+            comments and stream data.
         BLOCKED_EXTENSIONS: Dangerous file extensions to block.
         COMPOUND_BLOCKED_EXTENSIONS: Multi-part extensions to block.
         DANGEROUS_UNICODE_CHARS: Unicode characters for filename attacks.
@@ -247,6 +265,38 @@ class FileSecurityConfig:
                 "application/x-gzip": frozenset({".gz"}),
             }
         )
+    )
+    ALLOWED_PDF_TYPES: ClassVar[Mapping[str, frozenset[str]]] = (
+        MappingProxyType({"application/pdf": frozenset({".pdf"})})
+    )
+
+    # PDF features that run code, carry files, submit data or open
+    # other documents. Matching is case-sensitive, as PDF names are,
+    # and runs on the name after its "#xx" escapes are decoded.
+    BLOCKED_PDF_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {
+            # JavaScript actions and the document JavaScript name tree
+            "JS",
+            "JavaScript",
+            # Launch an application or open a file
+            "Launch",
+            # Embedded files: stream type, name tree, file
+            # specification entry and attachment annotation
+            "EmbeddedFile",
+            "EmbeddedFiles",
+            "EF",
+            "FileAttachment",
+            # Flash and other rich media
+            "RichMedia",
+            # XML Forms Architecture, scriptable forms
+            "XFA",
+            # Send form data or import it from a file
+            "SubmitForm",
+            "ImportData",
+            # Open a remote or embedded document
+            "GoToR",
+            "GoToE",
+        }
     )
 
     # Generate dangerous file extensions from categorized enums
@@ -763,6 +813,16 @@ class FileSecurityConfig:
                 )
             )
 
+        if limits.max_pdf_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_size_limit",
+                    "max_pdf_size must be greater than 0",
+                    "file_sizes",
+                    "Set max_pdf_size to a positive value (e.g., 50MB)",
+                )
+            )
+
         # Validate sanitized filename length
         if limits.max_sanitized_name_length <= 0:
             errors.append(
@@ -788,9 +848,10 @@ class FileSecurityConfig:
         spooled buffer of 0 never spills to disk), so each is
         required to be positive. With content analysis enabled
         only the first ``content_scan_max_size`` bytes of an
-        image or activity upload are scanned, so the window must
-        cover ``max_image_size`` and ``max_activity_file_size``;
-        otherwise a payload placed past the window is accepted.
+        image, activity or PDF upload are scanned, so the window
+        must cover ``max_image_size``, ``max_activity_file_size``
+        and ``max_pdf_size``; otherwise a payload placed past the
+        window is accepted.
 
         Args:
             limits: Security limits to validate.
@@ -817,7 +878,11 @@ class FileSecurityConfig:
                 )
 
         if limits.enable_content_analysis:
-            for name in ("max_image_size", "max_activity_file_size"):
+            for name in (
+                "max_image_size",
+                "max_activity_file_size",
+                "max_pdf_size",
+            ):
                 size = getattr(limits, name)
                 if limits.content_scan_max_size < size:
                     errors.append(
@@ -878,6 +943,7 @@ class FileSecurityConfig:
                 "activity",
             ),
             ("ALLOWED_GZIP_TYPES", config.ALLOWED_GZIP_TYPES, "gzip"),
+            ("ALLOWED_PDF_TYPES", config.ALLOWED_PDF_TYPES, "PDF"),
         ]
 
     @staticmethod
@@ -1159,6 +1225,16 @@ class FileSecurityConfig:
                     "max_uncompressed_size must be greater than 0",
                     "compression",
                     "Set a reasonable uncompressed size limit",
+                )
+            )
+
+        if limits.max_pdf_uncompressed_size <= 0:
+            errors.append(
+                _config_error(
+                    "invalid_uncompressed_size",
+                    "max_pdf_uncompressed_size must be greater than 0",
+                    "compression",
+                    "Set a reasonable decoded PDF stream size limit",
                 )
             )
 
@@ -1455,6 +1531,41 @@ class FileSecurityConfig:
                     "Ensure dangerous Unicode characters are blocked",
                 )
             )
+
+        if not config.BLOCKED_PDF_NAMES:
+            errors.append(
+                _config_error(
+                    "empty_blocked_pdf_names",
+                    "BLOCKED_PDF_NAMES is empty - security risk",
+                    "pdf_names",
+                    "Ensure active PDF content is blocked",
+                )
+            )
+
+        # Decoded PDF names never contain these characters, so an
+        # entry with one can never match.
+        for pdf_name in config.BLOCKED_PDF_NAMES:
+            if (
+                not isinstance(pdf_name, str)
+                or not _PDF_NAME.fullmatch(pdf_name)
+                or not _PDF_NAME_EXCLUDED.isdisjoint(pdf_name)
+            ):
+                errors.append(
+                    _config_error(
+                        "invalid_pdf_name",
+                        (
+                            f"PDF name {pdf_name!r} in BLOCKED_PDF_NAMES"
+                            " is not a printable ASCII name and can"
+                            " never match"
+                        ),
+                        "pdf_names",
+                        (
+                            "List names without the leading '/', as"
+                            " printable ASCII without whitespace,"
+                            " delimiters or '#'"
+                        ),
+                    )
+                )
 
         # Validate Unicode character ranges
         for char_code in config.DANGEROUS_UNICODE_CHARS:

@@ -427,8 +427,11 @@ format.
   first byte: no allowed image or activity signature begins with
   one of these, so a ZIP right after the 3-byte JPEG header is
   found.
-- Content analysis covers image and activity (GPX, TCX, FIT)
-  uploads. ZIP uploads are not byte-scanned as a whole, because
+- Content analysis covers image, activity (GPX, TCX, FIT) and
+  PDF uploads; the polyglot signatures are checked for image and
+  activity uploads only. A PDF is rejected outright when its
+  header is not at offset 0 or data follows its final `%%EOF`
+  (see PDF Parser Differentials). ZIP uploads are not byte-scanned as a whole, because
   compressed bytes match signatures by chance; the ZIP inspector
   scans the decompressed entries instead.
 
@@ -502,6 +505,112 @@ validated.
   checked after each. Record contents are not interpreted.
 - With `enable_content_analysis=True`, GPX, TCX and FIT uploads
   also get content analysis.
+
+### PDF Active Content
+
+**Attack:** A PDF runs JavaScript when opened or when a page,
+field or annotation is used, launches an application, carries
+an attached executable, submits form data to a remote server,
+or opens a remote document, all without any malformed bytes.
+
+**Mitigations:**
+
+- `PdfContentInspector` tokenizes the whole file, so names in
+  objects that no cross-reference entry lists (older revisions,
+  orphans) are checked as well. Every name outside strings,
+  comments and stream data is decoded (`#xx` escapes, so
+  `/J#61vaScript` is `/JavaScript`) and compared, case-sensitive
+  as PDF names are, against `FileSecurityConfig.BLOCKED_PDF_NAMES`.
+  A match raises `PdfSecurityError` with `PDF_ACTIVE_CONTENT`.
+- Object streams (PDF 1.5+) hold objects inside compressed
+  streams, where a byte scan cannot see them. Every stream typed
+  `/ObjStm`, and every stream a compressed cross-reference entry
+  names as its container, is decoded and its objects are parsed
+  and checked the same way.
+- The default `BLOCKED_PDF_NAMES` covers JavaScript (`/JS`,
+  `/JavaScript`), `/Launch`, embedded files (`/EmbeddedFile`,
+  `/EmbeddedFiles`, `/EF`, `/FileAttachment`), `/RichMedia`,
+  XFA forms (`/XFA`), form submission and import
+  (`/SubmitForm`, `/ImportData`) and remote or embedded
+  documents (`/GoToR`, `/GoToE`). `/OpenAction` and `/AA` are not
+  blocked on their own: they also name harmless actions, such as
+  the `/OpenAction [page /Fit]` that LaTeX writes, while the
+  dangerous actions they can start are blocked by name. `/URI`
+  links and AcroForm fields without XFA are accepted.
+- A stream whose dictionary has `/F`, `/FFilter` or
+  `/FDecodeParms` reads its data from another file and is
+  rejected with `PDF_ACTIVE_CONTENT`.
+- The block-list is configurable; configuration validation
+  rejects an empty list (`empty_blocked_pdf_names`) and entries
+  that a decoded PDF name can never equal, such as one with a
+  leading `/`, whitespace, a delimiter or `#`
+  (`invalid_pdf_name`).
+
+**Residual risk:**
+
+- Bugs in a reader's font, image (JBIG2, JPX, CCITT) and colour
+  decoders are triggered by rendering, which the library does
+  not do; image codec data is not decoded.
+- A `/URI` link can still point at a `file:` or UNC address,
+  which some Windows readers follow, leaking NTLM credentials.
+  Hosts that render or open PDFs for other users add `URI` to
+  `BLOCKED_PDF_NAMES` or render in a sandbox.
+
+### PDF Parser Differentials
+
+**Attack:** A PDF that two readers interpret differently, so
+that the validator sees a harmless document and the reader sees
+active content: a cross-reference offset pointing into a string
+or into stream data, a stream `/Length` that ends before the
+data a search for `endstream` finds, an object stream offset
+inside another object, a key repeated with another value, or
+data after `%%EOF` that another format parses (PDF/ZIP and
+PDF/HTML polyglots).
+
+**Mitigations:**
+
+- The header must be `%PDF-1.x` or `%PDF-2.x` at offset 0
+  (readers accept it anywhere in the first 1,024 bytes), and the
+  file must end with `startxref`, its offset and `%%EOF`, with
+  only whitespace after it.
+- Every in-use entry of every cross-reference section, from
+  `startxref` through `/XRefStm` and `/Prev`, must point (after
+  whitespace) at the start of an object the scan parsed, with the
+  same object and generation number. A loop of sections, an entry
+  at offset 0 and an xref table whose counts do not match its
+  entries are rejected rather than repaired: repairing readers
+  rebuild the table by scanning, and may find objects the
+  validator did not parse.
+- A stream's data ends at the first `endstream`, and `/Length`
+  (resolved when indirect) must end it there, with only whitespace
+  between, so readers that trust `/Length` and readers that search
+  for `endstream` read the same bytes.
+- Object stream offsets must increase, and each object is parsed
+  on its own from its offset, exactly as a reader does; the bytes
+  between the header and the first object must hold no token.
+  Every compressed cross-reference entry must point at its object
+  in its container.
+- A key repeated with a different value in a stream dictionary,
+  its `/DecodeParms` or a trailer is rejected; elsewhere it cannot
+  change what the checks read, as every name is checked as a
+  token.
+- Malformed syntax (unterminated strings, arrays or dictionaries,
+  invalid name escapes, unknown keywords, data between objects)
+  is rejected with `PDF_INVALID_STRUCTURE` instead of being
+  repaired. Broken files that readers repair silently are
+  therefore rejected.
+
+### Encrypted PDFs
+
+**Attack:** An encrypted PDF hides its strings and stream data,
+including object streams, from inspection; one with an empty
+user password opens in readers without a prompt.
+
+**Mitigations:**
+
+- A `/Encrypt` name anywhere in the file is rejected with
+  `PDF_ENCRYPTED`, including documents that only restrict
+  permissions with an owner password.
 
 ---
 
@@ -585,6 +694,30 @@ size, similar to ZIP bombs.
   without reading the rest of the stream.
 - Deflate data that `zlib` cannot decode is rejected with
   `CompressionSecurityError` (`ZIP_CORRUPT`).
+
+### PDF Stream Decompression Bombs (CWE-409)
+
+**Attack:** A small PDF whose Flate streams, possibly chained
+(`[/FlateDecode /FlateDecode]`), inflate to gigabytes when a
+reader or thumbnailer renders it.
+
+**Mitigations:**
+
+- `PdfContentInspector` inflates every Flate stage of every
+  stream, `chunk_size` bytes at a time, and counts the output of
+  all streams together. More than `max_pdf_uncompressed_size`
+  (default 200 MB), or more than `max_compression_ratio` times the
+  file size, raises `PdfSecurityError` with `PDF_STREAM_BOMB`.
+  Only object and cross-reference streams are kept in memory.
+- ASCIIHex and ASCII85 stages are decoded so the Flate stages
+  after them are measured. A stream with an LZW, RunLength, Crypt
+  or unknown filter, or with an image codec before another filter,
+  is rejected with `PDF_INVALID_STRUCTURE`; image codecs as the
+  last filter are not decoded, so image pixel counts are not
+  limited.
+- The whole PDF is read into memory, bounded by `max_pdf_size`
+  (default 50 MB), and the active `ResourceMonitor` is checked
+  every 1,024 tokens and on every inflation step.
 
 ### Image Decompression Bombs (CWE-400)
 

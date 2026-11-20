@@ -71,6 +71,7 @@ _TYPE_MAPS = [
     "ALLOWED_ZIP_TYPES",
     "ALLOWED_ACTIVITY_TYPES",
     "ALLOWED_GZIP_TYPES",
+    "ALLOWED_PDF_TYPES",
 ]
 
 
@@ -126,6 +127,44 @@ class TestFileSecurityConfig:
             "application/gzip": frozenset({".gz"}),
             "application/x-gzip": frozenset({".gz"}),
         }
+
+    def test_allowed_pdf_types(self):
+        """The PDF MIME type maps to .pdf."""
+        config = FileSecurityConfig()
+
+        assert dict(config.ALLOWED_PDF_TYPES) == {
+            "application/pdf": frozenset({".pdf"}),
+        }
+
+    def test_blocked_pdf_names(self):
+        """Active content, embedded files and remote actions are blocked."""
+        assert (
+            frozenset(
+                {
+                    "JS",
+                    "JavaScript",
+                    "Launch",
+                    "EmbeddedFile",
+                    "EmbeddedFiles",
+                    "EF",
+                    "FileAttachment",
+                    "RichMedia",
+                    "XFA",
+                    "SubmitForm",
+                    "ImportData",
+                    "GoToR",
+                    "GoToE",
+                }
+            )
+            == FileSecurityConfig.BLOCKED_PDF_NAMES
+        )
+
+    def test_pdf_limit_defaults(self):
+        """PDF uploads default to 50 MB, decoded streams to 200 MB."""
+        limits = SecurityLimits()
+
+        assert limits.max_pdf_size == 50 * 1024 * 1024
+        assert limits.max_pdf_uncompressed_size == 200 * 1024 * 1024
 
     def test_blocked_extensions_generated(self):
         """Test that blocked extensions are generated from enums."""
@@ -632,7 +671,7 @@ class TestAllowListValidation:
 
     def test_non_image_mime_in_image_map_warns(self):
         """A non-image MIME type in the image mapping is a warning."""
-        types = {"application/pdf": frozenset({".pdf"})}
+        types = {"text/csv": frozenset({".csv"})}
 
         assert _issue_types(ALLOWED_IMAGE_TYPES=types) == [
             "invalid_image_mime"

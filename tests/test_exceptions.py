@@ -26,6 +26,7 @@ from safeuploads.exceptions import (
     FileValidationError,
     ImageDimensionError,
     MimeTypeError,
+    PdfSecurityError,
     ResourceLimitError,
     UnicodeSecurityError,
     WindowsReservedNameError,
@@ -586,6 +587,7 @@ _DEFAULT_CODES = {
     ZipBombError: ErrorCode.ZIP_BOMB_DETECTED,
     ZipContentError: ErrorCode.ZIP_CONTENT_THREAT,
     XmlSecurityError: ErrorCode.XML_MALFORMED,
+    PdfSecurityError: ErrorCode.PDF_INVALID_STRUCTURE,
     ContentThreatError: ErrorCode.CONTENT_THREAT_DETECTED,
     FileProcessingError: ErrorCode.PROCESSING_ERROR,
     ResourceLimitError: ErrorCode.RESOURCE_LIMIT_EXCEEDED,
@@ -638,6 +640,17 @@ class TestXmlAndContentThreatErrors:
         assert isinstance(error, FileValidationError)
         assert error.filename == "a.gpx"
         assert error.error_code == ErrorCode.XML_DTD_FORBIDDEN
+
+    def test_pdf_security_error_attributes(self):
+        """Filename and code are stored."""
+        error = PdfSecurityError(
+            "bad",
+            filename="a.pdf",
+            error_code=ErrorCode.PDF_ACTIVE_CONTENT,
+        )
+        assert isinstance(error, FileValidationError)
+        assert error.filename == "a.pdf"
+        assert error.error_code == ErrorCode.PDF_ACTIVE_CONTENT
 
     def test_content_threat_error_attributes(self):
         """Threats list and filename are stored."""
@@ -692,6 +705,7 @@ def _sample_instances() -> list[FileSecurityError]:
         ZipBombError("m", "f.zip", 99.5, 1000, 50.0, 500),
         ZipContentError("m", "f.zip", ["t1", "t2"]),
         XmlSecurityError("m", "f.gpx", ErrorCode.XML_DTD_FORBIDDEN),
+        PdfSecurityError("m", "f.pdf", ErrorCode.PDF_ENCRYPTED),
         ContentThreatError("m", "f.jpg", ["t1"]),
         FileProcessingError("m", original_error=None),
         ResourceLimitError(
@@ -785,6 +799,8 @@ class TestPackageExports:
             "ConfigValidationIssue",
             "ImageDimensionError",
             "ImageDimensionValidator",
+            "PdfSecurityError",
+            "PdfContentInspector",
         ],
     )
     def test_names_exported(self, name):

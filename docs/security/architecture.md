@@ -32,6 +32,7 @@ safeuploads/
     ├── base.py                # BaseInspector interface
     ├── zip_inspector.py       # Deep ZIP content analysis
     ├── gzip_inspector.py      # Gzip bomb detection
+    ├── pdf_inspector.py       # PDF structure, active content, stream bombs
     └── content_inspector.py   # Malware/polyglot scanning
 ```
 
@@ -40,14 +41,14 @@ safeuploads/
 | Component | Responsibility |
 |---|---|
 | `FileValidator` | Orchestrates validation for each file type. Manages streaming, resource monitoring and audit events, and delegates to validators/inspectors. The async methods offload blocking inspection to a worker thread (or a configured `executor`); the `*_sync` methods run the same pipeline in the calling thread and refuse to run on an event-loop thread. Exposes them as `filename_validator`, `signature_validator`, `mime_validator` and the other validator attributes; `magic_mime` and `magic_available` are properties that delegate to `mime_validator`. |
-| `FileSecurityConfig` | Centralizes all configuration: allowed MIME types mapped to the extensions each permits, blocked extensions, Unicode characters, and Windows reserved names. |
+| `FileSecurityConfig` | Centralizes all configuration: allowed MIME types mapped to the extensions each permits, blocked extensions, Unicode characters, Windows reserved names, and the PDF names (`BLOCKED_PDF_NAMES`) that reject a PDF. |
 | `SecurityLimits` | Holds numeric thresholds: file sizes, compression ratios, timeouts, entry limits, resource caps. |
 | `BaseValidator` | Abstract base class; validators inherit and implement `validate()`. |
 | `UnicodeSecurityValidator` | NFC normalization and dangerous character detection (rejects with `UnicodeSecurityError`). |
 | `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. `validate_allowed` checks an extension against the allowlist and the blocked list. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
 | `FilenameSecurityValidator` | Strips path components and dangerous characters from a filename and limits its length to `max_sanitized_name_length`. |
-| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image: JPEG, PNG or WebP; ZIP, gzip, activity or FIT). |
+| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image: JPEG, PNG or WebP; ZIP, gzip, activity, FIT, or PDF with `%PDF-` at offset 0). |
 | `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename), enforces the allowed MIME types and requires the filename's extension to be one listed for the detected type. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |
@@ -55,7 +56,8 @@ safeuploads/
 | `ImageDimensionValidator` | Reads width and height from the PNG IHDR chunk, the first JPEG frame header (SOF) or the first WebP chunk (VP8, VP8L or VP8X canvas) without decoding pixels, and rejects an image whose pixel count exceeds `max_image_pixels` (raises `ImageDimensionError`). A missing or malformed dimension header raises `FileSignatureError` with `IMAGE_INVALID_STRUCTURE`. |
 | `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures, and runs the top-level Unicode, Windows reserved-name and blocked-extension checks on each entry name. With `allow_nested_archives`, inspects every inner ZIP like the top level. |
 | `GzipContentInspector` | Streams gzip decompression, checking ratio and size progressively. |
-| `ContentSecurityInspector` | Scans raw bytes for structurally verified executable headers, web shells, and polyglot patterns (image and activity uploads). |
+| `PdfContentInspector` | Tokenizes the whole PDF and verifies the structure readers rely on (header, trailing `startxref` and `%%EOF`, every cross-reference entry, every stream `/Length`, every object stream offset), so no reader parses an object the scan did not see. Rejects encryption, names in `BLOCKED_PDF_NAMES` after `#xx` decoding (including inside object streams), external stream data, unsupported filters and Flate output past `max_pdf_uncompressed_size` or `max_compression_ratio` (raises `PdfSecurityError`). |
+| `ContentSecurityInspector` | Scans raw bytes for structurally verified executable headers, web shells, and polyglot patterns (image, activity and PDF uploads; polyglot signatures for image and activity only). |
 | `ResourceMonitor` | Context manager enforcing wall-clock time and peak-RSS memory limits at loop boundaries and on exit. |
 | `SecurityAuditLogger` | Emits structured audit events under `safeuploads.audit` with correlation IDs, escaping and length-capping attacker-controlled fields. |
 
@@ -354,6 +356,78 @@ UploadFile (.gz)
 └──────────────────────────────┘
 ```
 
+### PDF Validation (`validate_pdf_file`)
+
+```
+UploadFile (.pdf)
+  │
+  ▼
+┌──────────────────────────────┐
+│ 1. Audit: VALIDATION_START   │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 2. Filename Validation       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 3. ResourceMonitor START     │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 4. File Size Check           │
+│    (max_pdf_size)            │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 5. MIME + Signature Check    │
+│    (%PDF- at offset 0)       │
+│    (extension listed for     │
+│    the detected type)        │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 6. PDF Inspection            │
+│    ├── Header version and    │
+│    │   startxref + %%EOF end │
+│    ├── Tokenize whole file   │
+│    │   ├── Blocked names     │
+│    │   │   (#xx decoded)     │
+│    │   └── /Encrypt          │
+│    ├── Cross-reference chain │
+│    │   (table, stream, /Prev,│
+│    │   /XRefStm): every entry│
+│    │   at a parsed object    │
+│    ├── Object streams parsed │
+│    │   and scanned           │
+│    ├── Stream /Length ends   │
+│    │   at endstream          │
+│    └── Flate output within   │
+│        size and ratio limits │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 7. Content Analysis          │
+│    (if enabled)              │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 8. ResourceMonitor END       │
+└──────────────┬───────────────┘
+               │
+               ▼
+┌──────────────────────────────┐
+│ 9. Audit: VALIDATION_SUCCESS │
+└──────────────────────────────┘
+```
+
 ---
 
 ## Data Flow: Where File Content Is Read
@@ -369,8 +443,9 @@ UploadFile (.gz)
 | Gzip inspection | Chunked streaming decompression | `chunk_size` at a time |
 | XML validation | Chunked feed to `defusedxml`'s parser, no element tree built | `chunk_size` at a time |
 | FIT validation | Chunked CRC-16 over each section | `chunk_size` at a time |
+| PDF inspection | The whole file, tokenized outside stream data; Flate streams inflated, object and xref streams kept decoded to parse them | Whole file (bounded by `max_pdf_size`); inflation `chunk_size` at a time, kept output bounded by `max_pdf_uncompressed_size` |
 | Image dimension check | PNG and WebP: first 30 bytes. JPEG: the marker and length of each segment up to the frame header, skipping segment payloads by seek | Minimal; a run of 0xFF fill bytes is read `chunk_size` at a time |
-| Content analysis | Byte scan of image and activity uploads (not ZIP) | Bounded by `content_scan_max_size` (50 MB); about twice the sample while matching |
+| Content analysis | Byte scan of image, activity and PDF uploads (not ZIP) | Bounded by `content_scan_max_size` (50 MB); about twice the sample while matching |
 
 ---
 
@@ -393,6 +468,7 @@ Exception
     │   │   ├── ZipBombError
     │   │   └── ZipContentError
     │   ├── XmlSecurityError
+    │   ├── PdfSecurityError
     │   └── ContentThreatError
     └── FileProcessingError
         └── ResourceLimitError
@@ -419,12 +495,13 @@ All `FileSecurityError` subclasses carry an `error_code` from
 | `ZipBombError` | `ZIP_BOMB_DETECTED` |
 | `ZipContentError` | `ZIP_CONTENT_THREAT` (the ZIP inspector passes the code of the first threat found) |
 | `XmlSecurityError` | `XML_MALFORMED` |
+| `PdfSecurityError` | `PDF_INVALID_STRUCTURE` (an encrypted PDF is reported as `PDF_ENCRYPTED`, a blocked name or external stream data as `PDF_ACTIVE_CONTENT`, and Flate output over the limits as `PDF_STREAM_BOMB`) |
 | `ContentThreatError` | `CONTENT_THREAT_DETECTED` |
 | `ResourceLimitError` | `RESOURCE_LIMIT_EXCEEDED` |
 
 `FileProcessingError` covers internal errors and its subclass
-`ResourceLimitError` only; validation failures, including XML
-and content threats, are `FileValidationError` subclasses.
+`ResourceLimitError` only; validation failures, including XML,
+PDF and content threats, are `FileValidationError` subclasses.
 
 ---
 
@@ -440,6 +517,7 @@ FileValidator.validate_*()  (_validation_run)
   │   │
   │   ├── ZipContentInspector ──► audit.threat()
   │   ├── GzipContentInspector ─► audit.threat()
+  │   ├── PdfContentInspector ──► audit.threat()
   │   ├── CompressionSecurityValidator ► audit.threat()
   │   └── ContentSecurityInspector ► audit.threat()
   │

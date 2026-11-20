@@ -69,8 +69,8 @@ class ErrorCode(StrEnum):
 
     Error codes are string-valued enum members grouped by
     validation failure type (filename, extension, MIME, size,
-    signature, image dimension, compression, resource, and
-    processing). As a ``StrEnum`` each member compares equal to
+    signature, image dimension, XML, PDF, compression, resource,
+    and processing). As a ``StrEnum`` each member compares equal to
     its string value, so existing string comparisons and JSON
     serialization keep working unchanged.
     """
@@ -114,6 +114,12 @@ class ErrorCode(StrEnum):
     # XML security errors
     XML_DTD_FORBIDDEN = "XML_DTD_FORBIDDEN"
     XML_MALFORMED = "XML_MALFORMED"
+
+    # PDF security errors
+    PDF_INVALID_STRUCTURE = "PDF_INVALID_STRUCTURE"
+    PDF_ENCRYPTED = "PDF_ENCRYPTED"
+    PDF_ACTIVE_CONTENT = "PDF_ACTIVE_CONTENT"
+    PDF_STREAM_BOMB = "PDF_STREAM_BOMB"
 
     # Content analysis errors
     CONTENT_THREAT_DETECTED = "CONTENT_THREAT_DETECTED"
@@ -567,7 +573,7 @@ class ZipContentError(CompressionSecurityError):
 
 
 # ============================================================================
-# Content Analysis and XML Exceptions
+# Content Analysis, XML and PDF Exceptions
 # ============================================================================
 
 
@@ -592,6 +598,31 @@ class XmlSecurityError(FileValidationError):
             message,
             filename=filename,
             error_code=error_code or ErrorCode.XML_MALFORMED,
+        )
+
+
+class PdfSecurityError(FileValidationError):
+    """
+    PDF document is malformed, encrypted or carries blocked content.
+
+    Args:
+        message: Human-readable error description.
+        filename: Optional name of the file with the PDF problem.
+        error_code: Optional error code (defaults to
+            PDF_INVALID_STRUCTURE).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        filename: str | None = None,
+        error_code: str | None = None,
+    ):
+        """Initialize with message and filename."""
+        super().__init__(
+            message,
+            filename=filename,
+            error_code=error_code or ErrorCode.PDF_INVALID_STRUCTURE,
         )
 
 

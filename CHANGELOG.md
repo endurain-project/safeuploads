@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0] - 2026-11-20
+
+### Added
+
+- PDF validation. `FileValidator.validate_pdf_file()` and `validate_pdf_file_sync()` check the filename, size (`SecurityLimits.max_pdf_size`, default 50 MB), MIME type (`FileSecurityConfig.ALLOWED_PDF_TYPES` maps `application/pdf` to `.pdf`) and a `%PDF-` header at offset 0, then inspect the document with `PdfContentInspector` and run the optional content scan.
+- `PdfContentInspector`, exported from `safeuploads`. It tokenizes the whole file and rejects:
+  - a name in the new `FileSecurityConfig.BLOCKED_PDF_NAMES` after its `#xx` escapes are decoded, wherever it occurs outside strings, comments and stream data, including inside object streams. The default list covers JavaScript, `/Launch`, embedded files, `/RichMedia`, XFA, `/SubmitForm`, `/ImportData`, `/GoToR` and `/GoToE`.
+  - stream data read from another file.
+  - encryption.
+  - a structure readers could parse differently from the scan: the header version, the trailing `startxref` and `%%EOF`, every cross-reference entry, every stream `/Length` and every object stream offset must verify, and a stream, `/DecodeParms` or trailer dictionary may not repeat a key with another value.
+  - an LZW, RunLength, Crypt or unknown stream filter.
+  - Flate output of all streams together over the new `SecurityLimits.max_pdf_uncompressed_size` (default 200 MB) or `max_compression_ratio` times the file size.
+- `PdfSecurityError`, exported from `safeuploads`: a `FileValidationError` raised with the new `ErrorCode.PDF_INVALID_STRUCTURE` (default), `PDF_ENCRYPTED`, `PDF_ACTIVE_CONTENT` or `PDF_STREAM_BOMB`.
+- Configuration validation reports an empty `BLOCKED_PDF_NAMES` (`empty_blocked_pdf_names`), an entry that is not a bare printable ASCII PDF name (`invalid_pdf_name`), and a `max_pdf_size` (`invalid_size_limit`) or `max_pdf_uncompressed_size` (`invalid_uncompressed_size`) of 0 or less.
+
+### Changed
+
+- **Breaking:** with `enable_content_analysis`, `content_scan_max_size` must also cover `max_pdf_size`. A configuration whose window is below 50 MB now fails validation with `content_scan_window_too_small`; lower `max_pdf_size` to the window or raise the window.
+
 ## [4.0.1] - 2026-11-15
 
 ### Changed
@@ -287,6 +306,7 @@ Initial release.
 - **MIME type verification:** magic-number validation for common file types.
 - Framework-agnostic async validation, a rich exception hierarchy with machine-readable error codes, secure defaults, and full type hints.
 
+[5.0.0]: https://github.com/endurain-project/safeuploads/compare/v4.0.1...v5.0.0
 [4.0.1]: https://github.com/endurain-project/safeuploads/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/endurain-project/safeuploads/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/endurain-project/safeuploads/compare/v2.2.0...v3.0.0

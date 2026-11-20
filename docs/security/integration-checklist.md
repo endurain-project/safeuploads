@@ -42,6 +42,12 @@ that addresses it.
       sections covering the file exactly) or are rejected with
       `FIT_INVALID_STRUCTURE`.
     - `max_gzip_size` — set if accepting gzip files.
+    - `max_pdf_size` — default 50 MB; set if accepting PDFs.
+      The whole PDF is read into memory during inspection.
+    - `max_pdf_uncompressed_size` — default 200 MB, the total
+      Flate output of one PDF's streams; a PDF over it, or over
+      `max_compression_ratio` times its file size, is rejected
+      with `PDF_STREAM_BOMB`.
     - `max_compression_ratio` — default 100:1 is reasonable
       for most workloads; lower for stricter environments.
     - `max_validation_time_seconds` — default 30 s wall-clock;
@@ -63,20 +69,22 @@ that addresses it.
   mapping, a MIME
   type with no extensions, empty or uppercase extension entries,
   empty block lists or reserved names, reserved names that are
-  not lowercase, a content scan window smaller than an image or
-  activity size limit), including sets overridden on the
-  instance;
+  not lowercase, an empty `BLOCKED_PDF_NAMES` or an entry that is
+  not a bare PDF name, a content scan window smaller than an
+  image, activity or PDF size limit), including sets overridden
+  on the instance;
   warnings are only logged.
 
 ## Content Analysis
 
 - [ ] `enable_content_analysis` set to `True` if accepting
-  files from untrusted users. It covers image and activity
+  files from untrusted users. It covers image, activity and PDF
   uploads; ZIP contents are scanned entry by entry by the ZIP
   inspector.
-- [ ] `content_scan_max_size` at least `max_image_size` and
-  `max_activity_file_size` (default 50 MB). With content analysis
-  on, a smaller window is a configuration error.
+- [ ] `content_scan_max_size` at least `max_image_size`,
+  `max_activity_file_size` and `max_pdf_size` (default 50 MB).
+  With content analysis on, a smaller window is a configuration
+  error.
 - [ ] Consider supplemental antivirus scanning (ClamAV or
   similar) for high-risk environments.
 
@@ -99,6 +107,31 @@ bodies are not caught (see
 - [ ] Image decoder libraries (Pillow, libjpeg-turbo, libpng,
   libwebp) kept up to date.
 
+## PDF Handling
+
+safeuploads rejects PDFs with active content, encryption,
+ambiguous structure or oversized streams, but does not render
+them (see [PDF Active Content](threat-model.md#pdf-active-content)
+and [PDF Parser Differentials](threat-model.md#pdf-parser-differentials)).
+
+- [ ] `BLOCKED_PDF_NAMES` reviewed. Add `URI` when PDFs are
+  opened by other users on Windows readers, which may follow
+  `file:` or UNC links and leak NTLM credentials.
+- [ ] PDFs are rendered, thumbnailed or text-extracted in an
+  isolated worker process or container with its own memory and
+  time limits, since font and image decoder bugs are triggered
+  by rendering.
+- [ ] PDFs are served with `Content-Disposition: attachment`,
+  or shown in a sandboxed viewer from a separate origin, never
+  inline from the application's origin.
+- [ ] PDF libraries and viewers (pdf.js, PDFium, Poppler,
+  MuPDF) kept up to date.
+- [ ] Users are told how to resubmit a rejected document:
+  encrypted PDFs (including owner-password ones), LZW or
+  RunLength streams and broken files that readers repair
+  silently are rejected; printing to a new PDF usually produces
+  an accepted file.
+
 ## Audit Logging
 
 - [ ] `enable_audit_logging` set to `True` in production.
@@ -116,9 +149,10 @@ bodies are not caught (see
 - [ ] Application catches specific exception types
   (`FileSizeError`, `ExtensionSecurityError`, etc.) and
   returns user-appropriate messages. Malformed or forbidden XML
-  (`XmlSecurityError`), content threats (`ContentThreatError`)
-  and images over the pixel limit (`ImageDimensionError`) are
-  `FileValidationError` subclasses.
+  (`XmlSecurityError`), rejected PDFs (`PdfSecurityError`),
+  content threats (`ContentThreatError`) and images over the
+  pixel limit (`ImageDimensionError`) are `FileValidationError`
+  subclasses.
 - [ ] `FileProcessingError` (including `ResourceLimitError`) is
   caught as well: it is not a `FileValidationError`, and it is
   raised only for internal errors and exceeded resource limits.
@@ -173,7 +207,8 @@ bodies are not caught (see
   only the time limit applies.
 - [ ] Both limits are checked at loop boundaries (upload
   streaming, ZIP entry loops, gzip decompression, each XML
-  chunk, each JPEG segment before the frame header) and on exit; a single blocking call, such as one
+  chunk, each JPEG segment before the frame header, PDF
+  tokenizing and stream inflation) and on exit; a single blocking call, such as one
   `zipfile` central-directory parse or one libmagic call, is
   not interrupted mid-call. A `ResourceLimitError` keeps its
   own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED`
@@ -209,7 +244,8 @@ bodies are not caught (see
 - [ ] Fuzz tests run periodically (`pytest -m fuzz`) to catch
   edge cases.
 - [ ] Penetration testing includes crafted uploads: ZIP bombs,
-  polyglot files, XXE payloads, traversal filenames.
+  polyglot files, XXE payloads, PDFs with JavaScript or
+  obfuscated names, traversal filenames.
 
 ## Monitoring & Incident Response
 

@@ -1193,11 +1193,12 @@ class TestContentScanWindowValidation:
         assert self._window_errors(self._config()) == []
 
     def test_window_equal_to_largest_limit_is_valid(self):
-        """A window equal to both file limits is accepted."""
+        """A window equal to every scanned file limit is accepted."""
         size = 50 * 1024 * 1024
         config = self._config(
             max_image_size=size,
             max_activity_file_size=size,
+            max_pdf_size=size,
             content_scan_max_size=size,
         )
         assert self._window_errors(config) == []
@@ -1215,6 +1216,7 @@ class TestContentScanWindowValidation:
         config = self._config(
             max_image_size=20 * 1024 * 1024,
             max_activity_file_size=1024,
+            max_pdf_size=1024,
             content_scan_max_size=1024 * 1024,
         )
         errors = self._window_errors(config)
@@ -1228,16 +1230,29 @@ class TestContentScanWindowValidation:
         config = self._config(
             max_image_size=1024,
             max_activity_file_size=50 * 1024 * 1024,
+            max_pdf_size=1024,
             content_scan_max_size=1024 * 1024,
         )
         errors = self._window_errors(config)
         assert len(errors) == 1
         assert "max_activity_file_size" in errors[0].message
 
-    def test_window_smaller_than_both_limits_reports_two(self):
+    def test_window_smaller_than_pdf_limit_rejected(self):
+        """A window below max_pdf_size is an error."""
+        config = self._config(
+            max_image_size=1024,
+            max_activity_file_size=1024,
+            max_pdf_size=50 * 1024 * 1024,
+            content_scan_max_size=1024 * 1024,
+        )
+        errors = self._window_errors(config)
+        assert len(errors) == 1
+        assert "max_pdf_size" in errors[0].message
+
+    def test_window_smaller_than_every_limit_reports_each(self):
         """One error is reported per limit exceeding the window."""
         config = self._config(content_scan_max_size=1024)
-        assert len(self._window_errors(config)) == 2
+        assert len(self._window_errors(config)) == 3
 
     def test_file_validator_rejects_small_window(self):
         """FileValidator refuses a config with a too small window."""
@@ -1306,3 +1321,82 @@ class TestRemovedSettings:
         assert "removed_setting" not in [
             e.error_type for e in FileSecurityConfig().validate_instance()
         ]
+
+
+class TestPdfConfigValidation:
+    """PDF limits and blocked names are validated."""
+
+    @pytest.mark.parametrize(
+        ("field", "error_type"),
+        [
+            ("max_pdf_size", "invalid_size_limit"),
+            ("max_pdf_uncompressed_size", "invalid_uncompressed_size"),
+        ],
+    )
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_non_positive_limit_rejected(self, field, error_type, value):
+        """A PDF limit of 0 or less is an error."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(**{field: value})
+
+        errors = [
+            e
+            for e in config.validate_instance()
+            if e.error_type == error_type and field in e.message
+        ]
+        assert len(errors) == 1
+        assert errors[0].severity == "error"
+
+    def test_positive_limits_accepted(self):
+        """The smallest positive PDF limits are accepted."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_pdf_size=1, max_pdf_uncompressed_size=1
+        )
+
+        assert not [
+            e
+            for e in config.validate_instance()
+            if "max_pdf" in e.message and e.severity == "error"
+        ]
+
+    def test_empty_blocked_pdf_names_rejected(self):
+        """An empty block-list fails FileValidator creation."""
+        config = FileSecurityConfig()
+        config.BLOCKED_PDF_NAMES = frozenset()
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert "empty_blocked_pdf_names" in _error_types(exc_info)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["", "/JS", "Java Script", "J#53", "A(B", "Jav\u00e4", 5],
+    )
+    def test_invalid_pdf_name_rejected(self, name):
+        """A name a PDF lexer could never produce verbatim is rejected."""
+        config = FileSecurityConfig()
+        config.BLOCKED_PDF_NAMES = frozenset({"JS", name})
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+        assert "invalid_pdf_name" in _error_types(exc_info)
+
+    def test_subclass_override_validated(self):
+        """A subclass block-list is validated like an instance one."""
+
+        class _Sub(FileSecurityConfig):
+            pass
+
+        _Sub.BLOCKED_PDF_NAMES = frozenset({"/JS"})
+
+        assert "invalid_pdf_name" in [
+            e.error_type for e in _Sub.validate_configuration()
+        ]
+
+    def test_custom_names_accepted(self):
+        """A valid custom block-list has no issues."""
+        config = FileSecurityConfig()
+        config.BLOCKED_PDF_NAMES = frozenset({"URI", "JS", "A-B.c_1"})
+
+        assert config.validate_instance() == []

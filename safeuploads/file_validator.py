@@ -46,6 +46,7 @@ from .exceptions import (
 from .inspectors import ZipContentInspector
 from .inspectors.content_inspector import ContentSecurityInspector
 from .inspectors.gzip_inspector import GzipContentInspector
+from .inspectors.pdf_inspector import PdfContentInspector
 from .protocols import SeekableFile
 from .utils import (
     ResourceMonitor,
@@ -115,6 +116,7 @@ class FileValidator:
         windows_validator: Validator enforcing Windows-specific constraints.
         compression_validator: Validator handling compressed file limits.
         zip_inspector: Inspector for ZIP archive contents.
+        pdf_inspector: Inspector for PDF structure and active content.
         filename_validator: Validator for path and length rules.
         signature_validator: Validator for file header signatures.
         mime_validator: Validator for content MIME detection.
@@ -150,6 +152,7 @@ class FileValidator:
             windows_validator: Validator enforcing Windows constraints.
             compression_validator: Validator for compressed file limits.
             zip_inspector: Inspector for ZIP archive contents.
+            pdf_inspector: Inspector for PDF structure and content.
             filename_validator: Validator for path and length rules.
             signature_validator: Validator for file header signatures.
             mime_validator: Validator for content MIME detection.
@@ -185,6 +188,7 @@ class FileValidator:
         self.fit_validator = FitSecurityValidator(self.config)
         self.image_dimension_validator = ImageDimensionValidator(self.config)
         self.gzip_inspector = GzipContentInspector(self.config)
+        self.pdf_inspector = PdfContentInspector(self.config)
         self.content_inspector = ContentSecurityInspector(self.config)
         self.filename_validator = FilenameSecurityValidator(self.config)
         self.signature_validator = FileSignatureValidator(self.config)
@@ -1398,6 +1402,137 @@ class FileValidator:
 
         logger.debug(
             "Gzip file validation passed: %r (%s, %s bytes)",
+            filename,
+            detected_mime,
+            file_size,
+        )
+        return detected_mime
+
+    async def validate_pdf_file(self, file: UploadFile) -> ValidationResult:
+        """
+        Validate an uploaded PDF document.
+
+        Checks filename, extension, size, MIME type and signature,
+        then the PDF structure, encryption, blocked names and
+        decoded stream size, and runs the optional content scan.
+
+        Args:
+            file: Uploaded PDF to validate.
+
+        Returns:
+            Sanitized filename and detected MIME type.
+
+        Raises:
+            FilenameSecurityError: Filename fails security.
+            ExtensionSecurityError: Extension not allowed.
+            FileSizeError: File exceeds size limit or empty.
+            MimeTypeError: MIME type not allowed, or the extension
+                is not one listed for it.
+            FileSignatureError: The file does not start with a PDF
+                header.
+            PdfSecurityError: The PDF is malformed, encrypted,
+                carries blocked content or is a stream bomb.
+            ContentThreatError: Content analysis found threats.
+            FileProcessingError: Unexpected error during validation.
+        """
+        with self._validation_run(file.filename, "PDF") as run:
+            return await self._validate_streamed(
+                file,
+                run,
+                self.config.ALLOWED_PDF_TYPES,
+                self.config.limits.max_pdf_size,
+                self._inspect_pdf_sync,
+            )
+
+    def validate_pdf_file_sync(
+        self, file: SeekableFile, filename: str
+    ) -> ValidationResult:
+        """
+        Validate a PDF from a seekable file in the calling thread.
+
+        Runs the same checks, in the same order, as
+        ``validate_pdf_file``. It blocks, so it cannot run on an
+        event loop thread; await ``validate_pdf_file()`` or run
+        this in a worker thread. The file is rewound to position 0
+        on success and is never closed.
+
+        Args:
+            file: Seekable binary file to validate.
+            filename: Filename supplied by the client.
+
+        Returns:
+            Sanitized filename and detected MIME type.
+
+        Raises:
+            RuntimeError: Called on a thread running an event loop.
+            FilenameSecurityError: Filename fails security.
+            ExtensionSecurityError: Extension not allowed.
+            FileSizeError: File exceeds size limit or empty.
+            MimeTypeError: MIME type not allowed, or the extension
+                is not one listed for it.
+            FileSignatureError: The file does not start with a PDF
+                header.
+            PdfSecurityError: The PDF is malformed, encrypted,
+                carries blocked content or is a stream bomb.
+            ContentThreatError: Content analysis found threats.
+            FileProcessingError: Unexpected error during validation.
+        """
+        self._refuse_on_event_loop(
+            "validate_pdf_file_sync", "validate_pdf_file"
+        )
+        with self._validation_run(filename, "PDF") as run:
+            return self._validate_streamed_sync(
+                file,
+                filename,
+                run,
+                self.config.ALLOWED_PDF_TYPES,
+                self.config.limits.max_pdf_size,
+                self._inspect_pdf_sync,
+            )
+
+    def _inspect_pdf_sync(
+        self,
+        temp_file: tempfile.SpooledTemporaryFile[bytes],
+        file_size: int,
+        filename: str,
+    ) -> str:
+        """
+        Run blocking PDF inspection on a temp file.
+
+        Args:
+            temp_file: Spooled temp file holding the PDF.
+            file_size: File size in bytes.
+            filename: Sanitized filename for context.
+
+        Returns:
+            Detected MIME type.
+
+        Raises:
+            MimeTypeError: If the MIME type is not allowed or does
+                not permit the extension.
+            FileSignatureError: If the PDF header is missing.
+            PdfSecurityError: If the PDF inspection rejects it.
+            ContentThreatError: If optional content analysis finds
+                a threat.
+        """
+        _, detected_mime = self._read_header_and_detect(
+            temp_file, filename, "pdf"
+        )
+        self.mime_validator.enforce(
+            detected_mime,
+            self.config.ALLOWED_PDF_TYPES,
+            filename,
+            error_code=ErrorCode.MIME_TYPE_MISMATCH,
+        )
+        self.pdf_inspector.inspect_pdf_content(temp_file, filename=filename)
+
+        if self.config.limits.enable_content_analysis:
+            sample = temp_file.read(self.config.limits.content_scan_max_size)
+            temp_file.seek(0)
+            self._raise_on_content_threats(sample, filename, "pdf")
+
+        logger.debug(
+            "PDF file validation passed: %r (%s, %s bytes)",
             filename,
             detected_mime,
             file_size,

@@ -23,6 +23,7 @@ Secure file upload validation for Python 3.11+ applications. Catches dangerous f
 - MIME type verification with file signature validation
 - Activity file support (.gpx, .tcx, .fit) with XXE-safe XML parsing and FIT structure validation
 - Gzip archive validation with decompression bomb detection
+- PDF validation that rejects JavaScript, embedded files, launch and remote actions, encryption, ambiguous structure and stream bombs
 - Streaming validation for memory-efficient large file processing
 - Resource monitoring (wall-clock time and memory limits)
 - Content analysis with malware signature and polyglot detection
@@ -143,12 +144,13 @@ except FileValidationError as err:
 - **Extension Validation**: Allow/block lists with configurable rules, dangerous extension detection
 - **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits, optional strict decompression verification
 - **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits
-- **MIME Type Verification**: Magic number validation for images, ZIP, activity files, and gzip, with the extension required to match the detected type
+- **MIME Type Verification**: Magic number validation for images, ZIP, activity files, gzip, and PDF, with the extension required to match the detected type
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
 - **Resource Monitoring**: wall-clock time and memory limits enforced via `ResourceMonitor` during the work
 - **Image Dimension Limits**: Header-only pixel count check for PNG, JPEG and WebP that rejects decompression (pixel) bombs before the host decodes them
 - **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing and FIT structure checks
 - **Gzip Support**: Gzip archive validation with decompression bomb detection
+- **PDF Support**: Whole-file PDF parsing that rejects names from a configurable block-list (`BLOCKED_PDF_NAMES`: JavaScript, launch, embedded files, rich media, XFA, form submission, remote documents), also inside object streams and behind `#xx` escapes; encrypted PDFs; structures readers could parse differently; and Flate streams past a size or ratio limit
 - **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
 - **Audit Logging**: Structured security event logging with correlation IDs via `contextvars`
 - **Performance Optimizations**: Pre-compiled pattern sets, `frozenset` lookups
@@ -160,6 +162,7 @@ except FileValidationError as err:
 - No built-in rate limiting (application-level concern — see [Rate Limiting](rate-limiting.md) guide)
 - MIME detection covers first 8 KB; advanced polyglot attacks may require `enable_content_analysis`
 - Images are not decoded: only their dimension headers are checked, so decode and re-encode uploads in an isolated process (see the integration checklist)
+- PDFs are not rendered, so font and image decoder bugs are not caught; encrypted PDFs, LZW or RunLength streams and broken files that readers repair silently are rejected
 - `SpooledTemporaryFile` uses the system default temp directory
 
 ## Documentation

@@ -118,6 +118,25 @@ class TestSignature:
         # Should not raise
         validator.validate(content, "activity")
 
+    def test_validate_pdf_signature(self):
+        """A PDF header at offset 0 passes."""
+        validator = FileSignatureValidator(FileSecurityConfig())
+
+        # Should not raise
+        validator.validate(b"%PDF-1.7\n", "pdf")
+
+    @pytest.mark.parametrize(
+        "content",
+        [b" %PDF-1.7\n", b"\xef\xbb\xbf%PDF-1.7", b"<html>%PDF-1.7"],
+    )
+    def test_pdf_header_not_at_start_rejected(self, content):
+        """Readers accept a late header; the signature check does not."""
+        validator = FileSignatureValidator(FileSecurityConfig())
+
+        with pytest.raises(FileSignatureError) as exc_info:
+            validator.validate(content, "pdf")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
+
 
 class TestSignatureEdgeCases:
     """Tests for signature edge cases."""

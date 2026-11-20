@@ -31,6 +31,12 @@ _SIGNATURES: dict[str, list[bytes]] = {
         b"<?xml",  # XML header (GPX/TCX)
         b"\xef\xbb\xbf<?xml",  # XML with BOM
     ],
+    # Readers accept the header anywhere in the first 1024 bytes;
+    # requiring it at offset 0 rejects files that are another
+    # format first (HTML, JPEG or ZIP polyglots).
+    "pdf": [
+        b"%PDF-",
+    ],
 }
 
 
@@ -64,7 +70,7 @@ class FileSignatureValidator(BaseValidator):
         Args:
             content: Leading bytes of the uploaded file.
             expected_type: Logical file category ("image", "zip",
-                "gzip", "activity" or "fit").
+                "gzip", "activity", "fit" or "pdf").
             filename: Optional sanitized filename for error context.
 
         Raises:

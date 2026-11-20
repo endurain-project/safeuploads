@@ -2,6 +2,7 @@
 
 import contextvars
 import logging
+import mmap
 import sys
 import time
 import zlib
@@ -13,28 +14,93 @@ from .protocols import SeekableFile
 
 logger = logging.getLogger(__name__)
 
-# ``resource.getrusage`` reports peak RSS (``ru_maxrss``) in bytes on
-# macOS but in kilobytes on Linux/BSD. Normalize to bytes with a
-# platform-specific multiplier resolved once at import time.
-_RSS_UNIT_BYTES: int = 1 if sys.platform == "darwin" else 1024
 
-try:
-    # ``resource`` is a Unix-only stdlib module and is absent on
-    # Windows; memory accounting degrades to a no-op there while
-    # the wall-clock timeout keeps working.
-    import resource
-except ImportError:  # pragma: no cover - platform-specific (Windows)
+def _read_statm_rss_bytes() -> int:
+    """
+    Return the current RSS in bytes from ``/proc/self/statm`` (Linux).
 
-    def _read_peak_rss_bytes() -> int:
-        """Return 0: this platform has no ``resource`` module."""
-        return 0
+    The second field of the file is the resident page count.
+    """
+    with open("/proc/self/statm", "rb") as statm:
+        resident_pages = int(statm.read().split()[1])
+    return resident_pages * mmap.PAGESIZE
 
-else:
 
-    def _read_peak_rss_bytes() -> int:
-        """Return the process peak RSS in bytes from ``getrusage``."""
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        return usage.ru_maxrss * _RSS_UNIT_BYTES
+# ``_read_rss_bytes`` is chosen once for the platform: the current
+# RSS on Linux and macOS, the peak RSS elsewhere on Unix and 0 where
+# ``resource`` is missing (Windows), which disables the memory limit.
+if sys.platform == "darwin":  # pragma: no cover - platform-specific
+    import ctypes
+
+    class _MachTaskBasicInfo(ctypes.Structure):
+        """``struct mach_task_basic_info`` from ``<mach/task_info.h>``."""
+
+        _pack_ = 4
+        _fields_ = [
+            ("virtual_size", ctypes.c_uint64),
+            ("resident_size", ctypes.c_uint64),
+            ("resident_size_max", ctypes.c_uint64),
+            ("user_time", ctypes.c_int32 * 2),
+            ("system_time", ctypes.c_int32 * 2),
+            ("policy", ctypes.c_int),
+            ("suspend_count", ctypes.c_int),
+        ]
+
+    _MACH_TASK_BASIC_INFO = 20
+    _libsystem = ctypes.CDLL(None)
+    _mach_task_self = _libsystem.mach_task_self
+    _mach_task_self.argtypes = []
+    _mach_task_self.restype = ctypes.c_uint
+    _task_info = _libsystem.task_info
+    _task_info.argtypes = [
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.POINTER(_MachTaskBasicInfo),
+        ctypes.POINTER(ctypes.c_uint),
+    ]
+    _task_info.restype = ctypes.c_int
+
+    def _read_mach_rss_bytes() -> int:
+        """
+        Return the current RSS in bytes from mach ``task_info`` (macOS).
+
+        Raises:
+            OSError: If ``task_info`` returns an error.
+        """
+        info = _MachTaskBasicInfo()
+        # The count is in ``natural_t`` (unsigned int) units
+        count = ctypes.c_uint(
+            ctypes.sizeof(info) // ctypes.sizeof(ctypes.c_uint)
+        )
+        status = _task_info(
+            _mach_task_self(),
+            _MACH_TASK_BASIC_INFO,
+            ctypes.byref(info),
+            ctypes.byref(count),
+        )
+        if status != 0:
+            raise OSError(f"task_info failed with kern_return_t {status}")
+        return int(info.resident_size)
+
+    _read_rss_bytes = _read_mach_rss_bytes
+elif sys.platform == "linux":
+    _read_rss_bytes = _read_statm_rss_bytes
+else:  # pragma: no cover - platform-specific
+    try:
+        import resource
+    except ImportError:
+
+        def _read_rss_bytes() -> int:
+            """Return 0: this platform has no ``resource`` module."""
+            return 0
+
+    else:
+
+        def _read_rss_bytes() -> int:
+            """Return the process peak RSS in bytes from ``getrusage``."""
+            # ``ru_maxrss`` is in kilobytes on the BSDs
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            return usage.ru_maxrss * 1024
 
 
 def bytes_to_mb(num_bytes: int) -> int:
@@ -143,16 +209,24 @@ class ResourceMonitor:
     ``check_resource_limits`` enforces both limits at the loop
     boundaries of long-running work; they are checked again on
     exit. A single blocking call, such as one ``zipfile`` parse,
-    is not interrupted mid-call. Memory is the process-wide peak
-    RSS (``ru_maxrss``), a high-water mark, so the delta is not an
-    upper bound: an earlier, higher peak hides later allocations,
-    and concurrent work can also trip it.
+    is not interrupted mid-call.
+
+    Memory growth is the current resident set size (RSS) minus the
+    RSS at entry, read from ``/proc/self/statm`` on Linux and mach
+    ``task_info`` on macOS. RSS is process-wide, so concurrent
+    validations and other work in the process add to each other's
+    growth; memory the allocator keeps after a free stays resident,
+    so reusing it is not growth. Other Unix platforms use the peak
+    RSS (``ru_maxrss``), where an earlier, higher peak hides later
+    growth, and platforms without the ``resource`` module (Windows)
+    do not enforce the memory limit. A failing memory reading
+    raises ``OSError``.
 
     Attributes:
         max_time_seconds: Maximum allowed wall-clock seconds.
-        max_memory_bytes: Maximum allowed peak-RSS growth in bytes.
+        max_memory_bytes: Maximum allowed RSS growth in bytes.
         start_time: Timestamp when the context was entered.
-        start_memory: Peak process RSS in bytes at context entry.
+        start_memory: Process RSS in bytes at context entry.
     """
 
     # Restores the previously active monitor on exit
@@ -183,9 +257,12 @@ class ResourceMonitor:
 
         Returns:
             Self for use in ``with`` statements.
+
+        Raises:
+            OSError: If the platform's memory reading fails.
         """
         self.start_time = time.monotonic()
-        self.start_memory = self._get_peak_rss_bytes()
+        self.start_memory = self._get_rss_bytes()
         self._token = _active_monitor.set(self)
         return self
 
@@ -210,16 +287,15 @@ class ResourceMonitor:
         Raises:
             ResourceLimitError: If time or memory limits were
                 exceeded during the monitored block.
+            OSError: If the platform's memory reading fails.
         """
         _active_monitor.reset(self._token)
         if exc_type is not None:
             return
 
         self._elapsed = time.monotonic() - self.start_time
-        current_memory = self._get_peak_rss_bytes()
-        # Peak RSS only grows, so the delta is non-negative;
-        # clamp defensively in case the platform reports noise.
-        self._memory_delta = max(0, current_memory - self.start_memory)
+        # RSS below the entry baseline (memory freed) is no growth
+        self._memory_delta = max(0, self._get_rss_bytes() - self.start_memory)
 
         self._raise_if_time_exceeded(self._elapsed)
         self._raise_if_memory_exceeded(self._memory_delta)
@@ -236,16 +312,14 @@ class ResourceMonitor:
 
     def check_memory(self) -> None:
         """
-        Check peak memory growth mid-operation.
-
-        Uses the process peak RSS high-water mark, so an earlier,
-        higher peak hides later growth.
+        Check RSS growth since context entry mid-operation.
 
         Raises:
-            ResourceLimitError: If peak-RSS growth since context
-                entry exceeds the configured memory limit.
+            ResourceLimitError: If RSS growth since context entry
+                exceeds the configured memory limit.
+            OSError: If the platform's memory reading fails.
         """
-        delta = max(0, self._get_peak_rss_bytes() - self.start_memory)
+        delta = max(0, self._get_rss_bytes() - self.start_memory)
         self._raise_if_memory_exceeded(delta)
 
     def _raise_if_time_exceeded(self, elapsed: float) -> None:
@@ -277,10 +351,10 @@ class ResourceMonitor:
 
     def _raise_if_memory_exceeded(self, delta: int) -> None:
         """
-        Raise if peak-RSS growth exceeds the limit.
+        Raise if RSS growth exceeds the limit.
 
         Args:
-            delta: Peak-RSS growth in bytes since context entry.
+            delta: RSS growth in bytes since context entry.
 
         Raises:
             ResourceLimitError: If the memory limit is exceeded.
@@ -318,31 +392,36 @@ class ResourceMonitor:
     @property
     def memory_delta(self) -> int:
         """
-        Return peak-RSS growth since context entry.
+        Return RSS growth since context entry.
 
         Returns:
-            Non-negative peak-RSS growth in bytes. Because the
-            underlying metric is a process-wide high-water mark,
-            this never decreases and may include memory used by
-            concurrent work outside this monitor.
+            RSS growth in bytes, 0 when RSS is at or below the
+            entry baseline. RSS is process-wide, so this includes
+            memory used by concurrent work outside this monitor.
+
+        Raises:
+            OSError: If the platform's memory reading fails.
         """
         if self.start_memory == 0:
             return 0
-        return max(0, self._get_peak_rss_bytes() - self.start_memory)
+        return max(0, self._get_rss_bytes() - self.start_memory)
 
     @staticmethod
-    def _get_peak_rss_bytes() -> int:
+    def _get_rss_bytes() -> int:
         """
-        Return the process peak RSS in bytes.
+        Return the process RSS in bytes.
 
         Returns:
-            Peak resident set size (high-water mark) in bytes
-            since the process started, normalized across
-            platforms, or 0 on platforms without the ``resource``
-            module (e.g. Windows), which disables memory-limit
-            enforcement while leaving the timeout active.
+            Current resident set size on Linux and macOS, peak
+            RSS on other Unix platforms, or 0 on platforms without
+            the ``resource`` module (e.g. Windows), which disables
+            memory-limit enforcement while leaving the timeout
+            active.
+
+        Raises:
+            OSError: If the platform's memory reading fails.
         """
-        return _read_peak_rss_bytes()
+        return _read_rss_bytes()
 
 
 _active_monitor: contextvars.ContextVar[ResourceMonitor | None] = (

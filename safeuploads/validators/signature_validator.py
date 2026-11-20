@@ -27,10 +27,6 @@ _SIGNATURES: dict[str, list[bytes]] = {
     "gzip": [
         b"\x1f\x8b",  # gzip magic number
     ],
-    "activity": [
-        b"<?xml",  # XML header (GPX/TCX)
-        b"\xef\xbb\xbf<?xml",  # XML with BOM
-    ],
     # Readers accept the header anywhere in the first 1024 bytes;
     # requiring it at offset 0 rejects files that are another
     # format first (HTML, JPEG or ZIP polyglots).
@@ -38,6 +34,36 @@ _SIGNATURES: dict[str, list[bytes]] = {
         b"%PDF-",
     ],
 }
+
+
+# An XML declaration is "<?xml" followed by XML whitespace; without
+# the whitespace it is another processing instruction, such as
+# "<?xml-stylesheet".
+_XML_DECLARATION = b"<?xml"
+_XML_WHITESPACE = frozenset(b" \t\r\n")
+
+
+def _starts_with_xml_declaration(content: bytes) -> bool:
+    """
+    Report whether content opens with an XML declaration.
+
+    A UTF-8 BOM and leading whitespace before the declaration are
+    tolerated.
+
+    Args:
+        content: Leading bytes of the uploaded file.
+
+    Returns:
+        Whether ``<?xml`` followed by a space, tab, CR or LF opens
+        the content.
+    """
+    head = content.removeprefix(b"\xef\xbb\xbf").lstrip()
+    end = len(_XML_DECLARATION)
+    return (
+        head.startswith(_XML_DECLARATION)
+        and len(head) > end
+        and head[end] in _XML_WHITESPACE
+    )
 
 
 # ISOBMFF brands of HEVC-coded still images (HEIF Main and Main 10
@@ -143,14 +169,12 @@ class FileSignatureValidator(BaseValidator):
         ):
             return
 
-        # Activity XML files may carry a UTF-8 BOM and/or leading
-        # whitespace before the XML declaration; tolerate both.
-        if expected_type == "activity":
-            head = content
-            if head.startswith(b"\xef\xbb\xbf"):
-                head = head[3:]
-            if head.lstrip().startswith(b"<?xml"):
-                return
+        # GPX/TCX: an XML declaration, optionally after a UTF-8 BOM
+        # and whitespace
+        if expected_type == "activity" and _starts_with_xml_declaration(
+            content
+        ):
+            return
 
         raise FileSignatureError(
             f"File content does not match expected {expected_type} format",

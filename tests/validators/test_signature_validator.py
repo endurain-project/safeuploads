@@ -176,6 +176,53 @@ class TestSignature:
         # Should not raise
         validator.validate(content, "activity")
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"<?xml version='1.0'?><gpx/>",
+            b"<?xml\tversion='1.0'?><gpx/>",
+            b"<?xml\r\nversion='1.0'?><gpx/>",
+            b"<?xml\nversion='1.0'?><gpx/>",
+            b"\xef\xbb\xbf<?xml version='1.0'?><gpx/>",
+        ],
+        ids=["space", "tab", "crlf", "lf", "bom"],
+    )
+    def test_xml_declaration_with_whitespace_passes(self, content):
+        """The declaration is '<?xml' followed by XML whitespace."""
+        validator = FileSignatureValidator(FileSecurityConfig())
+
+        # Should not raise
+        validator.validate(content, "activity")
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b'<?xml-stylesheet type="text/xsl" href="x.xsl"?><gpx/>',
+            b'\xef\xbb\xbf<?xml-stylesheet href="x.xsl"?><gpx/>',
+            b'\n  <?xml-stylesheet href="x.xsl"?><gpx/>',
+            b"<?xmlversion='1.0'?><gpx/>",
+            b"<?xml?><gpx/>",
+            b"<?xml\x0bversion='1.0'?><gpx/>",
+            b"<?xml",
+        ],
+        ids=[
+            "stylesheet",
+            "bom-stylesheet",
+            "whitespace-stylesheet",
+            "no-space",
+            "no-pseudo-attributes",
+            "vertical-tab",
+            "truncated",
+        ],
+    )
+    def test_processing_instruction_named_xml_rejected(self, content):
+        """A PI whose target only starts with 'xml' is no declaration."""
+        validator = FileSignatureValidator(FileSecurityConfig())
+
+        with pytest.raises(FileSignatureError) as exc_info:
+            validator.validate(content, "activity")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
+
     def test_validate_pdf_signature(self):
         """A PDF header at offset 0 passes."""
         validator = FileSignatureValidator(FileSecurityConfig())

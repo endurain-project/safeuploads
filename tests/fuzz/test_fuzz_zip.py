@@ -1,6 +1,7 @@
 """Fuzz tests for ZIP validation."""
 
 import io
+import struct
 import zipfile
 
 import pytest
@@ -40,6 +41,7 @@ def _assert_entries_safe(config, data):
         assert "\x00" not in info.orig_filename
         assert ".." not in name.replace("\\", "/").split("/")
         assert not name.startswith(("/", "\\"))
+        assert ":" not in name
         assert len(name) <= limits.max_path_length
         assert len(name.rsplit("/", 1)[-1]) <= limits.max_filename_length
 
@@ -147,6 +149,31 @@ class TestFuzzCompressionValidator:
                 if info.compress_size > 0:
                     ratio = info.file_size / info.compress_size
                     assert ratio <= limits.max_compression_ratio
+
+    @given(
+        content=st.binary(min_size=0, max_size=2000),
+        declared=st.integers(min_value=0, max_value=4000),
+        method=st.sampled_from([zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED]),
+    )
+    @settings(max_examples=200, deadline=5000)
+    def test_declared_size_matches_data(self, content, declared, method):
+        """An accepted entry holds exactly its declared size."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", method) as zf:
+            zf.writestr("data.txt", content)
+        data = bytearray(buf.getvalue())
+        local = data.find(b"PK\x03\x04")
+        central = data.find(b"PK\x01\x02")
+        struct.pack_into("<L", data, local + 22, declared)
+        struct.pack_into("<L", data, central + 24, declared)
+        validator = CompressionSecurityValidator(FileSecurityConfig())
+
+        if accepted(
+            validator.validate_zip_compression_ratio,
+            io.BytesIO(bytes(data)),
+            len(data),
+        ):
+            assert declared == len(content)
 
 
 @pytest.mark.fuzz

@@ -99,14 +99,14 @@ class TestRealUploadFile:
         assert exc_info.value.error_code == ErrorCode.EXTENSION_NOT_ALLOWED
 
     async def test_filename_sanitized_in_place(self, valid_jpeg_bytes):
-        """Dangerous filename characters are sanitized on the object."""
+        """The sanitized name is returned and set on the object."""
         validator = FileValidator()
         upload = _make_upload("pho<>to.jpg", valid_jpeg_bytes, "image/jpeg")
 
-        await validator.validate_image_file(upload)
+        result = await validator.validate_image_file(upload)
 
-        assert "<" not in (upload.filename or "")
-        assert ">" not in (upload.filename or "")
+        assert result.filename == "pho__to.jpg"
+        assert upload.filename == "pho__to.jpg"
 
     async def test_declared_size_triggers_fast_reject(self):
         """The real ``size`` attribute drives the fast size reject."""
@@ -147,10 +147,10 @@ def test_multipart_round_trip(valid_jpeg_bytes):
     @app.post("/upload")
     async def upload(file: FastAPIUploadFile) -> dict[str, str]:
         try:
-            await validator.validate_image_file(file)
+            result = await validator.validate_image_file(file)
         except FileValidationError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
-        return {"filename": file.filename or ""}
+        return {"filename": result.filename}
 
     client = TestClient(app)
 

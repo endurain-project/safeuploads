@@ -31,8 +31,9 @@ class DangerousExtensionCategory(Enum):
         BROWSER_EXTENSIONS: Browser extensions and web applications.
         PACKAGE_FORMATS: Modern package managers and distribution formats.
         ARCHIVE_FORMATS: Archive formats that can contain executables.
-        VIRTUALIZATION_FORMATS: Virtualization and container formats.
-        OFFICE_MACROS: Office documents with macro capabilities.
+        VIRTUALIZATION_FORMATS: Virtualization, container and disk
+            image formats.
+        OFFICE_MACROS: Office documents and add-ins that can run code.
         SYSTEM_FILES: System shortcuts and configuration files.
         SYSTEM_DRIVERS: System drivers and low-level components.
         WINDOWS_THEMES: Windows theme and customization files.
@@ -49,6 +50,7 @@ class DangerousExtensionCategory(Enum):
             ".pif",
             ".scr",
             ".msi",
+            ".msp",
             ".dll",
         }
     )
@@ -65,11 +67,13 @@ class DangerousExtensionCategory(Enum):
             ".wsh",
             ".hta",
             ".ps1",
+            ".ps2",
             ".psm1",
             ".ps1xml",
             ".psc1",
             ".psd1",
             ".pssc",
+            ".msh",
             ".cdxml",
             ".xaml",
         }
@@ -80,15 +84,20 @@ class DangerousExtensionCategory(Enum):
         {
             ".jsp",
             ".php",
+            ".php2",
             ".php3",
             ".php4",
             ".php5",
+            ".php6",
             ".php7",
             ".php8",
             ".phar",
             ".phps",
             ".pht",
+            ".phtm",
             ".phtml",
+            ".pgif",
+            ".inc",
             ".shtml",
             ".shtm",
             ".stm",
@@ -98,6 +107,7 @@ class DangerousExtensionCategory(Enum):
             ".cgi",
             ".pl",
             ".py",
+            ".pyw",
             ".rb",
             ".go",
             ".lua",
@@ -188,9 +198,12 @@ class DangerousExtensionCategory(Enum):
         }
     )
 
-    # Virtualization and container formats
+    # Virtualization, container and disk image formats
     VIRTUALIZATION_FORMATS = frozenset(
         {
+            ".iso",
+            ".img",
+            ".wsb",
             ".ova",
             ".ovf",
             ".vmdk",
@@ -202,9 +215,13 @@ class DangerousExtensionCategory(Enum):
         }
     )
 
-    # Office documents with macro capabilities
+    # Office documents and add-ins that can run code
     OFFICE_MACROS = frozenset(
         {
+            ".ade",
+            ".mde",
+            ".one",
+            ".xll",
             ".docm",
             ".dotm",
             ".xlsm",
@@ -225,6 +242,9 @@ class DangerousExtensionCategory(Enum):
             ".webloc",
             ".desktop",
             ".lnk",
+            ".appref-ms",
+            ".settingcontent-ms",
+            ".library-ms",
             ".application",
             ".manifest",
             ".deploy",
@@ -326,6 +346,13 @@ class UnicodeAttackCategory(Enum):
             0x2060,  # U+2060 WORD JOINER
             0xFEFF,  # U+FEFF ZERO WIDTH NO-BREAK SPACE (BOM)
             0x034F,  # U+034F COMBINING GRAPHEME JOINER
+            # Letters and symbols that render as blank space but are
+            # not format characters, so the category check misses them
+            0x115F,  # U+115F HANGUL CHOSEONG FILLER
+            0x1160,  # U+1160 HANGUL JUNGSEONG FILLER
+            0x3164,  # U+3164 HANGUL FILLER
+            0xFFA0,  # U+FFA0 HALFWIDTH HANGUL FILLER
+            0x2800,  # U+2800 BRAILLE PATTERN BLANK
         }
     )
 

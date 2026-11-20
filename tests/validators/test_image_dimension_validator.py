@@ -18,6 +18,8 @@ from safeuploads.validators.image_dimension_validator import (
 from tests.images import (
     JPEG_EOI,
     JPEG_PREFIX,
+    JPEG_SOS,
+    MPF_TIFF_START,
     PNG_SIGNATURE,
     heic,
     heic_grid,
@@ -35,9 +37,14 @@ from tests.images import (
     heif_ispe,
     heif_meta,
     jpeg,
+    jpeg_frame,
     jpeg_segment,
+    mpf_segment,
+    mpf_tags,
+    mpo,
     png,
     png_chunk,
+    png_ihdr,
     riff_webp,
     vp8_chunk,
     vp8l_chunk,
@@ -142,6 +149,66 @@ class TestPng:
     def test_truncated_ihdr_rejected(self):
         _assert_invalid(png(1, 1)[:20])
 
+    def test_chunks_before_image_data_skipped(self):
+        # A large ICC profile and text chunks before IDAT
+        chunks = png_chunk(b"iCCP", b"icc\x00\x00" + b"\x00" * 100000)
+        chunks += png_chunk(b"tEXt", b"Comment\x00photo")
+        _validate(png(640, 480, before_data=chunks))
+
+    def test_animation_chunks_accepted(self):
+        actl = png_chunk(b"acTL", struct.pack(">II", 2, 0))
+        fctl = png_chunk(
+            b"fcTL", struct.pack(">IIIIIHHBB", 0, 8, 8, 0, 0, 1, 10, 0, 0)
+        )
+        fdat = png_chunk(b"fdAT", struct.pack(">I", 1) + b"\x00" * 8)
+        _validate(png(8, 8, before_data=actl + fctl, body=fctl + fdat))
+
+    @pytest.mark.parametrize(
+        ("first", "second"), [(1, 12000), (12000, 1), (8, 8)]
+    )
+    def test_second_ihdr_rejected(self, first, second):
+        # Pillow keeps the last IHDR before IDAT
+        data = png(first, first, before_data=png_ihdr(second, second))
+        _assert_invalid(data)
+
+    def test_ihdr_after_other_chunks_rejected(self):
+        tail = png_chunk(b"tEXt", b"a\x00b") + png_ihdr(12000, 12000)
+        _assert_invalid(png(1, 1, before_data=tail))
+
+    def test_ihdr_after_image_data_not_read(self):
+        # Pillow stops reading headers at the first IDAT
+        _validate(png(8, 8, body=png_ihdr(12000, 12000)))
+
+    def test_chunk_past_end_of_file_rejected(self):
+        chunk = struct.pack(">I", 1000) + b"tEXt" + b"x" * 16
+        _assert_invalid(PNG_SIGNATURE + png_ihdr() + chunk)
+
+    def test_image_data_past_end_of_file_rejected(self):
+        _assert_invalid(png(8, 8)[:-16])
+
+    def test_missing_ihdr_crc_rejected(self):
+        _assert_invalid(PNG_SIGNATURE + png_ihdr()[:-2])
+
+    @pytest.mark.parametrize(
+        "tail",
+        [b"", png_chunk(b"IEND", b""), b"\x00\x00\x00"],
+        ids=["end-of-file", "iend", "truncated-header"],
+    )
+    def test_no_image_data_rejected(self, tail):
+        _assert_invalid(PNG_SIGNATURE + png_ihdr() + tail)
+
+    def test_resource_limit_enforced_per_chunk(self, monkeypatch):
+        def boom() -> None:
+            raise ResourceLimitError("limit")
+
+        monkeypatch.setattr(
+            "safeuploads.validators.image_dimension_validator"
+            ".check_resource_limits",
+            boom,
+        )
+        with pytest.raises(ResourceLimitError):
+            _validate(png(8, 8))
+
 
 class TestJpeg:
     """Dimensions come from the first frame header (SOF)."""
@@ -212,9 +279,56 @@ class TestJpeg:
     def test_truncated_frame_header_rejected(self):
         _assert_invalid(JPEG_PREFIX + b"\xff\xc0\x00\x0b\x08\x00")
 
-    def test_frame_length_below_minimum_rejected(self):
-        frame = b"\xff\xc0\x00\x07\x08\x00\x08\x00\x08"
-        _assert_invalid(JPEG_PREFIX + frame + b"\x00" * 8 + JPEG_EOI)
+    @pytest.mark.parametrize("length", [2, 7, 10])
+    def test_frame_length_below_minimum_rejected(self, length):
+        frame = b"\xff\xc0" + struct.pack(">H", length)
+        frame += b"\x08\x00\x08\x00\x08\x01\x01\x11"[: length - 2]
+        _assert_invalid(JPEG_PREFIX + frame + JPEG_SOS + JPEG_EOI)
+
+    def test_frame_length_below_minimum_at_end_of_file_rejected(self):
+        _assert_invalid(JPEG_PREFIX + b"\xff\xc0\x00\x04\x08\x00")
+
+    def test_tables_after_frame_skipped(self):
+        tables = jpeg_segment(0xC4, b"\x00" * 29) + jpeg_segment(
+            0xDD, b"\x00\x10"
+        )
+        data = JPEG_PREFIX + jpeg_frame(8, 8) + tables + JPEG_SOS + JPEG_EOI
+        _validate(data)
+
+    @pytest.mark.parametrize(
+        ("first", "second"), [(1, 12000), (12000, 1), (8, 8)]
+    )
+    def test_second_frame_header_rejected(self, first, second):
+        # Pillow keeps the last frame header before the scan
+        data = jpeg(second, second, before_frame=jpeg_frame(first, first))
+        _assert_invalid(data)
+
+    @pytest.mark.parametrize("before_frame", [True, False])
+    def test_hierarchical_frame_rejected(self, before_frame):
+        # Pillow reads DHP as a frame header
+        dhp = jpeg_frame(12000, 12000, marker=0xDE)
+        segments = (
+            dhp + jpeg_frame(1, 1) if before_frame else jpeg_frame(1, 1) + dhp
+        )
+        _assert_invalid(JPEG_PREFIX + segments + JPEG_SOS + JPEG_EOI)
+
+    @pytest.mark.parametrize("marker", [0xC8, 0xF0, 0xF7, 0xFD])
+    def test_extension_marker_rejected(self, marker):
+        # Pillow reads these markers without a length, so a frame
+        # header inside their payload would be read by it
+        hidden = jpeg_segment(marker, jpeg_frame(12000, 12000))
+        data = JPEG_PREFIX + jpeg_frame(1, 1) + hidden + JPEG_SOS + JPEG_EOI
+        _assert_invalid(data)
+
+    def test_end_of_image_before_scan_rejected(self):
+        _assert_invalid(JPEG_PREFIX + jpeg_frame(8, 8) + JPEG_EOI)
+
+    def test_end_of_file_before_scan_rejected(self):
+        _assert_invalid(JPEG_PREFIX + jpeg_frame(8, 8))
+
+    def test_frame_after_scan_not_read(self):
+        # Pillow stops reading headers at the first scan
+        _validate(jpeg(8, 8, body=jpeg_frame(12000, 12000)))
 
     def test_resource_limit_enforced_per_segment(self, monkeypatch):
         def boom() -> None:
@@ -227,6 +341,163 @@ class TestJpeg:
         )
         with pytest.raises(ResourceLimitError):
             _validate(jpeg(8, 8))
+
+
+def _listing(images: list[tuple[int, int]], tail: bytes) -> bytes:
+    """
+    Return a 1x1 JPEG followed by ``tail``, with an MPF index.
+
+    The index lists the primary, then each of ``images`` by its
+    size and its offset within ``tail``.
+    """
+    count = 1 + len(images)
+    placeholder = mpf_segment(mpf_tags([(0, 0)] * count))
+    primary = len(jpeg(1, 1, before_frame=placeholder))
+    entries = [(primary, 0)] + [
+        (size, primary + at - MPF_TIFF_START) for size, at in images
+    ]
+    return jpeg(1, 1, before_frame=mpf_segment(mpf_tags(entries))) + tail
+
+
+class TestMpo:
+    """Every image a multi-picture (MPF) index lists is checked."""
+
+    def test_multi_picture_accepted(self):
+        _validate(mpo(jpeg(640, 480), jpeg(320, 240), width=640, height=480))
+
+    def test_little_endian_index_accepted(self):
+        _validate(mpo(jpeg(640, 480), order="<"))
+
+    def test_index_listing_only_the_primary_accepted(self):
+        _validate(mpo())
+
+    def test_other_app2_segments_accepted(self):
+        icc = jpeg_segment(0xE2, b"ICC_PROFILE\x00\x01\x01" + b"\x00" * 64)
+        short = jpeg_segment(0xE2, b"MP")
+        _validate(jpeg(8, 8, before_frame=icc + short))
+
+    @pytest.mark.parametrize("order", [">", "<"])
+    def test_later_image_over_limit_rejected(self, order):
+        data = mpo(jpeg(12000, 12000), order=order)
+        _assert_too_large(data, 12000, 12000, _DEFAULT_MAX)
+
+    def test_every_listed_image_checked(self):
+        data = mpo(jpeg(8, 8), jpeg(8, 8), jpeg(100, 50), width=8, height=8)
+        _assert_too_large(data, 100, 50, max_image_pixels=4999)
+
+    def test_later_image_at_limit_accepted(self):
+        _validate(mpo(jpeg(100, 50)), max_image_pixels=5000)
+
+    def test_later_image_with_second_frame_header_rejected(self):
+        frame = jpeg(12000, 12000, before_frame=jpeg_frame(1, 1))
+        _assert_invalid(mpo(frame))
+
+    def test_mpf_segment_in_later_image_ignored(self):
+        # Only the primary image's index is used
+        inner = mpf_segment(mpf_tags([(1, 0), (1, 1 << 30)]))
+        _validate(mpo(jpeg(8, 8, before_frame=inner)))
+
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            b"\x00" * 64,
+            b"\xff\xd8" + b"\x00" * 62,
+            JPEG_PREFIX + jpeg_frame(8, 8)[:6],
+        ],
+        ids=["no-soi", "no-marker", "truncated"],
+    )
+    def test_malformed_later_image_rejected(self, frame):
+        _assert_invalid(mpo(frame))
+
+    def test_listed_sizes_ignored(self):
+        # Pillow ignores the sizes, and writes wrong ones for the
+        # third image onward
+        first, second = jpeg(8, 8), jpeg(4, 4)
+        data = _listing([(0, 0), (1 << 30, len(first))], first + second)
+        _validate(data)
+
+    def test_listed_size_does_not_hide_later_image(self):
+        # A size of 0 does not stop the walk Pillow decodes from
+        data = _listing([(0, 0)], jpeg(12000, 12000))
+        _assert_too_large(data, 12000, 12000, _DEFAULT_MAX)
+
+    def test_later_image_running_past_next_image_rejected(self):
+        # Image 2 starts inside image 1's APP1 payload
+        inner = jpeg(8, 8)
+        first = (
+            JPEG_PREFIX
+            + jpeg_segment(0xE1, inner)
+            + jpeg_frame(8, 8)
+            + JPEG_SOS
+            + JPEG_EOI
+        )
+        data = _listing([(0, 0), (0, len(JPEG_PREFIX) + 4)], first)
+        _assert_invalid(data)
+
+    @pytest.mark.parametrize(
+        "images",
+        [[(0, 1 << 20)], [(0, 45), (0, 0)], [(0, 45), (0, 45)]],
+        ids=["past-end", "decreasing", "repeated"],
+    )
+    def test_image_outside_file_or_out_of_order_rejected(self, images):
+        _assert_invalid(_listing(images, jpeg(8, 8) * 4))
+
+    @pytest.mark.parametrize(
+        "images",
+        [[(10, 4)], [(10, 0), (20, 0)]],
+        ids=["primary-offset", "image-at-index"],
+    )
+    def test_invalid_offset_rejected(self, images):
+        data = jpeg(1, 1, before_frame=mpf_segment(mpf_tags(images)))
+        _assert_invalid(data + jpeg(8, 8) * 4)
+
+    def test_two_mpf_segments_rejected(self):
+        segment = mpf_segment(mpf_tags([(10, 0)]))
+        _assert_invalid(jpeg(8, 8, before_frame=segment + segment))
+
+    @pytest.mark.parametrize(
+        "tags",
+        [
+            [],
+            mpf_tags([(10, 0)])[:2],
+            mpf_tags([(10, 0)])[::2],
+            mpf_tags([(10, 0)]) + mpf_tags([(10, 0)])[1:2],
+            [(0xB001, 3, 1, b"\x00\x01"), mpf_tags([(10, 0)])[2]],
+            [(0xB001, 4, 2, b"\x00\x00\x00\x01"), mpf_tags([(10, 0)])[2]],
+            [(0xB001, 4, 1, b"\x00" * 4), (0xB002, 7, 0, b"")],
+            [mpf_tags([(10, 0)])[1], (0xB002, 1, 16, b"\x00" * 16)],
+            [mpf_tags([(10, 0)])[1], (0xB002, 7, 32, b"\x00" * 32)],
+            [mpf_tags([(10, 0)])[1], (0xB002, 7, 16, b"\x00" * 8)],
+        ],
+        ids=[
+            "no-tags",
+            "no-entries",
+            "no-count",
+            "repeated-tag",
+            "count-type",
+            "count-length",
+            "zero-images",
+            "entries-type",
+            "entries-count",
+            "entries-truncated",
+        ],
+    )
+    def test_malformed_index_rejected(self, tags):
+        _assert_invalid(jpeg(8, 8, before_frame=mpf_segment(tags)))
+
+    @pytest.mark.parametrize(
+        "tiff",
+        [
+            b"XX\x00\x2a\x00\x00\x00\x08",
+            b"MM\x00\x2a\x00\x00\x10\x00",
+            b"MM\x00\x2a",
+            b"MM\x00\x2a\x00\x00\x00\x08\x00\x02" + b"\x00" * 12,
+        ],
+        ids=["byte-order", "ifd-offset", "truncated-header", "truncated-ifd"],
+    )
+    def test_malformed_header_rejected(self, tiff):
+        segment = jpeg_segment(0xE2, b"MPF\x00" + tiff)
+        _assert_invalid(jpeg(8, 8, before_frame=segment))
 
 
 class TestWebp:
@@ -347,6 +618,47 @@ def _grid_in_mdat(offset_shift: int = 0) -> bytes:
     )
 
 
+def _with_grid(
+    *,
+    grid_size: tuple[int, int],
+    tile: tuple[int, int] = (512, 512),
+    located: bool = True,
+    referenced: bool = True,
+) -> bytes:
+    """
+    Return a HEIC with an HEVC primary and a non-primary grid.
+
+    Item 1 is the 64x48 primary, item 2 a 1024x512 grid of two
+    tiles (items 3 and 4) whose descriptor declares ``grid_size``.
+    """
+    descriptor = heif_grid_descriptor(1, 2, *grid_size)
+    locations = [(1, 0, [(0, 16)]), (3, 0, [(0, 16)]), (4, 0, [(0, 16)])]
+    if located:
+        locations.append((2, 1, [(0, len(descriptor))]))
+    iinf = heif_iinf(
+        [
+            heif_infe(1, b"hvc1"),
+            heif_infe(2, b"grid"),
+            heif_infe(3, b"hvc1"),
+            heif_infe(4, b"hvc1"),
+        ]
+    )
+    iprp = heif_iprp(
+        [heif_ispe(64, 48), heif_ispe(1024, 512), heif_ispe(*tile)],
+        heif_ipma([(1, (1,)), (2, (2,)), (3, (3,)), (4, (3,))]),
+    )
+    iref = heif_dimg(2, [3, 4]) if referenced else b""
+    return _meta(
+        _HDLR,
+        _PITM,
+        heif_iloc(locations),
+        iinf,
+        iref,
+        iprp,
+        heif_box(b"idat", descriptor),
+    )
+
+
 class TestHeic:
     """HEIC dimensions come from the primary item's ispe property."""
 
@@ -390,6 +702,41 @@ class TestHeic:
     def test_unknown_meta_children_ignored(self):
         free = heif_box(b"free", b"\x00" * 4)
         _validate(_meta(_HDLR, _PITM, free, _ILOC, _IINF, _IPRP))
+
+    def test_thumbnail_and_metadata_items_accepted(self):
+        # A thumbnail and an alpha image with ispe and a colour
+        # property, EXIF and XMP items without
+        iinf = heif_iinf(
+            [
+                heif_infe(1, b"hvc1"),
+                heif_infe(2, b"hvc1"),
+                heif_infe(3, b"hvc1"),
+                heif_infe(4, b"Exif"),
+                heif_infe(5, b"mime"),
+            ]
+        )
+        colr = heif_box(b"colr", b"nclx" + b"\x00" * 7)
+        iprp = heif_iprp(
+            [colr, heif_ispe(64, 48), heif_ispe(32, 24)],
+            heif_ipma([(1, (1, 2)), (2, (1, 3)), (3, (2,))]),
+        )
+        _validate(_single(iinf=iinf, iprp=iprp))
+
+    @pytest.mark.parametrize("item_type", [b"hvc1", b"grid"])
+    def test_image_item_without_ispe_rejected(self, item_type):
+        # A decoder can decode an item other than the primary
+        iinf = heif_iinf([heif_infe(1, b"hvc1"), heif_infe(2, item_type)])
+        _assert_invalid(_single(iinf=iinf))
+
+    @pytest.mark.parametrize(
+        "item_type", [b"iovl", b"iden", b"av01", b"jpeg", b"unci", b"uri "]
+    )
+    def test_unsupported_item_type_rejected(self, item_type):
+        iinf = heif_iinf([heif_infe(1, b"hvc1"), heif_infe(2, item_type)])
+        iprp = heif_iprp(
+            [heif_ispe(64, 48)], heif_ipma([(1, (1,)), (2, (1,))])
+        )
+        _assert_invalid(_single(iinf=iinf, iprp=iprp))
 
     def test_every_ispe_bounded(self):
         # A thumbnail or auxiliary image larger than the primary
@@ -790,9 +1137,100 @@ class TestHeicGrid:
     def test_invalid_tile_references_rejected(self, iref):
         _assert_invalid(_grid(iref=iref))
 
+    def test_non_primary_grid_accepted(self):
+        # An HEVC primary and a second, tiled image
+        _validate(_with_grid(grid_size=(1024, 512)))
+
+    def test_non_primary_grid_descriptor_checked(self):
+        # A decoder sizes the grid from its descriptor
+        _assert_invalid(_with_grid(grid_size=(15872, 15872)))
+
+    def test_non_primary_grid_tiles_checked(self):
+        _assert_invalid(_with_grid(grid_size=(1024, 512), tile=(256, 512)))
+
+    def test_non_primary_grid_without_location_rejected(self):
+        _assert_invalid(_with_grid(grid_size=(1024, 512), located=False))
+
+    def test_non_primary_grid_without_tile_references_rejected(self):
+        _assert_invalid(_with_grid(grid_size=(1024, 512), referenced=False))
+
     def test_version_1_iref_accepted(self):
         ref = heif_box(b"dimg", struct.pack(">IHI", 1, 1, 2))
         _validate(_grid(iref=heif_full_box(b"iref", ref, version=1)))
+
+
+def _with_tone_map(
+    *,
+    size: tuple[int, int] | None = (64, 48),
+    inputs: tuple[int, ...] | None = (1, 2),
+    gain_map_type: bytes = b"hvc1",
+) -> bytes:
+    """
+    Return a HEIC with a tone map (tmap) derived item.
+
+    Item 1 is the 64x48 HEVC primary and base image, item 2 a 32x24
+    gain map and item 3 the tmap, with an ispe of ``size`` and a
+    dimg reference to ``inputs`` (none of either when None).
+    """
+    properties = [heif_ispe(64, 48), heif_ispe(32, 24)]
+    associations = [(1, (1,)), (2, (2,))]
+    if size is not None:
+        properties.append(heif_ispe(*size))
+        associations.append((3, (3,)))
+    iinf = heif_iinf(
+        [
+            heif_infe(1, b"hvc1"),
+            heif_infe(2, gain_map_type),
+            heif_infe(3, b"tmap"),
+        ]
+    )
+    return _meta(
+        _HDLR,
+        _PITM,
+        heif_iloc([(1, 0, [(0, 16)]), (2, 0, [(0, 16)])]),
+        iinf,
+        b"" if inputs is None else heif_dimg(3, list(inputs)),
+        heif_iprp(properties, heif_ipma(associations)),
+    )
+
+
+class TestHeicToneMap:
+    """A tone map (gain map) item is sized like its base image."""
+
+    def test_tone_map_accepted(self):
+        _validate(_with_tone_map())
+
+    def test_tone_map_at_limit_accepted(self):
+        _validate(_with_tone_map(), max_image_pixels=64 * 48)
+
+    def test_tone_map_over_limit_rejected(self):
+        data = _with_tone_map(size=(12000, 12000))
+        _assert_too_large(data, 12000, 12000, _DEFAULT_MAX)
+
+    @pytest.mark.parametrize(
+        "size",
+        [(128, 96), (64, 49), (32, 24)],
+        ids=["larger", "taller", "gain-map"],
+    )
+    def test_tone_map_size_not_base_rejected(self, size):
+        _assert_invalid(_with_tone_map(size=size))
+
+    def test_tone_map_without_ispe_rejected(self):
+        _assert_invalid(_with_tone_map(size=None))
+
+    @pytest.mark.parametrize(
+        "inputs",
+        [(), (1,), (1, 1), (1, 2, 2), (1, 3), (1, 4)],
+        ids=["none", "one", "same", "three", "itself", "undeclared"],
+    )
+    def test_tone_map_inputs_invalid_rejected(self, inputs):
+        _assert_invalid(_with_tone_map(inputs=inputs))
+
+    def test_tone_map_without_references_rejected(self):
+        _assert_invalid(_with_tone_map(inputs=None))
+
+    def test_tone_map_metadata_input_rejected(self):
+        _assert_invalid(_with_tone_map(gain_map_type=b"Exif"))
 
 
 class TestUnknownFormat:

@@ -52,13 +52,18 @@ that addresses it.
       for most workloads; lower for stricter environments.
     - `max_validation_time_seconds` — default 30 s wall-clock;
       lower in latency-sensitive services.
-    - `max_validation_memory_mb` — default 512 MB of peak-RSS
+    - `max_validation_memory_mb` — default 512 MB of RSS
       growth; adjust based on container memory limits.
+    - `max_sanitized_name_length` — default 100 UTF-8 bytes of
+      base name; with the longest allowed extension it must fit
+      in 255 bytes.
 - [ ] `allow_nested_archives` left `False` unless needed. When
   enabled it requires `scan_zip_content=True` (the constructor
-  raises `FileSecurityConfigurationError` otherwise), and every
-  inner ZIP is inspected like the top level; one that is
-  oversized, corrupt or uninspectable is rejected.
+  raises `FileSecurityConfigurationError` otherwise), every
+  inner ZIP is inspected like the top level and every gzip entry
+  is inflated under the gzip limits and scanned; one that is
+  oversized, corrupt or uninspectable is rejected, and any other
+  nested archive is rejected regardless of the flag.
 - [ ] `ALLOWED_*_TYPES` reviewed and narrowed to the MIME types
   your application accepts and the extensions each may carry.
 - [ ] `FileSecurityConfigurationError` from the `FileValidator`
@@ -71,7 +76,9 @@ that addresses it.
   empty block lists or reserved names, reserved names that are
   not lowercase, an empty `BLOCKED_PDF_NAMES` or an entry that is
   not a bare PDF name, a content scan window smaller than an
-  image, activity or PDF size limit), including sets overridden
+  image, activity or PDF size limit, a `max_sanitized_name_length`
+  that with the longest allowed extension exceeds 255 bytes),
+  including sets overridden
   on the instance;
   warnings are only logged.
 
@@ -148,6 +155,10 @@ and [PDF Parser Differentials](threat-model.md#pdf-parser-differentials)).
   recommended for security incident investigation).
 - [ ] Alerting configured for `THREAT_DETECTED` and
   `RESOURCE_LIMIT` audit event types.
+- [ ] Each request's correlation ID set with
+  `with correlation_scope(request_id):` around the validation,
+  so the ID is restored afterwards and does not label later work
+  on a pooled thread; `set_correlation_id()` leaves it set.
 
 ## Error Handling
 
@@ -181,9 +192,10 @@ and [PDF Parser Differentials](threat-model.md#pdf-parser-differentials)).
   not from the uploaded name: it is sanitized, and its extension
   is one the configuration lists for the detected MIME type.
   `mime_type` alone cannot choose it, since GPX and TCX share
-  their XML types. Content is not checked as GPX rather than TCX,
-  so an importer must still handle XML that does not match its
-  extension.
+  their XML types. The root element must match the extension
+  (`gpx` or `TrainingCenterDatabase`), but the content is not
+  validated against the GPX or TCX schema, so an importer must
+  still handle documents it cannot read.
 - [ ] Storage directory permissions restrict access to the
   application user only (`0700` or equivalent).
 - [ ] If serving uploaded files back to users, use:
@@ -204,18 +216,21 @@ and [PDF Parser Differentials](threat-model.md#pdf-parser-differentials)).
 
 - [ ] Container or process memory limits set — safeuploads
   `max_validation_memory_mb` should be below the container
-  limit. The monitor measures the increase in process-wide peak
-  RSS, so it cannot bound validation memory by itself (an
-  earlier, higher peak hides later allocations) and other work in
-  the same process can also trip it; the container limit stays
-  the hard bound. On Windows memory accounting is disabled and
-  only the time limit applies.
+  limit. The monitor measures the growth of the process-wide
+  current RSS (the peak RSS on Unix platforms other than Linux
+  and macOS), so concurrent validations and other work in the
+  same process add to it, and memory the allocator kept after a
+  free and later reuses is not counted; it cannot bound
+  validation memory by itself, and the container limit stays the
+  hard bound. On Windows memory accounting is disabled and only
+  the time limit applies.
 - [ ] Both limits are checked at loop boundaries (upload
   streaming, ZIP entry loops, gzip decompression, each XML
-  chunk, each JPEG segment before the frame header, each HEIC
-  box and item entry, PDF tokenizing and stream inflation) and on exit; a single blocking call, such as one
-  `zipfile` central-directory parse or one libmagic call, is
-  not interrupted mid-call. A `ResourceLimitError` keeps its
+  chunk, each PNG chunk and JPEG segment before the image data,
+  each HEIC box and item entry, PDF tokenizing, stream inflation
+  and predictor rows) and on exit; a single blocking call, such
+  as one `zipfile` central-directory parse or one libmagic call,
+  is not interrupted mid-call. A `ResourceLimitError` keeps its
   own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED`
   code.
 - [ ] Request timeout configured at the reverse proxy and

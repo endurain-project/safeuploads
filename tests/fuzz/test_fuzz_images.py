@@ -84,26 +84,7 @@ class TestFuzzImageValidation:
     @pytest.mark.asyncio
     async def test_png_extreme_dimensions(self, width, height):
         """PNG with extreme dimensions must not crash."""
-        # Construct PNG IHDR with given dimensions
-        w = width.to_bytes(4, "big")
-        h = height.to_bytes(4, "big")
-        ihdr_data = (
-            w
-            + h
-            + b"\x08\x02"  # 8-bit RGB
-            + b"\x00\x00\x00"
-        )
-        # Minimal PNG: signature + IHDR + IEND
-        content = (
-            _PNG_HDR
-            + b"\x00\x00\x00\x0d"
-            + b"IHDR"
-            + ihdr_data
-            + b"\x00\x00\x00\x00"  # fake CRC
-            + b"\x00\x00\x00\x00"
-            + b"IEND"
-            + b"\x00\x00\x00\x00"
-        )
+        content = images.png(width, height)
         await _assert_accepts_only_images("dims.png", content)
 
     @given(
@@ -113,6 +94,11 @@ class TestFuzzImageValidation:
                 ("a.jpg", images.jpeg, 2**16 - 1),
                 ("a.webp", images.webp, 2**14),
                 ("a.heic", images.heic, 2**32 - 1),
+                (
+                    "a.jpg",
+                    lambda w, h: images.mpo(images.jpeg(w, h)),
+                    2**16 - 1,
+                ),
             ]
         ),
         data=st.data(),
@@ -138,6 +124,34 @@ class TestFuzzImageValidation:
         """Arbitrary bytes between APP0 and the frame must not crash."""
         content = images.jpeg(8, 8, before_frame=segments)
         await _assert_accepts_only_images("fuzz.jpg", content)
+
+    @given(data=st.data())
+    @settings(max_examples=200, deadline=3000)
+    @pytest.mark.asyncio
+    async def test_mutated_png_chunks_never_crash(self, data):
+        """Flipping bytes of a PNG's chunks before IDAT must not crash."""
+        text = images.png_chunk(b"tEXt", b"Comment\x00" + b"x" * 32)
+        content = bytearray(images.png(8, 8, before_data=text))
+        start = len(images.PNG_SIGNATURE)
+        for _ in range(data.draw(st.integers(min_value=1, max_value=8))):
+            index = data.draw(
+                st.integers(min_value=start, max_value=len(content) - 1)
+            )
+            content[index] = data.draw(st.integers(0, 255))
+        await _assert_accepts_only_images("fuzz.png", bytes(content))
+
+    @given(data=st.data())
+    @settings(max_examples=200, deadline=3000)
+    @pytest.mark.asyncio
+    async def test_mutated_mpo_index_never_crashes(self, data):
+        """Flipping bytes of an MPO's primary image must not crash."""
+        later = (images.jpeg(8, 8), images.jpeg(4, 4))
+        content = bytearray(images.mpo(*later))
+        end = len(content) - sum(map(len, later)) - 1
+        for _ in range(data.draw(st.integers(min_value=1, max_value=8))):
+            index = data.draw(st.integers(min_value=2, max_value=end))
+            content[index] = data.draw(st.integers(0, 255))
+        await _assert_accepts_only_images("fuzz.jpg", bytes(content))
 
     @given(meta=st.binary(min_size=0, max_size=2000))
     @settings(max_examples=200, deadline=3000)

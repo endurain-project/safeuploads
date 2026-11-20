@@ -11,6 +11,7 @@ from .audit import (
     AuditEvent,
     AuditEventType,
     SecurityAuditLogger,
+    correlation_scope,
     get_correlation_id,
     set_correlation_id,
 )
@@ -155,6 +156,7 @@ __all__ = [
     "SecurityAuditLogger",
     "AuditEvent",
     "AuditEventType",
+    "correlation_scope",
     "get_correlation_id",
     "set_correlation_id",
 ]

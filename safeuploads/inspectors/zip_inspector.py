@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -9,7 +10,8 @@ import stat
 import tempfile
 import time
 import zipfile
-from typing import TYPE_CHECKING, NamedTuple
+from collections.abc import Iterator
+from typing import IO, TYPE_CHECKING, Literal, NamedTuple
 
 from ..audit import get_correlation_id, log_extra
 from ..enums import (
@@ -29,10 +31,11 @@ from ..exceptions import (
 from ..utils import (
     check_resource_limits,
     find_text_pattern,
-    iter_gzip_chunks,
     matches_signature_prefix,
 )
 from ..validators.compression_validator import (
+    PERMITTED_NESTED_ARCHIVE_EXTS,
+    SUPPORTED_COMPRESSION_METHODS,
     ZIP_PARSE_ERRORS,
     CompressionSecurityValidator,
 )
@@ -40,6 +43,7 @@ from ..validators.extension_validator import ExtensionSecurityValidator
 from ..validators.unicode_validator import UnicodeSecurityValidator
 from ..validators.windows_validator import WindowsSecurityValidator
 from .base import BaseInspector
+from .gzip_inspector import GzipContentInspector
 
 if TYPE_CHECKING:
     from ..config import FileSecurityConfig
@@ -48,8 +52,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_GZIP_MAGIC = b"\x1f\x8b"
 _ZIP_MAGIC = b"PK"
+_GZIP_MAGIC = b"\x1f\x8b"
+_GZIP_SUFFIX = ".gz"
+# Bytes of an entry's start checked for signatures and scripts
+_SAMPLE_SIZE = 512
+# zipfile and unzip find an archive by its end record, which starts
+# within the last 22 + 65535 (maximum comment) bytes
+_END_RECORD_SIGNATURE = b"PK\x05\x06"
+# USTAR and GNU tar headers carry this magic at offset 257, within
+# the content sample; tar has no signature at the start
+_TAR_MAGIC = b"ustar"
+_TAR_MAGIC_OFFSET = 257
+_END_RECORD_SPAN = 22 + 0xFFFF
+
+
+# How a nested entry is inspected further
+_NestedKind = Literal["zip", "gzip"]
 
 
 class _Threat(NamedTuple):
@@ -128,9 +147,18 @@ class ZipContentInspector(BaseInspector):
             if sig.startswith(_ZIP_MAGIC)
         )
         self._zip_signature_size: int = max(map(len, self._zip_signatures))
+        # Archive formats rejected even with nesting allowed: all
+        # but ZIP and gzip
+        self._unpermitted_archive_signatures: tuple[bytes, ...] = tuple(
+            sig
+            for sig in self._nested_archive_signatures
+            if sig not in self._zip_signatures and sig != _GZIP_MAGIC
+        )
         # Nested archives get the same compression checks as the
         # top-level archive
         self._compression = CompressionSecurityValidator(config)
+        # Nested gzip streams get the top-level gzip limits
+        self._gzip = GzipContentInspector(config)
         # Entry names get the filename checks a top-level upload gets
         self._unicode = UnicodeSecurityValidator(config)
         self._windows = WindowsSecurityValidator(config)
@@ -140,20 +168,26 @@ class ZipContentInspector(BaseInspector):
         """
         Inspect ZIP archive for potential security threats.
 
-        When ``allow_nested_archives`` is enabled, every nested ZIP
-        archive is then inspected as well (see
+        Entry names and metadata are always checked, and an entry
+        compressed with a method other than stored or deflated is
+        rejected without being opened; entry contents are read only
+        when ``scan_zip_content`` is enabled. When
+        ``allow_nested_archives`` is enabled, every nested ZIP
+        archive and gzip stream is then inspected as well (see
         ``inspect_nested_archives``).
 
         Args:
             file_obj: Seekable file-like object containing ZIP data.
 
         Raises:
-            ZipBombError: If a nested archive is a zip bomb.
+            ZipBombError: If a nested archive or gzip stream is a
+                decompression bomb.
             ZipContentError: If security threats are detected in ZIP
                 content such as directory traversal, symlinks, nested
-                archives, or suspicious patterns, or a nested archive
-                fails any check. Its ``error_code`` is that of the
-                first threat found.
+                archives, unsupported compression methods or
+                suspicious patterns, or a nested archive fails any
+                check. Its ``error_code`` is that of the first threat
+                found.
             CompressionSecurityError: With ``ZIP_CORRUPT`` if the
                 ZIP structure is invalid or ``zipfile`` cannot parse
                 it (see ``ZIP_PARSE_ERRORS``).
@@ -251,31 +285,66 @@ class ZipContentInspector(BaseInspector):
             # Check for ZIP structure threats
             threats_found.extend(self._inspect_zip_structure(zip_entries))
 
-        if threats_found:
-            messages = [threat.message for threat in threats_found]
-            summary = "; ".join(messages)
-            logger.warning(
-                "ZIP content threats detected",
-                extra=log_extra(
-                    {
-                        "error_type": "zip_content_threat",
-                        "threats": messages,
-                        "threat_count": len(messages),
-                    }
-                ),
-            )
-            cid = get_correlation_id()
-            if cid:
-                self._audit.threat("", cid, summary)
-            raise ZipContentError(
-                message=f"ZIP content threats detected: {summary}",
-                threats=messages,
-                error_code=threats_found[0].code,
-            )
-
+        self._raise_threats(threats_found)
         logger.debug(
             "ZIP content inspection passed: %s entries analyzed",
             len(zip_entries),
+        )
+
+    def _raise_threats(self, threats: list[_Threat]) -> None:
+        """
+        Log, audit and raise the threats found, if there are any.
+
+        Args:
+            threats: Threats found, in the order they were found.
+
+        Raises:
+            ZipContentError: If ``threats`` is not empty, with the
+                code of its first threat.
+        """
+        if not threats:
+            return
+        messages = [threat.message for threat in threats]
+        summary = "; ".join(messages)
+        logger.warning(
+            "ZIP content threats detected",
+            extra=log_extra(
+                {
+                    "error_type": "zip_content_threat",
+                    "threats": messages,
+                    "threat_count": len(messages),
+                }
+            ),
+        )
+        cid = get_correlation_id()
+        if cid:
+            self._audit.threat("", cid, summary)
+        raise ZipContentError(
+            message=f"ZIP content threats detected: {summary}",
+            threats=messages,
+            error_code=threats[0].code,
+        )
+
+    @staticmethod
+    def _unsupported_method(entry: zipfile.ZipInfo) -> _Threat | None:
+        """
+        Return a threat if an entry is neither stored nor deflated.
+
+        ``zipfile`` inflates other methods (bzip2, LZMA) without an
+        output bound, so such an entry is never opened.
+
+        Args:
+            entry: Entry to check.
+
+        Returns:
+            A ``ZIP_UNSUPPORTED_COMPRESSION`` threat, or None.
+        """
+        if entry.compress_type in SUPPORTED_COMPRESSION_METHODS:
+            return None
+        return _Threat(
+            ErrorCode.ZIP_UNSUPPORTED_COMPRESSION,
+            f"Unsupported compression method {entry.compress_type}"
+            f" for '{entry.filename}'",
         )
 
     def _inspect_zip_entry(
@@ -287,8 +356,10 @@ class ZipContentInspector(BaseInspector):
         Checks the raw name for null bytes, then the name for traversal,
         absolute paths, symlinks, length limits, suspicious patterns,
         nested archive extensions, the top-level filename checks and
-        dangerous file extensions. The content is inspected when
-        ``scan_zip_content`` is enabled.
+        dangerous file extensions. These checks read no entry data.
+        An entry compressed with a method other than stored or
+        deflated is a threat and is never opened; otherwise the
+        content is inspected when ``scan_zip_content`` is enabled.
 
         Args:
             entry: ZIP entry metadata.
@@ -365,10 +436,7 @@ class ZipContentInspector(BaseInspector):
         )
 
         # 8. Check for nested archives
-        if (
-            not self.config.limits.allow_nested_archives
-            and self._is_nested_archive(filename)
-        ):
+        if self._archive_name_rejected(filename):
             threats.append(
                 _Threat(
                     ErrorCode.ZIP_NESTED_ARCHIVE,
@@ -385,9 +453,14 @@ class ZipContentInspector(BaseInspector):
                 _content_threat(f"Dangerous file type detected: '{filename}'")
             )
 
-        # 11. Check file content if enabled
-        # Only first 512 bytes are read, so no size gate needed
-        if self.config.limits.scan_zip_content and not entry.is_dir():
+        # 11. Never open an entry zipfile inflates without bound
+        unsupported = self._unsupported_method(entry)
+        if unsupported:
+            threats.append(unsupported)
+
+        # 12. Check file content if enabled; reads are bounded by
+        # the declared sizes the compression validator checked
+        elif self.config.limits.scan_zip_content and not entry.is_dir():
             content_threats = self._inspect_entry_content(entry, zip_file)
             threats.extend(content_threats)
 
@@ -445,6 +518,10 @@ class ZipContentInspector(BaseInspector):
         """
         Check for directory traversal indicators.
 
+        A component of only dots and spaces with at least two dots
+        (``..``, ``. .``, ``.. ``) is a traversal wherever it appears,
+        including at the end of the name.
+
         Args:
             filename: Filename to check.
 
@@ -455,6 +532,12 @@ class ZipContentInspector(BaseInspector):
 
         for pattern in self._traversal_patterns:
             if pattern in filename_lower:
+                return True
+
+        # Windows drops trailing dots and spaces from a component, so
+        # one of only dots and spaces with two or more dots is ``..``
+        for component in filename.replace("\\", "/").split("/"):
+            if component.count(".") > 1 and not component.strip(". "):
                 return True
 
         # Additional checks for normalized paths
@@ -524,31 +607,39 @@ class ZipContentInspector(BaseInspector):
 
         return threats
 
-    def _is_nested_archive(self, filename: str) -> bool:
+    def _archive_name_rejected(self, filename: str) -> bool:
         """
-        Check if filename represents a nested archive.
+        Check if a filename names a nested archive that is rejected.
 
-        Trailing dots and spaces are ignored, as Windows drops them on
-        extraction.
+        Every archive extension is rejected, except a ZIP archive's
+        or a gzip stream's when ``allow_nested_archives`` is enabled.
+        Trailing dots and spaces are ignored, as Windows drops them
+        on extraction.
 
         Args:
             filename: Filename to check.
 
         Returns:
-            True if nested archive detected.
+            True if the name is a rejected nested archive.
         """
-        return self._extension(filename) in self._nested_archive_exts
+        ext = self._extension(filename)
+        return ext in self._nested_archive_exts and not (
+            self.config.limits.allow_nested_archives
+            and ext in PERMITTED_NESTED_ARCHIVE_EXTS
+        )
 
     def _check_entry_name(self, entry: zipfile.ZipInfo) -> list[_Threat]:
         """
         Apply the top-level filename checks to an entry name.
 
-        The whole name gets the Unicode checks, every path component
-        the Windows reserved-name check and a file's base name the
-        blocked and compound extension checks, all driven by the
-        configuration. Name checks run on the NFC name and on its NFKC
-        form; both validators ignore the trailing dots and spaces that
-        Windows drops on extraction.
+        The whole name gets the Unicode checks and must not contain
+        ``:``, which NTFS reads as an alternate data stream or device
+        separator (``run.exe::$DATA``, ``CON:``); every path
+        component gets the Windows reserved-name check and a file's
+        base name the blocked and compound extension checks, all
+        driven by the configuration. Name checks run on the NFC name
+        and on its NFKC form; both validators ignore the trailing
+        dots and spaces that Windows drops on extraction.
 
         Args:
             entry: ZIP entry whose name is checked.
@@ -558,7 +649,13 @@ class ZipContentInspector(BaseInspector):
         """
         try:
             name = self._unicode.validate_unicode_security(entry.filename)
-            self._unicode.compatibility_form(name)
+            if ":" in name or ":" in self._unicode.compatibility_form(name):
+                return [
+                    _content_threat(
+                        f"Unsafe file name {entry.filename!r}:"
+                        " ':' is not allowed in entry names"
+                    )
+                ]
             components = name.replace("\\", "/").split("/")
             for component in components:
                 for form in (
@@ -602,98 +699,12 @@ class ZipContentInspector(BaseInspector):
         """
         Inspect ZIP entry content for malicious signatures.
 
-        An entry that cannot be opened or read is reported as a threat,
-        because its content was not scanned.
+        The content is checked by ``_scan_content``. An entry that
+        cannot be opened or read is reported as a threat, because
+        its content was not scanned.
 
         Args:
             entry: ZIP entry to inspect.
-            zip_file: Parent ZIP archive.
-
-        Returns:
-            List of content threats.
-        """
-        threats: list[_Threat] = []
-
-        try:
-            # Read first few bytes to check for executable signatures
-            with zip_file.open(entry, "r") as file:
-                content_sample = file.read(512)  # Read first 512 bytes
-
-                # Executable signatures are matched against the
-                # entry header (anchored): the entry either is or
-                # is not an executable.
-                if matches_signature_prefix(
-                    content_sample, self._exec_signatures
-                ):
-                    threats.append(
-                        _content_threat(
-                            "Executable content detected in"
-                            f" '{entry.filename}'"
-                        )
-                    )
-
-                if (
-                    not self.config.limits.allow_nested_archives
-                    and not self._is_nested_archive(entry.filename)
-                    and matches_signature_prefix(
-                        content_sample, self._nested_archive_signatures
-                    )
-                ):
-                    threats.append(
-                        _Threat(
-                            ErrorCode.ZIP_NESTED_ARCHIVE,
-                            f"Nested archive detected: '{entry.filename}'",
-                        )
-                    )
-
-                ext = os.path.splitext(entry.filename)[1].lower()
-                if content_sample.startswith(_GZIP_MAGIC):
-                    # Compressed bytes only match script patterns by
-                    # chance; scan the decompressed start instead
-                    threats.extend(self._inspect_gzip_entry(entry, zip_file))
-                elif (
-                    ext not in self._binary_exts
-                    and self._contains_script_patterns(
-                        content_sample, entry.filename
-                    )
-                ):
-                    threats.append(
-                        _content_threat(
-                            f"Script content detected in '{entry.filename}'"
-                        )
-                    )
-
-        except ResourceLimitError:
-            raise
-        except Exception as err:
-            logger.warning(
-                "Could not inspect content of %r: %s",
-                entry.filename,
-                err,
-            )
-            threats.append(
-                _content_threat(
-                    f"Entry content could not be inspected: '{entry.filename}'"
-                )
-            )
-
-        return threats
-
-    def _inspect_gzip_entry(
-        self, entry: zipfile.ZipInfo, zip_file: zipfile.ZipFile
-    ) -> list[_Threat]:
-        """
-        Inspect the decompressed start of a gzip ZIP entry.
-
-        At most 512 decompressed bytes are read, so the cost does not
-        depend on the stream's expansion. The script scan is skipped
-        when the name without its ``.gz`` suffix has a binary
-        extension (``x.fit.gz``). A gzip stream inside the gzip stream
-        is reported as uninspectable, since its content cannot be
-        scanned at this depth.
-
-        Args:
-            entry: ZIP entry whose content starts with the gzip magic.
             zip_file: Parent ZIP archive.
 
         Returns:
@@ -702,46 +713,129 @@ class ZipContentInspector(BaseInspector):
         Raises:
             ResourceLimitError: If the active resource monitor's time or
                 memory limit is exceeded.
-            zlib.error: If the entry is not a valid gzip stream.
-            EOFError: If the stream ends before the sample is read.
         """
-        sample = b""
-        with zip_file.open(entry, "r") as file:
-            for chunk in iter_gzip_chunks(file, 512):
-                sample += chunk
-                if len(sample) >= 512:
-                    break
-        sample = sample[:512]
-
-        if sample.startswith(_GZIP_MAGIC):
+        try:
+            with zip_file.open(entry, "r") as file:
+                return self._scan_content(entry.filename, file)
+        except ResourceLimitError:
+            raise
+        except Exception as err:
+            logger.warning(
+                "Could not inspect content of %r: %s",
+                entry.filename,
+                err,
+            )
             return [
                 _content_threat(
                     f"Entry content could not be inspected: '{entry.filename}'"
                 )
             ]
 
+    def _scan_content(self, name: str, stream: IO[bytes]) -> list[_Threat]:
+        """
+        Scan content for executable, archive and script threats.
+
+        The first 512 bytes are checked for executable signatures,
+        archive signatures and script patterns; the script scan is
+        skipped for a binary extension and for gzip data, whose
+        compressed bytes match a pattern only by chance. An archive
+        other than ZIP or gzip (bzip2, xz, 7z, RAR, tar) is always a
+        threat. Unless ``allow_nested_archives`` is enabled, so is a
+        gzip stream or a ZIP archive, found by a ZIP signature at
+        the start or by an end record signature in the last 65,557
+        bytes, where ``zipfile`` and ``unzip`` look for it, so
+        prepended bytes do not hide it; finding the end record reads
+        the content to its end.
+
+        Args:
+            name: Name the content is reported under; its extension
+                decides the script scan.
+            stream: Content, read from its current position.
+
+        Returns:
+            List of content threats.
+
+        Raises:
+            ResourceLimitError: If the active resource monitor's time or
+                memory limit is exceeded.
+        """
         threats: list[_Threat] = []
+        sample = stream.read(_SAMPLE_SIZE)
+
+        # Executable signatures are matched against the content
+        # header (anchored): the content either is or is not an
+        # executable.
         if matches_signature_prefix(sample, self._exec_signatures):
             threats.append(
-                _content_threat(
-                    f"Executable content detected in '{entry.filename}'"
+                _content_threat(f"Executable content detected in '{name}'")
+            )
+
+        # A name check already reported a rejected archive
+        if not self._archive_name_rejected(name) and self._is_rejected_archive(
+            stream, sample
+        ):
+            threats.append(
+                _Threat(
+                    ErrorCode.ZIP_NESTED_ARCHIVE,
+                    f"Nested archive detected: '{name}'",
                 )
             )
 
-        name, ext = os.path.splitext(entry.filename)
-        if ext.lower() == ".gz":
-            ext = os.path.splitext(name)[1]
+        ext = os.path.splitext(name)[1].lower()
         if (
-            ext.lower() not in self._binary_exts
-            and self._contains_script_patterns(sample, entry.filename)
+            not sample.startswith(_GZIP_MAGIC)
+            and ext not in self._binary_exts
+            and self._contains_script_patterns(sample, name)
         ):
             threats.append(
-                _content_threat(
-                    f"Script content detected in '{entry.filename}'"
-                )
+                _content_threat(f"Script content detected in '{name}'")
             )
 
         return threats
+
+    def _is_rejected_archive(self, stream: IO[bytes], sample: bytes) -> bool:
+        """
+        Check if content is an archive that is rejected.
+
+        An archive signature other than ZIP or gzip at the start, or
+        a tar header's ``ustar`` magic at offset 257 (USTAR and GNU
+        tar; a pre-POSIX tar has no magic), is always rejected.
+        Unless ``allow_nested_archives`` is
+        enabled, a ZIP or gzip signature at the start is rejected,
+        and otherwise the rest of ``stream`` is read in
+        ``chunk_size`` pieces, keeping only its last 65,557 bytes,
+        to look for an end record signature.
+
+        Args:
+            stream: Content, positioned after ``sample``.
+            sample: The first bytes of the content.
+
+        Returns:
+            True if the content is a rejected archive.
+
+        Raises:
+            ResourceLimitError: If the active resource monitor's time or
+                memory limit is exceeded.
+        """
+        if (
+            matches_signature_prefix(
+                sample, self._unpermitted_archive_signatures
+            )
+            or sample[_TAR_MAGIC_OFFSET : _TAR_MAGIC_OFFSET + len(_TAR_MAGIC)]
+            == _TAR_MAGIC
+        ):
+            return True
+        if self.config.limits.allow_nested_archives:
+            return False
+        if sample.startswith(_GZIP_MAGIC) or matches_signature_prefix(
+            sample, self._zip_signatures
+        ):
+            return True
+        tail = sample
+        while chunk := stream.read(self.config.limits.chunk_size):
+            check_resource_limits()
+            tail = tail[-_END_RECORD_SPAN:] + chunk
+        return _END_RECORD_SIGNATURE in tail[-_END_RECORD_SPAN:]
 
     def _contains_script_patterns(self, content: bytes, filename: str) -> bool:
         """
@@ -794,17 +888,27 @@ class ZipContentInspector(BaseInspector):
 
         Only called when ``allow_nested_archives`` is True. The
         archive in ``file_obj`` is not itself checked here when
-        ``depth`` is 0; the caller checks it. Every nested ZIP
-        archive (an entry with a recursable archive extension or
-        starting with a ZIP signature) is streamed into a spooled
-        temporary file, checked like a top-level archive (the
+        ``depth`` is 0; the caller checks it. Every file entry is
+        streamed into a spooled temporary file. A nested ZIP archive
+        (an entry with a recursable archive extension, starting with
+        a ZIP signature or with an end record signature in its last
+        65,557 bytes) is checked like a top-level archive (the
         compression checks of ``CompressionSecurityValidator`` and
         the entry and structure checks of this inspector) and then
-        recursed into. Depth, cumulative entry count and elapsed time are
-        tracked across all levels, and the hashes of an archive's
-        ancestors to detect recursive and quine structures. Sibling
-        archives with identical content are not a quine. An inner archive that
-        cannot be read, parsed or fully inspected is rejected.
+        recursed into. A gzip stream (content starting with the gzip
+        magic) is a level of its own: it is inflated under the
+        limits of ``GzipContentInspector`` into another spooled
+        file, counted as one entry, and its content is scanned like
+        an entry's and recursed into one level deeper if it is
+        itself a ZIP archive or gzip stream. Depth, cumulative entry
+        count and elapsed time are tracked across all levels, and the
+        hashes of a ZIP archive's ancestors to detect recursive and
+        quine structures. Sibling archives with identical content are
+        not a quine. An inner archive that cannot be read, parsed or
+        fully inspected is rejected, and so is an entry compressed
+        with a method other than stored or deflated, before it is
+        opened. Other archive formats are never recursed into; the
+        entry checks reject them.
 
         Args:
             file_obj: Seekable file containing ZIP data.
@@ -818,7 +922,8 @@ class ZipContentInspector(BaseInspector):
             start_time: Monotonic timestamp of initial call.
 
         Raises:
-            ZipBombError: If a nested archive is a zip bomb.
+            ZipBombError: If a nested archive or gzip stream is a
+                decompression bomb.
             ZipContentError: If recursive structure, quine,
                 or complexity attack is detected, a nested archive
                 fails a check, or an archive cannot be read or
@@ -865,22 +970,9 @@ class ZipContentInspector(BaseInspector):
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
         """
-        limits = self.config.limits
         location = f"nested archive '{path}'" if depth else "ZIP archive"
         try:
-            # Depth check
-            if depth > limits.max_zip_depth:
-                raise ZipContentError(
-                    message=(
-                        f"Excessive nesting depth: {depth}"
-                        f" (max {limits.max_zip_depth})"
-                    ),
-                    threats=[
-                        f"Nesting depth {depth} exceeds limit"
-                        f" {limits.max_zip_depth}"
-                    ],
-                    error_code=ErrorCode.ZIP_RECURSIVE_STRUCTURE,
-                )
+            self._check_depth(depth)
 
             # Quine / recursive check via hash
             archive_hash = self._compute_archive_hash(file_obj)
@@ -924,6 +1016,72 @@ class ZipContentInspector(BaseInspector):
                 threats=[f"Uninspectable {location}"],
             ) from err
 
+    def _check_depth(self, depth: int) -> None:
+        """
+        Raise if a nesting level is deeper than ``max_zip_depth``.
+
+        Args:
+            depth: Nesting depth of the level.
+
+        Raises:
+            ZipContentError: With ``ZIP_RECURSIVE_STRUCTURE`` if
+                ``depth`` exceeds the limit.
+        """
+        max_depth = self.config.limits.max_zip_depth
+        if depth <= max_depth:
+            return
+        raise ZipContentError(
+            message=f"Excessive nesting depth: {depth} (max {max_depth})",
+            threats=[f"Nesting depth {depth} exceeds limit {max_depth}"],
+            error_code=ErrorCode.ZIP_RECURSIVE_STRUCTURE,
+        )
+
+    def _count_entries(self, entry_counter: list[int], count: int) -> None:
+        """
+        Add entries to the cumulative count and check its limit.
+
+        Args:
+            entry_counter: Single-element list holding the
+                cumulative entry count across all levels.
+            count: Entries to add.
+
+        Raises:
+            ZipContentError: With ``ZIP_COMPLEXITY_ATTACK`` if the
+                count exceeds ``max_total_entries_recursive``.
+        """
+        entry_counter[0] += count
+        limit = self.config.limits.max_total_entries_recursive
+        if entry_counter[0] <= limit:
+            return
+        raise ZipContentError(
+            message=(
+                f"Total recursive entries ({entry_counter[0]})"
+                f" exceeds limit ({limit})"
+            ),
+            threats=[f"Complexity attack: {entry_counter[0]} entries"],
+            error_code=ErrorCode.ZIP_COMPLEXITY_ATTACK,
+        )
+
+    def _check_timeout(self, start_time: float) -> None:
+        """
+        Raise if the recursive inspection has run out of time.
+
+        Args:
+            start_time: Monotonic timestamp of the initial call.
+
+        Raises:
+            ZipContentError: With ``ZIP_ANALYSIS_TIMEOUT`` if more
+                than ``zip_analysis_timeout`` seconds have passed.
+        """
+        timeout = self.config.limits.zip_analysis_timeout
+        if time.monotonic() - start_time <= timeout:
+            return
+        raise ZipContentError(
+            message=f"Recursive inspection timeout after {timeout}s",
+            threats=["Recursive inspection timeout"],
+            error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
+        )
+
     def _recurse_entries(
         self,
         zf: zipfile.ZipFile,
@@ -936,8 +1094,11 @@ class ZipContentInspector(BaseInspector):
         """
         Count an archive's entries and recurse into nested archives.
 
-        Each nested archive is copied into a spooled temporary file
-        that is closed once its subtree has been inspected.
+        Each file entry is copied into a spooled temporary file,
+        which is inspected if the entry is a nested ZIP archive or
+        gzip stream and closed once its subtree has been inspected.
+        An entry compressed with a method other than stored or
+        deflated is rejected before it is opened.
 
         Args:
             zf: Open archive at this level.
@@ -950,85 +1111,208 @@ class ZipContentInspector(BaseInspector):
             start_time: Monotonic timestamp of the initial call.
 
         Raises:
+            ZipBombError: If a nested gzip stream is a
+                decompression bomb.
             ZipContentError: If the cumulative entry count or the
-                analysis timeout is exceeded, or a nested archive
+                analysis timeout is exceeded, an entry uses an
+                unsupported compression method, or a nested archive
                 fails a check or cannot be read.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
         """
-        limits = self.config.limits
         entries = zf.infolist()
-        entry_counter[0] += len(entries)
-
-        # Complexity check
-        if entry_counter[0] > limits.max_total_entries_recursive:
-            raise ZipContentError(
-                message=(
-                    f"Total recursive entries ({entry_counter[0]})"
-                    f" exceeds limit ({limits.max_total_entries_recursive})"
-                ),
-                threats=[f"Complexity attack: {entry_counter[0]} entries"],
-                error_code=ErrorCode.ZIP_COMPLEXITY_ATTACK,
-            )
+        self._count_entries(entry_counter, len(entries))
 
         for entry in entries:
             check_resource_limits()
-
-            # Timeout
-            if time.monotonic() - start_time > limits.zip_analysis_timeout:
-                raise ZipContentError(
-                    message=(
-                        "Recursive inspection timeout after"
-                        f" {limits.zip_analysis_timeout}s"
-                    ),
-                    threats=["Recursive inspection timeout"],
-                    error_code=ErrorCode.ZIP_ANALYSIS_TIMEOUT,
-                )
+            self._check_timeout(start_time)
 
             if entry.is_dir():
                 continue
 
             entry_path = f"{path}/{entry.filename}" if path else entry.filename
+            unsupported = self._unsupported_method(entry)
+            if unsupported:
+                raise ZipContentError(
+                    message=f"{entry_path}: {unsupported.message}",
+                    threats=[f"{entry_path}: {unsupported.message}"],
+                    error_code=unsupported.code,
+                )
             with tempfile.SpooledTemporaryFile(
-                max_size=limits.max_memory_buffer_size
+                max_size=self.config.limits.max_memory_buffer_size
             ) as inner:
-                if self._copy_nested_archive(zf, entry, entry_path, inner):
-                    self._inspect_nested(
-                        inner,
-                        entry_path,
-                        depth + 1,
-                        ancestors,
-                        entry_counter,
-                        start_time,
-                    )
+                self._copy_entry(zf, entry, entry_path, inner)
+                self._inspect_kind(
+                    inner,
+                    entry.filename,
+                    entry_path,
+                    depth + 1,
+                    ancestors,
+                    entry_counter,
+                    start_time,
+                )
 
-    def _copy_nested_archive(
+    def _inspect_kind(
+        self,
+        file_obj: tempfile.SpooledTemporaryFile[bytes],
+        name: str,
+        path: str,
+        depth: int,
+        ancestors: frozenset[str],
+        entry_counter: list[int],
+        start_time: float,
+    ) -> None:
+        """
+        Inspect content as a nested level if it is an archive.
+
+        Gzip data (the gzip magic at the start) is inspected as a
+        gzip level. Other content is a ZIP archive when ``name`` has
+        a recursable archive extension, it starts with a ZIP
+        signature, or an end record signature lies in its last
+        65,557 bytes, where ``zipfile`` and ``unzip`` find an
+        archive behind prepended bytes. Anything else is left alone.
+
+        Args:
+            file_obj: Spooled file holding the content.
+            name: Name of the content, for its extension.
+            path: Nesting path of the content.
+            depth: Nesting depth the content would have.
+            ancestors: SHA-256 hashes of the enclosing ZIP archives.
+            entry_counter: Single-element list holding the
+                cumulative entry count across all levels.
+            start_time: Monotonic timestamp of the initial call.
+
+        Raises:
+            ZipBombError: If a nested gzip stream is a
+                decompression bomb.
+            ZipContentError: If the nested level fails a check.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+        """
+        size = file_obj.seek(0, os.SEEK_END)
+        file_obj.seek(0)
+        head = file_obj.read(self._zip_signature_size)
+        file_obj.seek(max(size - _END_RECORD_SPAN, 0))
+        tail = file_obj.read()
+        file_obj.seek(0)
+        if head.startswith(_GZIP_MAGIC):
+            self._inspect_gzip(
+                file_obj,
+                name,
+                path,
+                depth,
+                ancestors,
+                entry_counter,
+                start_time,
+            )
+        elif (
+            self._extension(name) in self._recursable_exts
+            or matches_signature_prefix(head, self._zip_signatures)
+            or _END_RECORD_SIGNATURE in tail
+        ):
+            self._inspect_nested(
+                file_obj, path, depth, ancestors, entry_counter, start_time
+            )
+
+    def _inspect_gzip(
+        self,
+        file_obj: SeekableFile,
+        name: str,
+        path: str,
+        depth: int,
+        ancestors: frozenset[str],
+        entry_counter: list[int],
+        start_time: float,
+    ) -> None:
+        """
+        Inflate one nested gzip stream and inspect its content.
+
+        The stream is inflated by ``GzipContentInspector`` in
+        ``chunk_size`` steps, under ``max_uncompressed_size`` and
+        ``max_compression_ratio`` relative to the stream's size,
+        into a spooled temporary file. Concatenated members and
+        zero padding are accepted; trailing data, a bad CRC-32 or
+        size and truncation are corrupt (``ZIP_CORRUPT``). The
+        content counts as one entry, is scanned like an entry's
+        content under ``name`` without its ``.gz`` suffix, and is
+        inspected one level deeper if it is a ZIP archive or gzip
+        stream.
+
+        Args:
+            file_obj: Seekable file containing the gzip stream.
+            name: Name of the stream, for its inner name.
+            path: Nesting path of the stream.
+            depth: Nesting depth of the stream.
+            ancestors: SHA-256 hashes of the enclosing ZIP archives.
+            entry_counter: Single-element list holding the
+                cumulative entry count across all levels.
+            start_time: Monotonic timestamp of the initial call.
+
+        Raises:
+            ZipBombError: If the stream exceeds a ratio or size
+                limit, with ``path`` prefixed to the message.
+            ZipContentError: If the stream is corrupt, its content
+                fails a check, or a limit on depth, entries or time
+                is exceeded.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+        """
+        inner_name = name
+        if name.lower().endswith(_GZIP_SUFFIX):
+            inner_name = name[: -len(_GZIP_SUFFIX)]
+        try:
+            self._check_depth(depth)
+            self._count_entries(entry_counter, 1)
+            self._check_timeout(start_time)
+            with tempfile.SpooledTemporaryFile(
+                max_size=self.config.limits.max_memory_buffer_size
+            ) as inner:
+                size = file_obj.seek(0, os.SEEK_END)
+                with self._prefixed_errors(path):
+                    for chunk in self._gzip.iter_decompressed_chunks(
+                        file_obj, size
+                    ):
+                        inner.write(chunk)
+                    inner.seek(0)
+                    self._raise_threats(self._scan_content(inner_name, inner))
+                self._inspect_kind(
+                    inner,
+                    inner_name,
+                    f"{path}/{os.path.basename(inner_name)}",
+                    depth + 1,
+                    ancestors,
+                    entry_counter,
+                    start_time,
+                )
+        except (ZipBombError, ZipContentError, ResourceLimitError):
+            raise
+        except Exception as err:
+            logger.warning("Could not inspect gzip stream %r: %s", path, err)
+            raise ZipContentError(
+                message=f"Could not inspect gzip stream '{path}'",
+                threats=[f"Uninspectable gzip stream '{path}'"],
+            ) from err
+
+    def _copy_entry(
         self,
         zf: zipfile.ZipFile,
         entry: zipfile.ZipInfo,
         path: str,
         dest: tempfile.SpooledTemporaryFile[bytes],
-    ) -> bool:
+    ) -> None:
         """
-        Copy an entry into ``dest`` if it is a nested ZIP archive.
+        Copy an entry's content into ``dest``.
 
-        An entry is a nested ZIP archive when its extension is a
-        recursable archive type or its content starts with a ZIP
-        signature. The entry is read through its ``ZipInfo`` in
-        ``chunk_size`` pieces, so duplicate names cannot select a
-        different entry and no more than one chunk is held in
-        memory beyond the spooled file.
+        The entry is read through its ``ZipInfo`` in ``chunk_size``
+        pieces, so duplicate names cannot select a different entry
+        and no more than one chunk is held in memory beyond the
+        spooled file.
 
         Args:
             zf: Archive holding the entry.
             entry: Entry to copy.
             path: Nesting path of the entry, for messages.
-            dest: Empty spooled file receiving the archive bytes;
-                left at offset 0 when the entry was copied.
-
-        Returns:
-            True if the entry is a nested ZIP archive and was
-            copied, False if it is not a ZIP archive.
+            dest: Empty spooled file receiving the entry bytes.
 
         Raises:
             ZipContentError: If the entry cannot be read or its
@@ -1037,31 +1321,22 @@ class ZipContentInspector(BaseInspector):
                 time or memory limit is exceeded.
         """
         limits = self.config.limits
+        size = 0
         try:
             with zf.open(entry, "r") as stream:
-                chunk = stream.read(self._zip_signature_size)
-                if self._extension(
-                    entry.filename
-                ) not in self._recursable_exts and not (
-                    matches_signature_prefix(chunk, self._zip_signatures)
-                ):
-                    return False
-
-                size = 0
-                while chunk:
+                while chunk := stream.read(limits.chunk_size):
                     check_resource_limits()
                     size += len(chunk)
                     if size > limits.max_individual_file_size:
                         raise ZipContentError(
                             message=(
-                                f"Nested archive too large: '{path}'"
+                                f"Nested entry too large: '{path}'"
                                 " exceeds the individual file size limit"
                             ),
-                            threats=[f"Nested archive too large: '{path}'"],
+                            threats=[f"Nested entry too large: '{path}'"],
                             error_code=ErrorCode.FILE_TOO_LARGE,
                         )
                     dest.write(chunk)
-                    chunk = stream.read(limits.chunk_size)
         except (ZipContentError, ResourceLimitError):
             raise
         except Exception as err:
@@ -1071,42 +1346,29 @@ class ZipContentInspector(BaseInspector):
                 threats=[f"Nested entry could not be read: '{path}'"],
             ) from err
 
-        dest.seek(0)
-        return True
-
-    def _check_nested_level(
-        self, file_obj: SeekableFile, path: str, start_time: float
-    ) -> None:
+    @contextlib.contextmanager
+    def _prefixed_errors(self, path: str) -> Iterator[None]:
         """
-        Run the top-level archive checks on a nested archive.
+        Re-raise a nested level's failure under its nesting path.
 
-        Applies the compression, size, entry-count and layout
-        checks of ``CompressionSecurityValidator`` and this
-        inspector's entry and structure checks. A zip bomb is
-        re-raised as ``ZipBombError`` with its details and
-        ``path`` prefixed to the message; other failures are
-        raised as ``ZipContentError`` with the original error
-        code, and their threats are prefixed with ``path``.
+        A decompression bomb is re-raised as ``ZipBombError`` with
+        its details and ``path`` prefixed to the message; other
+        ``CompressionSecurityError`` failures are raised as
+        ``ZipContentError`` with the original error code, and their
+        threats are prefixed with ``path``.
 
         Args:
-            file_obj: Seekable file containing the nested archive.
-            path: Nesting path of the archive.
-            start_time: Monotonic timestamp the analysis timeout
-                counts from.
+            path: Nesting path of the level.
+
+        Yields:
+            None, while the level is checked.
 
         Raises:
-            ZipBombError: If the nested archive exceeds a
-                compression ratio or size limit.
-            ZipContentError: If the nested archive fails a check.
-            ResourceLimitError: If the active resource monitor's
-                time or memory limit is exceeded.
-            FileProcessingError: If the compression check fails
-                unexpectedly.
+            ZipBombError: If the level is a decompression bomb.
+            ZipContentError: If the level fails another check.
         """
         try:
-            size = file_obj.seek(0, os.SEEK_END)
-            self._compression.validate_zip_compression_ratio(file_obj, size)
-            self._inspect_archive(file_obj, start_time)
+            yield
         except ZipBombError as err:
             raise ZipBombError(
                 message=f"{path}: {err.message}",
@@ -1132,3 +1394,34 @@ class ZipContentInspector(BaseInspector):
                 threats=threats,
                 error_code=err.error_code,
             ) from err
+
+    def _check_nested_level(
+        self, file_obj: SeekableFile, path: str, start_time: float
+    ) -> None:
+        """
+        Run the top-level archive checks on a nested archive.
+
+        Applies the compression, size, entry-count and layout
+        checks of ``CompressionSecurityValidator`` and this
+        inspector's entry and structure checks, with failures
+        re-raised under ``path`` (see ``_prefixed_errors``).
+
+        Args:
+            file_obj: Seekable file containing the nested archive.
+            path: Nesting path of the archive.
+            start_time: Monotonic timestamp the analysis timeout
+                counts from.
+
+        Raises:
+            ZipBombError: If the nested archive exceeds a
+                compression ratio or size limit.
+            ZipContentError: If the nested archive fails a check.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+            FileProcessingError: If the compression check fails
+                unexpectedly.
+        """
+        with self._prefixed_errors(path):
+            size = file_obj.seek(0, os.SEEK_END)
+            self._compression.validate_zip_compression_ratio(file_obj, size)
+            self._inspect_archive(file_obj, start_time)

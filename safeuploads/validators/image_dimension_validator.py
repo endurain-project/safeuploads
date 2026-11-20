@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import struct
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 from ..exceptions import ErrorCode, FileSignatureError, ImageDimensionError
@@ -24,6 +25,9 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _PNG_IHDR = b"\x00\x00\x00\x0dIHDR"
 # PNG width and height are at most 2**31 - 1
 _PNG_MAX_DIMENSION = 2**31 - 1
+# Chunk length and type before the data, CRC after it
+_PNG_CHUNK_HEADER = 8
+_PNG_CHUNK_CRC = 4
 
 _JPEG_SOI = b"\xff\xd8"
 # Start-of-frame markers; 0xC4 (DHT), 0xC8 (JPG) and 0xCC (DAC)
@@ -31,11 +35,30 @@ _JPEG_SOI = b"\xff\xd8"
 _JPEG_SOF = frozenset(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
 _JPEG_SOS = 0xDA
 _JPEG_EOI = 0xD9
-# Byte values after 0xFF that have no length field: 0x00 (stuffed
-# byte, not a marker), TEM, RST0-RST7 and SOI
-_JPEG_STANDALONE = frozenset({0x00, 0x01, *range(0xD0, 0xD9)})
+# Define hierarchical progression, which Pillow reads as a frame
+# header; hierarchical JPEG is not supported
+_JPEG_DHP = 0xDE
+# Byte values after 0xFF that a decoder reads without a length
+# field, so a segment walk and the decoder could disagree on where
+# the next marker is: 0x00 (stuffed byte, not a marker), TEM,
+# RST0-RST7, SOI, and the JPG and JPG0-JPG13 extension markers,
+# which Pillow reads without one
+_JPEG_STANDALONE = frozenset(
+    {0x00, 0x01, 0xC8, *range(0xD0, 0xD9), *range(0xF0, 0xFE)}
+)
 # Frame header length for one component (8 + 3 per component)
 _JPEG_MIN_FRAME_LENGTH = 11
+# A multi-picture (MPO) index is an APP2 segment holding "MPF\0"
+# and a TIFF header and IFD (CIPA DC-007)
+_JPEG_APP2 = 0xE2
+_JPEG_MPF = b"MPF\x00"
+_MPF_BYTE_ORDERS = {b"MM\x00\x2a": ">", b"II\x2a\x00": "<"}
+_MPF_NUMBER_OF_IMAGES = 0xB001
+_MPF_ENTRIES = 0xB002
+_TIFF_LONG = 4
+_TIFF_UNDEFINED = 7
+# Attribute, size, data offset and two dependent image entries
+_MPF_ENTRY_SIZE = 16
 
 # RIFF header (12) + chunk header (8) + the largest dimension
 # field read from a chunk (VP8 and VP8X, 10)
@@ -51,6 +74,16 @@ _HEIF_META_BOXES = frozenset(
 _HEIF_REQUIRED_BOXES = (b"hdlr", b"pitm", b"iloc", b"iinf", b"iprp")
 _HEIF_HEVC_ITEM = b"hvc1"
 _HEIF_GRID_ITEM = b"grid"
+# ISO 21496-1 tone map: derived from a base image and a gain map
+_HEIF_TONE_MAP_ITEM = b"tmap"
+# HEVC images (the primary, tiles, thumbnails and auxiliary alpha,
+# depth or gain map images) and grids of HEVC tiles, which can be
+# the primary image or a tone map's input
+_HEIF_BASE_ITEMS = frozenset({_HEIF_HEVC_ITEM, _HEIF_GRID_ITEM})
+# The image items a camera HEIC carries; each must have an ispe
+_HEIF_IMAGE_ITEMS = _HEIF_BASE_ITEMS | {_HEIF_TONE_MAP_ITEM}
+# Metadata items (EXIF and XMP), which a decoder does not decode
+_HEIF_METADATA_ITEMS = frozenset({b"Exif", b"mime"})
 # ImageGrid descriptor: version, flags, rows - 1 and columns - 1,
 # then the output size in 16-bit fields, or 32-bit fields when
 # flag bit 0 is set
@@ -63,14 +96,15 @@ class ImageDimensionValidator(BaseValidator):
     """
     Rejects images whose header declares too many pixels.
 
-    Width and height are read from the PNG IHDR chunk, the first
-    JPEG frame header (SOF), the first WebP chunk (VP8, VP8L or
-    VP8X canvas) or the HEIC primary item's ispe property, after
-    every ispe property in the file is checked and, for a grid,
-    its descriptor and tiles are matched to it. No pixel data is
-    decoded. A small file can declare a huge image that exhausts
-    memory when decoded, so the pixel count is bounded before a
-    host decodes the upload.
+    Width and height are read from the PNG IHDR chunk, the JPEG
+    frame header (SOF) of the primary image and of every image a
+    multi-picture (MPF) index lists, the first WebP chunk (VP8,
+    VP8L or VP8X canvas) or the HEIC primary item's ispe property,
+    after every ispe property in the file is checked and every
+    grid's descriptor and tiles are matched to its ispe. No pixel
+    data is decoded. A small file can declare a huge image that
+    exhausts memory when decoded, so the pixel count is bounded
+    before a host decodes the upload.
 
     Attributes:
         config: Security configuration with ``max_image_pixels``.
@@ -104,7 +138,8 @@ class ImageDimensionValidator(BaseValidator):
                 structure is missing, truncated or invalid
                 (IMAGE_INVALID_STRUCTURE).
             ImageDimensionError: If width times height exceeds
-                ``limits.max_image_pixels``, for a HEIC that of any
+                ``limits.max_image_pixels``, for a JPEG that of any
+                image its MPF index lists, for a HEIC that of any
                 ispe property.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
@@ -112,7 +147,7 @@ class ImageDimensionValidator(BaseValidator):
         file_obj.seek(0)
         head = file_obj.read(_WEBP_HEADER_SIZE)
         if head.startswith(_PNG_SIGNATURE):
-            width, height = self._png_dimensions(head, filename)
+            width, height = self._png_dimensions(file_obj, filename)
         elif head.startswith(_JPEG_SOI):
             width, height = self._jpeg_dimensions(file_obj, filename)
         elif head[:4] == b"RIFF" and head[8:12] == b"WEBP":
@@ -160,68 +195,158 @@ class ImageDimensionValidator(BaseValidator):
             )
 
     @staticmethod
-    def _png_dimensions(head: bytes, filename: str | None) -> tuple[int, int]:
+    def _png_dimensions(
+        file_obj: SeekableFile, filename: str | None
+    ) -> tuple[int, int]:
         """
-        Read width and height from the PNG IHDR chunk.
+        Read width and height from IHDR and walk to the image data.
+
+        Pillow keeps the last IHDR before the first IDAT, so the
+        chunks up to IDAT are walked and a second IHDR is rejected.
+        Each chunk is skipped by its length without reading its
+        data, so ancillary chunks of any size cost one seek each.
 
         Args:
-            head: Leading bytes of the file.
+            file_obj: Seekable file containing the PNG.
             filename: Optional sanitized filename for error context.
 
         Returns:
             Width and height.
 
         Raises:
-            FileSignatureError: If IHDR is missing or invalid.
+            FileSignatureError: If IHDR is missing, invalid or
+                repeated, a chunk runs past the end of the file, or
+                the file ends before an IDAT chunk.
+            ResourceLimitError: If a resource limit is exceeded.
         """
-        if len(head) < 24 or head[8:16] != _PNG_IHDR:
+        end = file_obj.seek(0, 2)
+        file_obj.seek(len(_PNG_SIGNATURE))
+        ihdr = file_obj.read(len(_PNG_IHDR) + 8)
+        if len(ihdr) < len(_PNG_IHDR) + 8 or not ihdr.startswith(_PNG_IHDR):
             raise _invalid("PNG does not start with an IHDR chunk", filename)
-        width, height = struct.unpack_from(">II", head, 16)
+        width, height = struct.unpack_from(">II", ihdr, len(_PNG_IHDR))
         if not (
             0 < width <= _PNG_MAX_DIMENSION
             and 0 < height <= _PNG_MAX_DIMENSION
         ):
             raise _invalid("PNG dimensions are invalid", filename)
-        return width, height
+
+        # Start at the IHDR chunk just read
+        pos = len(_PNG_SIGNATURE)
+        kind = b"IHDR"
+        length = 13
+        while True:
+            pos += _PNG_CHUNK_HEADER + length + _PNG_CHUNK_CRC
+            if pos > end:
+                raise _invalid("Truncated PNG chunk", filename)
+            if kind == b"IDAT":
+                return width, height
+            check_resource_limits()
+            file_obj.seek(pos)
+            header = file_obj.read(_PNG_CHUNK_HEADER)
+            if len(header) < _PNG_CHUNK_HEADER:
+                raise _invalid("PNG ends before its image data", filename)
+            length, kind = struct.unpack(">I4s", header)
+            if kind == b"IHDR":
+                raise _invalid("PNG has more than one IHDR chunk", filename)
+            if kind == b"IEND":
+                raise _invalid("PNG ends before its image data", filename)
 
     def _jpeg_dimensions(
         self, file_obj: SeekableFile, filename: str | None
     ) -> tuple[int, int]:
         """
-        Walk the JPEG marker segments to the first frame header.
+        Read the primary frame size and check every MPF image.
 
-        Each segment before the frame is skipped by its length
-        without reading its payload, so EXIF, ICC and other
-        segments of any size cost one seek each.
+        Pillow opens a JPEG whose MPF index lists more than one
+        image as a multi-picture file and decodes each listed
+        image, so every image after the primary is walked to its
+        scan and checked against the pixel limit.
 
         Args:
-            file_obj: Seekable file positioned anywhere.
+            file_obj: Seekable file containing the JPEG.
             filename: Optional sanitized filename for error context.
 
         Returns:
-            Width and height from the frame header.
+            Width and height of the primary image.
 
         Raises:
-            FileSignatureError: If the segments are malformed or
-                end before a frame header.
+            FileSignatureError: If a walked image's segments or its
+                frame header are malformed, or the MPF index is
+                malformed or lists an image outside the file.
+            ImageDimensionError: If an image after the primary
+                exceeds ``limits.max_image_pixels``.
             ResourceLimitError: If a resource limit is exceeded.
         """
-        end = file_obj.seek(0, 2)
-        pos = len(_JPEG_SOI)
+        file_end = file_obj.seek(0, 2)
+        width, height, mpf = self._jpeg_image(file_obj, 0, file_end, filename)
+        if mpf is not None:
+            for start, end in _mpf_images(file_obj, mpf, file_end, filename):
+                frame_width, frame_height, _ = self._jpeg_image(
+                    file_obj, start, end, filename
+                )
+                self._check_pixels(frame_width, frame_height, filename)
+        return width, height
+
+    def _jpeg_image(
+        self,
+        file_obj: SeekableFile,
+        start: int,
+        end: int,
+        filename: str | None,
+    ) -> tuple[int, int, tuple[int, int] | None]:
+        """
+        Walk one JPEG image's marker segments to its first scan.
+
+        Pillow reads every segment up to the first scan (SOS) and
+        keeps the last frame header, so exactly one frame header
+        must precede the scan. Each other segment is skipped by its
+        length without reading its payload, so EXIF, ICC and other
+        segments of any size cost one seek each; only the first
+        bytes of an APP2 segment are read to find an MPF index.
+
+        Args:
+            file_obj: Seekable file containing the JPEG.
+            start: Offset of the image's start of image (SOI).
+            end: Offset the image's segments must end by.
+            filename: Optional sanitized filename for error context.
+
+        Returns:
+            Width and height from the frame header, and the start
+            and end offsets of the MPF TIFF data, None without an
+            MPF segment.
+
+        Raises:
+            FileSignatureError: If the image does not start with
+                SOI, its segments are malformed or run past ``end``,
+                it has no frame header or more than one frame header
+                or MPF segment before its scan, or it is
+                hierarchical.
+            ResourceLimitError: If a resource limit is exceeded.
+        """
+        file_obj.seek(start)
+        if file_obj.read(len(_JPEG_SOI)) != _JPEG_SOI:
+            raise _invalid("JPEG image does not start with SOI", filename)
+        size: tuple[int, int] | None = None
+        mpf: tuple[int, int] | None = None
+        pos = start + len(_JPEG_SOI)
         while True:
             check_resource_limits()
-            marker, pos = self._jpeg_marker(file_obj, pos, filename)
-            if marker in _JPEG_SOF:
-                return self._jpeg_frame(file_obj, pos, filename)
-            if marker in (_JPEG_SOS, _JPEG_EOI):
-                raise _invalid(
-                    "JPEG has no frame header before its image data",
-                    filename,
-                )
+            marker, pos = self._jpeg_marker(file_obj, pos, end, filename)
+            if marker == _JPEG_SOS:
+                if size is None:
+                    raise _invalid(
+                        "JPEG has no frame header before its image data",
+                        filename,
+                    )
+                return size[0], size[1], mpf
+            if marker == _JPEG_EOI:
+                raise _invalid("JPEG ends before its image data", filename)
+            if marker == _JPEG_DHP:
+                raise _invalid("Hierarchical JPEG is not supported", filename)
             if marker in _JPEG_STANDALONE:
                 raise _invalid(
-                    "Unexpected JPEG marker before the frame header",
-                    filename,
+                    "Unexpected JPEG marker before the image data", filename
                 )
             file_obj.seek(pos)
             field = file_obj.read(2)
@@ -230,12 +355,32 @@ class ImageDimensionValidator(BaseValidator):
             (length,) = struct.unpack(">H", field)
             if length < 2:
                 raise _invalid("Invalid JPEG segment length", filename)
-            pos += length
-            if pos > end:
+            if pos + length > end:
                 raise _invalid("Truncated JPEG segment", filename)
+            if marker in _JPEG_SOF:
+                if size is not None:
+                    raise _invalid(
+                        "JPEG has more than one frame header", filename
+                    )
+                size = self._jpeg_frame(file_obj, pos, length, filename)
+            elif (
+                marker == _JPEG_APP2
+                and length >= 2 + len(_JPEG_MPF)
+                and file_obj.read(len(_JPEG_MPF)) == _JPEG_MPF
+            ):
+                if mpf is not None:
+                    raise _invalid(
+                        "JPEG has more than one MPF segment", filename
+                    )
+                mpf = (pos + 2 + len(_JPEG_MPF), pos + length)
+            pos += length
 
     def _jpeg_marker(
-        self, file_obj: SeekableFile, pos: int, filename: str | None
+        self,
+        file_obj: SeekableFile,
+        pos: int,
+        end: int,
+        filename: str | None,
     ) -> tuple[int, int]:
         """
         Read the marker at ``pos``, skipping 0xFF fill bytes.
@@ -243,6 +388,7 @@ class ImageDimensionValidator(BaseValidator):
         Args:
             file_obj: Seekable file containing the JPEG.
             pos: Offset where a marker must start.
+            end: Offset the marker must end by.
             filename: Optional sanitized filename for error context.
 
         Returns:
@@ -250,13 +396,13 @@ class ImageDimensionValidator(BaseValidator):
 
         Raises:
             FileSignatureError: If no marker starts at ``pos`` or
-                the file ends before one.
+                ``end`` is reached before one.
             ResourceLimitError: If a resource limit is exceeded.
         """
         file_obj.seek(pos)
-        pair = file_obj.read(2)
+        pair = file_obj.read(min(2, end - pos))
         if len(pair) < 2:
-            raise _invalid("JPEG ends before the frame header", filename)
+            raise _invalid("JPEG ends before its image data", filename)
         if pair[0] != 0xFF:
             raise _invalid(
                 "JPEG segment does not start with a marker", filename
@@ -270,9 +416,9 @@ class ImageDimensionValidator(BaseValidator):
         chunk_size = self.config.limits.chunk_size
         file_obj.seek(pos)
         while True:
-            chunk = file_obj.read(chunk_size)
+            chunk = file_obj.read(min(chunk_size, end - pos))
             if not chunk:
-                raise _invalid("JPEG ends before the frame header", filename)
+                raise _invalid("JPEG ends before its image data", filename)
             rest = chunk.lstrip(b"\xff")
             pos += len(chunk) - len(rest)
             if rest:
@@ -281,30 +427,28 @@ class ImageDimensionValidator(BaseValidator):
 
     @staticmethod
     def _jpeg_frame(
-        file_obj: SeekableFile, pos: int, filename: str | None
+        file_obj: SeekableFile, pos: int, length: int, filename: str | None
     ) -> tuple[int, int]:
         """
         Read width and height from a JPEG frame header.
 
         Args:
             file_obj: Seekable file containing the JPEG.
-            pos: Offset just past the SOF marker.
+            pos: Offset of the segment's length field.
+            length: Segment length, which lies within the file.
             filename: Optional sanitized filename for error context.
 
         Returns:
             Width and height.
 
         Raises:
-            FileSignatureError: If the frame header is truncated or
+            FileSignatureError: If the frame header is too short or
                 declares a zero dimension.
         """
-        file_obj.seek(pos)
-        frame = file_obj.read(7)
-        if len(frame) < 7:
-            raise _invalid("Truncated JPEG frame header", filename)
-        length, _precision, height, width = struct.unpack(">HBHH", frame)
         if length < _JPEG_MIN_FRAME_LENGTH:
             raise _invalid("Invalid JPEG frame header length", filename)
+        file_obj.seek(pos + 2)
+        _precision, height, width = struct.unpack(">BHH", file_obj.read(5))
         # A zero height is deferred to a DNL segment after the first
         # scan; it is rejected rather than searched for.
         if not width or not height:
@@ -358,6 +502,117 @@ class ImageDimensionValidator(BaseValidator):
             height = int.from_bytes(head[27:30], "little") + 1
             return width, height
         raise _invalid("WebP has no image header chunk", filename)
+
+
+def _mpf_images(
+    file_obj: SeekableFile,
+    span: tuple[int, int],
+    file_end: int,
+    filename: str | None,
+) -> list[tuple[int, int]]:
+    """
+    Locate each image after the primary that an MPF index lists.
+
+    Pillow seeks to each listed image at its data offset from the
+    MPF TIFF header and decodes it there, ignoring the size the
+    index gives, so the size is ignored here too. The first image
+    must be the primary at offset 0 and the offsets must increase;
+    each image is walked up to the next one's offset, the last up
+    to the end of the file, so every byte is walked at most once.
+
+    Args:
+        file_obj: Seekable file containing the JPEG.
+        span: Start and end offsets of the MPF TIFF data.
+        file_end: Size of the file.
+        filename: Optional sanitized filename for error context.
+
+    Returns:
+        Start offset of every image after the primary, and the
+        offset its walk must end by.
+
+    Raises:
+        FileSignatureError: If the index is malformed, does not
+            start with the primary, or lists an image outside the
+            file or out of order.
+        ResourceLimitError: If a resource limit is exceeded.
+    """
+    start, end = span
+    file_obj.seek(start)
+    offsets = _mpf_offsets(file_obj.read(end - start), filename)
+    if offsets[0]:
+        raise _invalid(
+            "JPEG MPF index does not start with the primary image", filename
+        )
+    # Each image's start, then the end of the file
+    bounds = [start + offset for offset in offsets[1:]] + [file_end]
+    previous = 0
+    for image_start in bounds[:-1]:
+        check_resource_limits()
+        if image_start <= previous or image_start >= file_end:
+            raise _invalid(
+                "JPEG MPF image lies outside the file or out of order",
+                filename,
+            )
+        previous = image_start
+    return list(pairwise(bounds))
+
+
+def _mpf_offsets(data: bytes, filename: str | None) -> list[int]:
+    """
+    Read each image's data offset from an MPF index.
+
+    The index is a TIFF header and IFD; the number of images
+    (0xB001, one LONG) and the MP Entry list (0xB002, 16 bytes per
+    image) must each appear once and agree.
+
+    Args:
+        data: MPF TIFF data, from the TIFF header to the end of
+            the APP2 segment.
+        filename: Optional sanitized filename for error context.
+
+    Returns:
+        Data offset of each listed image.
+
+    Raises:
+        FileSignatureError: If the header, IFD or entry list is
+            malformed, truncated or inconsistent.
+    """
+    order = _MPF_BYTE_ORDERS.get(data[:4])
+    if order is None:
+        raise _invalid("Invalid JPEG MPF header", filename)
+
+    def field(fmt: str, offset: int) -> tuple[int, ...]:
+        if offset + struct.calcsize(fmt) > len(data):
+            raise _invalid("Truncated JPEG MPF index", filename)
+        return struct.unpack_from(order + fmt, data, offset)
+
+    (ifd,) = field("I", 4)
+    (tag_count,) = field("H", ifd)
+    tags: dict[int, tuple[int, ...]] = {}
+    for index in range(tag_count):
+        tag, kind, number, value = field("HHII", ifd + 2 + 12 * index)
+        if tag in tags:
+            raise _invalid("JPEG MPF index repeats a tag", filename)
+        tags[tag] = (kind, number, value)
+    images = tags.get(_MPF_NUMBER_OF_IMAGES)
+    listed = tags.get(_MPF_ENTRIES)
+    if images is None or listed is None:
+        raise _invalid("JPEG MPF index is incomplete", filename)
+    kind, number, count = images
+    if kind != _TIFF_LONG or number != 1 or not count:
+        raise _invalid("Invalid JPEG MPF image count", filename)
+    kind, number, offset = listed
+    if kind != _TIFF_UNDEFINED or number != count * _MPF_ENTRY_SIZE:
+        raise _invalid(
+            "JPEG MPF image list does not match its count", filename
+        )
+    if offset + number > len(data):
+        raise _invalid("Truncated JPEG MPF index", filename)
+    # Each entry holds the attribute, the size and the data offset
+    return [
+        field("III", offset + _MPF_ENTRY_SIZE * index)[2]
+        for index in range(count)
+    ]
 
 
 def _heif_dimensions(
@@ -610,6 +865,11 @@ class _Cursor:
         return version, flags
 
 
+# Construction method, data reference index and (offset, length)
+# extents of an item's data, from its iloc entry
+_ItemLocation = tuple[int, int, list[tuple[int, int]]]
+
+
 class _HeifMeta:
     """
     Item structure of a HEIF meta box held in memory.
@@ -661,10 +921,15 @@ class _HeifMeta:
         self, check_pixels: Callable[[int, int], None]
     ) -> tuple[int, int]:
         """
-        Read the primary item's size after checking every ispe.
+        Read the primary item's size after checking every item.
 
-        The primary item must be an HEVC image or a grid of HEVC
-        tiles; other codecs and derivations are rejected.
+        A decoder can decode any image item, not only the primary,
+        so every item must be an HEVC image, a grid of HEVC tiles or
+        a tone map, with an ispe property, or EXIF or XMP metadata;
+        other codecs and derivations (such as overlays) are
+        rejected. Every grid's descriptor and tiles must match its
+        ispe, and every tone map's ispe its base image's. The
+        primary item must be an HEVC image or a grid.
 
         Args:
             check_pixels: Called with the size in every ispe
@@ -682,14 +947,43 @@ class _HeifMeta:
         primary = self._primary_item()
         types = self._item_types()
         sizes = self._item_sizes(check_pixels)
-        item_type = types.get(primary)
-        if item_type == _HEIF_HEVC_ITEM:
-            return self._item_size(sizes, primary)
-        if item_type == _HEIF_GRID_ITEM:
-            return self._grid_dimensions(primary, types, sizes)
-        raise _invalid(
-            "HEIF primary item is not an HEVC image or grid", self._filename
-        )
+        if types.get(primary) not in _HEIF_BASE_ITEMS:
+            raise _invalid(
+                "HEIF primary item is not an HEVC image or grid",
+                self._filename,
+            )
+        grids: set[int] = set()
+        tone_maps: set[int] = set()
+        for item_id, item_type in types.items():
+            if item_type in _HEIF_METADATA_ITEMS:
+                continue
+            if item_type not in _HEIF_IMAGE_ITEMS:
+                raise _invalid("Unsupported HEIF item type", self._filename)
+            if item_id not in sizes:
+                raise _invalid(
+                    "HEIF image has no ispe property", self._filename
+                )
+            if item_type == _HEIF_GRID_ITEM:
+                grids.add(item_id)
+            elif item_type == _HEIF_TONE_MAP_ITEM:
+                tone_maps.add(item_id)
+        if grids or tone_maps:
+            references = self._derived_inputs(grids | tone_maps)
+            locations = self._grid_locations(grids) if grids else {}
+            for grid_id in sorted(grids):
+                check_resource_limits()
+                self._check_grid(
+                    grid_id,
+                    locations.get(grid_id),
+                    references.get(grid_id),
+                    types,
+                    sizes,
+                )
+            for tone_map_id in sorted(tone_maps):
+                self._check_tone_map(
+                    tone_map_id, references.get(tone_map_id), types, sizes
+                )
+        return sizes[primary]
 
     def _cursor(self, kind: bytes) -> _Cursor:
         """Return a cursor over the payload of a meta child box."""
@@ -859,26 +1153,14 @@ class _HeifMeta:
                 sizes[item_id] = size
         return sizes
 
-    def _item_size(
-        self, sizes: dict[int, tuple[int, int]], item_id: int
-    ) -> tuple[int, int]:
-        """
-        Return the ispe size of an image item.
-
-        Raises:
-            FileSignatureError: If the item has no ispe property.
-        """
-        size = sizes.get(item_id)
-        if size is None:
-            raise _invalid("HEIF image has no ispe property", self._filename)
-        return size
-
-    def _grid_dimensions(
+    def _check_grid(
         self,
         grid_id: int,
+        location: _ItemLocation | None,
+        tiles: list[int] | None,
         types: dict[int, bytes],
         sizes: dict[int, tuple[int, int]],
-    ) -> tuple[int, int]:
+    ) -> None:
         """
         Match a grid's descriptor and tiles to its ispe size.
 
@@ -889,20 +1171,24 @@ class _HeifMeta:
 
         Args:
             grid_id: Item ID of the grid.
+            location: The grid's iloc entry; None without one.
+            tiles: Tile item IDs the grid references, in grid
+                order; None without a dimg reference.
             types: Item type by item ID.
-            sizes: ispe width and height by item ID.
-
-        Returns:
-            Width and height of the grid.
+            sizes: ispe width and height by item ID, which holds
+                every grid and HEVC image.
 
         Raises:
             FileSignatureError: If the descriptor, its location,
                 the tile references or the tiles are invalid or do
                 not match the grid's ispe.
-            ResourceLimitError: If a resource limit is exceeded.
         """
-        width, height = self._item_size(sizes, grid_id)
-        descriptor = self._grid_descriptor(grid_id)
+        if location is None:
+            raise _invalid("HEIF grid has no item location", self._filename)
+        if tiles is None:
+            raise _invalid("HEIF grid has no tile references", self._filename)
+        width, height = sizes[grid_id]
+        descriptor = self._grid_descriptor(location)
         cursor = _Cursor(descriptor, 0, len(descriptor), self._filename)
         version, flags = cursor.uint(1), cursor.uint(1)
         if version != 0 or flags & ~_HEIF_GRID_WIDE_FIELDS:
@@ -918,7 +1204,6 @@ class _HeifMeta:
                 self._filename,
             )
 
-        tiles = self._grid_tiles(grid_id)
         if len(tiles) != rows * columns:
             raise _invalid(
                 "HEIF grid tile count does not match its layout",
@@ -930,7 +1215,7 @@ class _HeifMeta:
                 raise _invalid(
                     "HEIF grid tile is not an HEVC image", self._filename
                 )
-            tile_sizes.add(self._item_size(sizes, tile))
+            tile_sizes.add(sizes[tile])
         if len(tile_sizes) != 1:
             raise _invalid("HEIF grid tiles differ in size", self._filename)
         ((tile_width, tile_height),) = tile_sizes
@@ -941,66 +1226,111 @@ class _HeifMeta:
             raise _invalid(
                 "HEIF grid tiles do not match the grid size", self._filename
             )
-        return width, height
 
-    def _grid_tiles(self, grid_id: int) -> list[int]:
+    def _check_tone_map(
+        self,
+        tone_map_id: int,
+        inputs: list[int] | None,
+        types: dict[int, bytes],
+        sizes: dict[int, tuple[int, int]],
+    ) -> None:
         """
-        Read the tile item IDs a grid references (dimg).
+        Match a tone map's ispe to its base image.
+
+        A tone map applies a gain map to a base image, and a decoder
+        (libavif) outputs it at the base image's size and rejects
+        one whose ispe differs, so it must reference exactly a base
+        image and a gain map, each an HEVC image or grid, and its
+        ispe must equal the base image's.
 
         Args:
-            grid_id: Item ID of the grid.
-
-        Returns:
-            Tile item IDs in grid order.
+            tone_map_id: Item ID of the tone map.
+            inputs: Item IDs the tone map references, base image
+                first; None without a dimg reference.
+            types: Item type by item ID.
+            sizes: ispe width and height by item ID, which holds
+                every image item.
 
         Raises:
-            FileSignatureError: If iref is missing or malformed, or
-                the grid does not have exactly one dimg reference.
+            FileSignatureError: If the references or the ispe do
+                not match.
+        """
+        if inputs is None or len(inputs) != 2 or inputs[0] == inputs[1]:
+            raise _invalid(
+                "HEIF tone map does not reference a base and a gain map",
+                self._filename,
+            )
+        if any(types.get(item) not in _HEIF_BASE_ITEMS for item in inputs):
+            raise _invalid(
+                "HEIF tone map input is not an HEVC image or grid",
+                self._filename,
+            )
+        if sizes[tone_map_id] != sizes[inputs[0]]:
+            raise _invalid(
+                "HEIF tone map size does not match its base image",
+                self._filename,
+            )
+
+    def _derived_inputs(self, item_ids: set[int]) -> dict[int, list[int]]:
+        """
+        Read the input item IDs each derived item references (dimg).
+
+        Args:
+            item_ids: Item IDs of the derived items (grids and tone
+                maps).
+
+        Returns:
+            Input item IDs in order (a grid's tiles in grid order),
+            by derived item ID, for the items that have a dimg
+            reference.
+
+        Raises:
+            FileSignatureError: If iref is malformed or an item has
+                more than one dimg reference.
             ResourceLimitError: If a resource limit is exceeded.
         """
+        inputs: dict[int, list[int]] = {}
         if b"iref" not in self._boxes:
-            raise _invalid("HEIF grid has no tile references", self._filename)
+            return inputs
         cursor = self._cursor(b"iref")
         version, _ = cursor.full_box((0, 1), b"iref")
         id_size = 2 if version == 0 else 4
-        tiles: list[int] | None = None
         for kind, start, end in _heif_boxes(
             self._data, cursor.pos, cursor.end, self._filename
         ):
             if kind != b"dimg":
                 continue
             ref = _Cursor(self._data, start, end, self._filename)
-            if ref.uint(id_size) != grid_id:
+            item_id = ref.uint(id_size)
+            if item_id not in item_ids:
                 continue
-            if tiles is not None:
+            if item_id in inputs:
                 raise _invalid(
-                    "HEIF grid has more than one tile reference",
+                    "HEIF derived image has more than one input reference",
                     self._filename,
                 )
-            tiles = [ref.uint(id_size) for _ in range(ref.uint(2))]
-        if tiles is None:
-            raise _invalid("HEIF grid has no tile references", self._filename)
-        return tiles
+            inputs[item_id] = [ref.uint(id_size) for _ in range(ref.uint(2))]
+        return inputs
 
-    def _grid_descriptor(self, grid_id: int) -> bytes:
+    def _grid_locations(self, grid_ids: set[int]) -> dict[int, _ItemLocation]:
         """
-        Read a grid's descriptor from the location iloc gives.
+        Read the iloc entry of each grid in one pass.
 
-        Only the grid's entry is read in full; other entries are
-        skipped by their size. The descriptor must be stored in
-        this file, in idat or at a file offset, in at most
+        Only the grids' entries are read in full; other entries are
+        skipped by their size. A descriptor must take at most
         ``_HEIF_GRID_MAX_SIZE`` bytes.
 
         Args:
-            grid_id: Item ID of the grid.
+            grid_ids: Item IDs of the grids.
 
         Returns:
-            The descriptor bytes.
+            Construction method, data reference and extents by grid
+            item ID, for the grids that have an entry.
 
         Raises:
-            FileSignatureError: If iloc is malformed, the grid has
-                no single location, or the location is unsupported
-                or lies outside its data.
+            FileSignatureError: If iloc is malformed, a grid has
+                more than one entry, or a grid's extents are empty
+                or larger than a descriptor.
             ResourceLimitError: If a resource limit is exceeded.
         """
         cursor = self._cursor(b"iloc")
@@ -1022,7 +1352,7 @@ class _HeifMeta:
         id_size = 2 if version < 2 else 4
         extent_size = index_size + offset_size + length_size
 
-        location: tuple[int, int, list[tuple[int, int]]] | None = None
+        locations: dict[int, _ItemLocation] = {}
         for _ in range(cursor.uint(id_size)):
             check_resource_limits()
             item_id = cursor.uint(id_size)
@@ -1030,10 +1360,10 @@ class _HeifMeta:
             data_reference = cursor.uint(2)
             base = cursor.uint(base_size)
             extent_count = cursor.uint(2)
-            if item_id != grid_id:
+            if item_id not in grid_ids:
                 cursor.skip(extent_count * extent_size)
                 continue
-            if location is not None:
+            if item_id in locations:
                 raise _invalid(
                     "HEIF grid has more than one location", self._filename
                 )
@@ -1050,10 +1380,27 @@ class _HeifMeta:
                         "Invalid HEIF grid descriptor size", self._filename
                     )
                 extents.append((offset, length))
-            location = (method, data_reference, extents)
-        if location is None:
-            raise _invalid("HEIF grid has no item location", self._filename)
+            locations[item_id] = (method, data_reference, extents)
+        return locations
 
+    def _grid_descriptor(self, location: _ItemLocation) -> bytes:
+        """
+        Read a grid's descriptor from the location iloc gives.
+
+        The descriptor must be stored in this file, in idat or at a
+        file offset.
+
+        Args:
+            location: Construction method, data reference and
+                extents of the grid.
+
+        Returns:
+            The descriptor bytes.
+
+        Raises:
+            FileSignatureError: If the location is unsupported or
+                lies outside its data.
+        """
         method, data_reference, extents = location
         # Construction method 0 is a file offset, 1 an idat offset;
         # a non-zero data reference points outside the file

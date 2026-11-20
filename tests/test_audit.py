@@ -1,8 +1,11 @@
 """Tests for audit logging module."""
 
 import asyncio
+import io
 import logging
 import unicodedata
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -11,6 +14,7 @@ from safeuploads.audit import (
     AuditEventType,
     SecurityAuditLogger,
     _sanitize_field,
+    correlation_scope,
     get_correlation_id,
     reset_correlation_id,
     set_correlation_id,
@@ -53,6 +57,99 @@ class TestCorrelationId:
         """Test reset clears correlation ID."""
         set_correlation_id()
         reset_correlation_id()
+        assert get_correlation_id() is None
+
+    @pytest.mark.parametrize("cid", [uuid.uuid4(), 42, b"bytes-id"])
+    def test_set_rejects_non_str(self, cid):
+        """Test a non-str ID is refused and the current ID kept."""
+        set_correlation_id("kept")
+        try:
+            with pytest.raises(TypeError, match="str or None"):
+                set_correlation_id(cid)
+            assert get_correlation_id() == "kept"
+        finally:
+            reset_correlation_id()
+
+
+class TestCorrelationScope:
+    """Test the ``correlation_scope`` context manager."""
+
+    def test_explicit_id_set_then_restored(self):
+        """Test the ID holds inside the block and is cleared after."""
+        reset_correlation_id()
+        with correlation_scope("req-1") as cid:
+            assert cid == "req-1"
+            assert get_correlation_id() == "req-1"
+        assert get_correlation_id() is None
+
+    def test_generates_id_when_none(self):
+        """Test a UUID4 hex ID is generated without an argument."""
+        with correlation_scope() as cid:
+            assert len(cid) == 32
+            assert get_correlation_id() == cid
+
+    def test_restores_outer_id(self):
+        """Test a nested scope restores the enclosing ID."""
+        with correlation_scope("outer"):
+            with correlation_scope("inner"):
+                assert get_correlation_id() == "inner"
+            assert get_correlation_id() == "outer"
+
+    def test_restores_on_exception(self):
+        """Test the previous ID comes back when the block raises."""
+        reset_correlation_id()
+        with (
+            pytest.raises(ValueError, match="boom"),
+            correlation_scope("req-err"),
+        ):
+            raise ValueError("boom")
+        assert get_correlation_id() is None
+
+    @pytest.mark.parametrize("cid", [uuid.uuid4(), 42])
+    def test_rejects_non_str(self, cid):
+        """Test a non-str ID raises before anything is set."""
+        reset_correlation_id()
+        with (
+            pytest.raises(TypeError, match="str or None"),
+            correlation_scope(cid),
+        ):
+            pytest.fail("block must not run")
+        assert get_correlation_id() is None
+
+    def test_does_not_leak_into_next_job_on_pooled_thread(self):
+        """Test a reused worker thread starts the next job clean."""
+
+        def _job(cid: str | None) -> str | None:
+            if cid is None:
+                return get_correlation_id()
+            with correlation_scope(cid):
+                return get_correlation_id()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(_job, "req-1").result()
+            second = pool.submit(_job, None).result()
+
+        assert (first, second) == ("req-1", None)
+
+    def test_validation_uses_scope_id(self, valid_jpeg_bytes, caplog):
+        """Test audit records of a validation carry the scope ID."""
+        from safeuploads.config import SecurityLimits
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        validator = FileValidator(config=config)
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            correlation_scope("req-7"),
+        ):
+            validator.validate_image_file_sync(
+                io.BytesIO(valid_jpeg_bytes), "photo.jpg"
+            )
+
+        records = [r for r in caplog.records if r.name == "safeuploads.audit"]
+        assert len(records) == 2
+        assert {r.audit_correlation_id for r in records} == {"req-7"}
         assert get_correlation_id() is None
 
 
@@ -365,6 +462,114 @@ class TestAuditIntegration:
         file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
 
         await validator.validate_image_file(file)
+        assert get_correlation_id() is None
+
+
+class _StalledUpload:
+    """Upload that returns one chunk, then raises or waits forever."""
+
+    filename = "photo.jpg"
+    size = None
+
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.error = error
+        self.reading = asyncio.Event()
+        self._reads = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        self._reads += 1
+        if self._reads == 1:
+            return b"\xff\xd8\xff\xe0"
+        self.reading.set()
+        if self.error is not None:
+            raise self.error
+        await asyncio.Event().wait()
+        return b""
+
+    async def seek(self, offset: int) -> int:
+        return offset
+
+
+class _HostAbort(BaseException):
+    """A ``BaseException`` that is not a cancellation."""
+
+
+class TestCancellationAudit:
+    """A cancelled validation ends with a terminal audit event."""
+
+    @staticmethod
+    def _validator() -> FileValidator:
+        from safeuploads.config import SecurityLimits
+
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        return FileValidator(config=config)
+
+    @staticmethod
+    def _audit_records(caplog) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == "safeuploads.audit"]
+
+    async def test_completed_validation_logs_success(
+        self, mock_upload_file, valid_jpeg_bytes, caplog
+    ):
+        """An uncancelled validation still ends with success."""
+        file = mock_upload_file(filename="photo.jpg", content=valid_jpeg_bytes)
+
+        with caplog.at_level(logging.INFO, logger="safeuploads.audit"):
+            await self._validator().validate_image_file(file)
+
+        assert [r.audit_event_type for r in self._audit_records(caplog)] == [
+            "validation_start",
+            "validation_success",
+        ]
+
+    async def test_cancelled_validation_logs_failure_and_reraises(
+        self, caplog
+    ):
+        """Cancellation logs a "cancelled" failure and propagates."""
+        upload = _StalledUpload()
+
+        with caplog.at_level(logging.INFO, logger="safeuploads.audit"):
+            task = asyncio.create_task(
+                self._validator().validate_image_file(upload)
+            )
+            await upload.reading.wait()
+            task.cancel("client disconnected")
+            with pytest.raises(asyncio.CancelledError) as exc_info:
+                await task
+
+        assert exc_info.value.args == ("client disconnected",)
+        assert task.cancelled()
+        records = self._audit_records(caplog)
+        assert [r.audit_event_type for r in records] == [
+            "validation_start",
+            "validation_failure",
+        ]
+        cancelled = records[1]
+        assert cancelled.audit_result == "cancelled"
+        assert cancelled.audit_filename == "photo.jpg"
+        assert cancelled.audit_details == ""
+        assert cancelled.levelno == logging.WARNING
+        assert (
+            cancelled.audit_correlation_id == records[0].audit_correlation_id
+        )
+        assert get_correlation_id() is None
+
+    async def test_other_base_exception_propagates_unlogged(self, caplog):
+        """A non-cancellation ``BaseException`` is not caught."""
+        error = _HostAbort("stop")
+        upload = _StalledUpload(error)
+
+        with (
+            caplog.at_level(logging.INFO, logger="safeuploads.audit"),
+            pytest.raises(_HostAbort) as exc_info,
+        ):
+            await self._validator().validate_image_file(upload)
+
+        assert exc_info.value is error
+        assert [r.audit_event_type for r in self._audit_records(caplog)] == [
+            "validation_start",
+        ]
         assert get_correlation_id() is None
 
 

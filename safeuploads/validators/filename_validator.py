@@ -18,6 +18,30 @@ logger = logging.getLogger(__name__)
 _DANGEROUS_CHARS = '<>:"/\\|?*'
 
 
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """
+    Cut text to at most ``max_bytes`` UTF-8 bytes on a code point.
+
+    Args:
+        text: Text to shorten.
+        max_bytes: Maximum UTF-8 length of the result.
+
+    Returns:
+        ``text`` unchanged when it fits, otherwise its longest
+        prefix of whole characters that fits.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    # UTF-8 continuation bytes are 0b10xxxxxx; step back from the
+    # first byte past the limit to the start of its character, so
+    # a character that crosses the limit is dropped whole.
+    end = max_bytes
+    while end > 0 and encoded[end] & 0xC0 == 0x80:
+        end -= 1
+    return encoded[:end].decode("utf-8")
+
+
 class FilenameSecurityValidator(BaseValidator):
     """
     Reduces filenames to a bounded, path-free form.
@@ -55,9 +79,10 @@ class FilenameSecurityValidator(BaseValidator):
         """
         Truncate the base name and replace an empty one.
 
-        The extension is preserved. A blank base name is replaced by
-        a random ``file_<hex>`` name so no upload ends up as just an
-        extension.
+        The base name is limited in UTF-8 bytes, the unit filesystem
+        name limits use, and is cut between characters. The extension
+        is preserved. A blank base name is replaced by a random
+        ``file_<hex>`` name so no upload ends up as just an extension.
 
         Args:
             filename: Filename returned by
@@ -65,17 +90,16 @@ class FilenameSecurityValidator(BaseValidator):
 
         Returns:
             Filename whose base name is at most
-            ``max_sanitized_name_length`` characters and not blank.
+            ``max_sanitized_name_length`` UTF-8 bytes and not blank.
         """
         name_part, ext_part = os.path.splitext(filename)
-        max_name_len = self.config.limits.max_sanitized_name_length
-        if len(name_part) > max_name_len:
+        max_name_bytes = self.config.limits.max_sanitized_name_length
+        truncated = _truncate_utf8(name_part, max_name_bytes)
+        if truncated != name_part:
             logger.debug(
-                "Truncating sanitized name from %d to %d chars",
-                len(name_part),
-                max_name_len,
+                "Truncating sanitized name to %d bytes", max_name_bytes
             )
-            name_part = name_part[:max_name_len]
+            name_part = truncated
             filename = name_part + ext_part
 
         if not name_part or name_part.strip() == "":

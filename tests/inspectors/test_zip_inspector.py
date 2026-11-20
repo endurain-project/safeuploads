@@ -1,9 +1,12 @@
 """Tests for ZipContentInspector."""
 
+import bz2
 import gzip
 import hashlib
 import io
+import lzma
 import struct
+import tarfile
 import tracemalloc
 import types
 import zipfile
@@ -19,6 +22,7 @@ from safeuploads.exceptions import (
     ZipBombError,
     ZipContentError,
 )
+from safeuploads.file_validator import FileValidator
 from safeuploads.inspectors import zip_inspector
 from safeuploads.inspectors.zip_inspector import ZipContentInspector
 from safeuploads.validators.compression_validator import (
@@ -1500,7 +1504,10 @@ class TestUnreadableEntriesFailClosed:
         ):
             zf.open(zf.infolist()[0]).read()
         _assert_threat(
-            patched, default_config, "Entry content could not be inspected"
+            patched,
+            default_config,
+            "Unsupported compression method 9 for 'a.txt'",
+            ErrorCode.ZIP_UNSUPPORTED_COMPRESSION,
         )
 
 
@@ -2065,185 +2072,6 @@ class TestZipInspectorLimitBoundaries:
             )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_ANALYSIS_TIMEOUT
-
-
-def _gzip_with_name(content: bytes, name: str) -> bytes:
-    """
-    Build a gzip stream whose header stores the given filename.
-
-    Args:
-        content: Data to compress.
-        name: Filename written to the gzip header (FNAME field).
-
-    Returns:
-        Raw gzip bytes.
-    """
-    buf = io.BytesIO()
-    with gzip.GzipFile(filename=name, mode="wb", fileobj=buf, mtime=0) as gz:
-        gz.write(content)
-    return buf.getvalue()
-
-
-@pytest.fixture
-def nested_allowed_inspector() -> ZipContentInspector:
-    """Return an inspector that permits nested archives."""
-    config = FileSecurityConfig()
-    config.limits = SecurityLimits(allow_nested_archives=True)
-    return ZipContentInspector(config)
-
-
-class TestGzipEntryContent:
-    """Gzip entries are scanned by their decompressed start."""
-
-    def test_compressed_bytes_matching_pattern_accepted(
-        self, nested_allowed_inspector
-    ):
-        """A valid gzip whose raw bytes contain ``<%`` is accepted."""
-        entry = _gzip_with_name(b".FIT" + b"\x00" * 64, "a<%b.fit")
-        assert b"<%" in entry[:512]
-        nested_allowed_inspector.inspect_zip_content(
-            io.BytesIO(_build_zip({"activities/1.fit.gz": entry}))
-        )
-
-    def test_benign_text_gzip_accepted(self, nested_allowed_inspector):
-        """A gzip of benign text with ``<%`` in its header is accepted."""
-        entry = _gzip_with_name(b"<gpx></gpx>", "a<%b.gpx")
-        nested_allowed_inspector.inspect_zip_content(
-            io.BytesIO(_build_zip({"activities/1.gpx.gz": entry}))
-        )
-
-    def test_gzipped_script_rejected(self, nested_allowed_inspector):
-        """A script inside a valid gzip entry is detected."""
-        data = _build_zip(
-            {"x.txt.gz": gzip.compress(b"<?php eval($_GET['x']); ?>")}
-        )
-        with pytest.raises(
-            ZipContentError, match="Script content"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-
-    def test_gzipped_executable_rejected(self, nested_allowed_inspector):
-        """An executable inside a valid gzip entry is detected."""
-        data = _build_zip({"x.gz": gzip.compress(b"\x7fELF" + b"\x00" * 64)})
-        with pytest.raises(
-            ZipContentError, match="Executable content"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-
-    def test_script_within_sample_of_long_entry_rejected(
-        self, nested_allowed_inspector
-    ):
-        """A script in the first 512 bytes of a long entry is found."""
-        payload = b"a" * 400 + b"<?php ?>" + b"b" * 2000
-        data = _build_zip({"x.txt.gz": gzip.compress(payload)})
-        with pytest.raises(ZipContentError) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-        assert "Script content" in str(exc_info.value)
-
-    def test_content_after_sample_not_decompressed(
-        self, nested_allowed_inspector
-    ):
-        """Only the first 512 decompressed bytes are sampled."""
-        payload = b"a" * 600 + b"<?php ?>"
-        data = _build_zip({"x.txt.gz": gzip.compress(payload)})
-        nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-
-    def test_script_after_empty_members_rejected(
-        self, nested_allowed_inspector
-    ):
-        """Sampling crosses empty members to reach a script."""
-        entry = gzip.compress(b"", 0) * 200 + gzip.compress(b"<?php ?>")
-        data = _build_zip({"x.txt.gz": entry})
-        with pytest.raises(
-            ZipContentError, match="Script content"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-
-    def test_empty_members_over_budget_raise_limit_error(
-        self, nested_allowed_inspector, fake_clock
-    ):
-        """A time-limit breach is not turned into a content threat."""
-        entry = gzip.compress(b"", 0) * 5000
-        data = _build_zip({"x.txt.gz": entry})
-
-        with pytest.raises(ResourceLimitError) as exc_info:
-            fake_clock.run_monitored(
-                lambda: nested_allowed_inspector.inspect_zip_content(
-                    io.BytesIO(data)
-                )
-            )
-
-        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
-
-    def test_benign_multi_member_gzip_accepted(self, nested_allowed_inspector):
-        """A benign multi-member gzip entry is accepted."""
-        entry = gzip.compress(b"<gpx>") + gzip.compress(b"</gpx>")
-        nested_allowed_inspector.inspect_zip_content(
-            io.BytesIO(_build_zip({"a.gpx.gz": entry}))
-        )
-
-    def test_plaintext_script_named_gz_rejected(
-        self, nested_allowed_inspector
-    ):
-        """A plaintext script named ``.fit.gz`` is still scanned."""
-        data = _build_zip({"x.fit.gz": b"<?php eval($_GET['x']); ?>"})
-        with pytest.raises(
-            ZipContentError, match="Script content"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-
-    def test_executable_named_gz_rejected(self, nested_allowed_inspector):
-        """An executable named ``.fit.gz`` is still rejected."""
-        data = _build_zip({"x.fit.gz": b"MZ" + b"\x00" * 64})
-        with pytest.raises(
-            ZipContentError, match="Executable content"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-
-    @pytest.mark.parametrize(
-        "content",
-        [
-            b"\x1f\x8b<?php eval($_GET['x']); ?>",
-            gzip.compress(b"x" * 4096)[:12] + b"<?php eval(1); ?>" * 30,
-            gzip.compress(bytes(range(256)) * 16)[:40],
-        ],
-        ids=["magic-only", "header-then-plaintext", "truncated"],
-    )
-    def test_invalid_gzip_rejected(self, nested_allowed_inspector, content):
-        """Gzip magic without a readable stream is rejected."""
-        data = _build_zip({"x.fit.gz": content})
-        with pytest.raises(
-            ZipContentError, match="Entry content could not be inspected"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-
-    def test_gzip_in_gzip_rejected(self, nested_allowed_inspector):
-        """A gzip stream inside a gzip entry is rejected."""
-        inner = gzip.compress(b"<?php eval($_GET['x']); ?>")
-        data = _build_zip({"x.fit.gz": gzip.compress(inner)})
-        with pytest.raises(
-            ZipContentError, match="Entry content could not be inspected"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
-
-    def test_script_in_txt_entry_still_rejected(
-        self, nested_allowed_inspector
-    ):
-        """A plain ``.txt`` entry with a script is still rejected."""
-        data = _build_zip({"notes.txt": b"<?php eval($_GET['x']); ?>"})
-        with pytest.raises(
-            ZipContentError, match="Script content"
-        ) as exc_info:
-            nested_allowed_inspector.inspect_zip_content(io.BytesIO(data))
-        assert exc_info.value.error_code == ErrorCode.ZIP_CONTENT_THREAT
 
 
 def _deflated_zip(entries: dict[str, bytes]) -> bytes:
@@ -2836,3 +2664,861 @@ class TestUnparsableArchivesAreCorrupt:
         outer = _build_zip({"inner.zip": _build_zip({"café.txt": b"hello"})})
 
         _nested_inspector().inspect_zip_content(io.BytesIO(outer))
+
+
+# zipfile finds the end record in the last 22 + 65535 bytes
+_END_RECORD_SPAN = 22 + 0xFFFF
+
+
+def _prefixed_zip(prefix: bytes = b"\x00") -> bytes:
+    """Return a ZIP with a traversal entry, behind ``prefix``."""
+    return prefix + _build_zip({"../../evil.txt": b"x"})
+
+
+class TestNestedZipFoundByEndRecord:
+    """A nested ZIP is found by its end record, not only its start."""
+
+    def test_prefixed_zip_opens(self):
+        """zipfile opens a ZIP behind a one-byte prefix."""
+        with zipfile.ZipFile(io.BytesIO(_prefixed_zip())) as zf:
+            assert zf.namelist() == ["../../evil.txt"]
+
+    @pytest.mark.parametrize("build", [_build_zip, _deflated_zip])
+    def test_prefixed_zip_rejected(self, default_config, build):
+        """A ZIP behind a prefix is a nested archive."""
+        _assert_threat(
+            build({"inner.dat": _prefixed_zip()}),
+            default_config,
+            "Nested archive detected: 'inner.dat'",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    def test_end_record_in_later_chunk_rejected(self, default_config):
+        """An end record past the first read chunk is found."""
+        content = b"a" * 200_000 + _prefixed_zip()
+        _assert_threat(
+            _deflated_zip({"inner.dat": content}),
+            default_config,
+            "Nested archive detected: 'inner.dat'",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    def test_end_record_at_search_limit_rejected(self, default_config):
+        """A signature starting exactly at the search limit is found."""
+        content = b"x" + b"PK\x05\x06" + b"a" * (_END_RECORD_SPAN - 4)
+        assert content.find(b"PK\x05\x06") == len(content) - _END_RECORD_SPAN
+        _assert_threat(
+            _build_zip({"notes.txt": content}),
+            default_config,
+            "Nested archive detected: 'notes.txt'",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    def test_end_record_before_search_limit_accepted(self, default_config):
+        """A signature one byte before the search limit is ignored."""
+        content = b"x" + b"PK\x05\x06" + b"a" * (_END_RECORD_SPAN - 3)
+        assert content.find(b"PK\x05\x06") < len(content) - _END_RECORD_SPAN
+        ZipContentInspector(default_config).inspect_zip_content(
+            io.BytesIO(_build_zip({"notes.txt": content}))
+        )
+
+    def test_long_entry_without_end_record_accepted(self, default_config):
+        """An entry spanning several chunks without a record passes."""
+        content = bytes(range(256)) * 1000
+        ZipContentInspector(default_config).inspect_zip_content(
+            io.BytesIO(_deflated_zip({"data.dat": content}))
+        )
+
+    def test_prefixed_zip_rejected_end_to_end(self):
+        """FileValidator rejects a prefixed nested ZIP by default."""
+        data = _build_zip({"inner.dat": _prefixed_zip()})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            FileValidator().validate_zip_file_sync(
+                io.BytesIO(data), "upload.zip"
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
+
+    def test_prefixed_zip_inspected_when_nested_allowed(self):
+        """With nesting allowed a prefixed ZIP is opened and checked."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"inner.dat": _prefixed_zip()}),
+            ErrorCode.ZIP_INVALID_STRUCTURE,
+            "inner.dat: ZIP archive contains data outside",
+        )
+
+    def test_unopenable_end_record_rejected_when_nested_allowed(self):
+        """Content zipfile cannot open despite a signature is rejected."""
+        content = b"hello PK\x05\x06\x00\x00"
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"inner.dat": content}),
+            ErrorCode.ZIP_CORRUPT,
+            "inner.dat",
+        )
+
+    def test_plain_entries_accepted_when_nested_allowed(self):
+        """Entries without a ZIP signature are not recursed into."""
+        _nested_inspector().inspect_zip_content(
+            io.BytesIO(_build_zip({"a.txt": b"hello", "b.csv": b"1,2"}))
+        )
+
+    def test_prefixed_zip_rejected_end_to_end_when_nested_allowed(self):
+        """FileValidator rejects a prefixed nested ZIP when allowed."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        data = _build_zip({"inner.dat": _prefixed_zip()})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            FileValidator(config).validate_zip_file_sync(
+                io.BytesIO(data), "upload.zip"
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+
+def _tar(members: dict[str, bytes], fmt: int = tarfile.USTAR_FORMAT) -> bytes:
+    """
+    Build an uncompressed tar archive in memory.
+
+    Args:
+        members: Member names mapped to their content.
+        fmt: ``tarfile`` format; USTAR and GNU write the ``ustar``
+            magic at offset 257 of each header.
+
+    Returns:
+        The tar archive bytes.
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=fmt) as tar:
+        for name, content in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    return buffer.getvalue()
+
+
+_OTHER_ARCHIVES = [
+    pytest.param(bz2.compress(b"<gpx></gpx>"), id="bzip2"),
+    pytest.param(lzma.compress(b"<gpx></gpx>"), id="xz"),
+    pytest.param(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 16, id="7z"),
+    pytest.param(b"Rar!\x1a\x07\x00" + b"\x00" * 16, id="rar"),
+    pytest.param(_tar({"../../evil.txt": b"x"}), id="tar"),
+]
+
+
+class TestTarContentRejected:
+    """A tar archive is found by its magic at offset 257."""
+
+    @pytest.mark.parametrize(
+        "fmt",
+        [
+            pytest.param(tarfile.USTAR_FORMAT, id="ustar"),
+            pytest.param(tarfile.GNU_FORMAT, id="gnu"),
+        ],
+    )
+    def test_tar_under_plain_name_rejected_by_default(self, fmt):
+        """A tar renamed to a plain name is rejected by content."""
+        inspector = ZipContentInspector(FileSecurityConfig())
+        _assert_nested_rejected(
+            inspector,
+            _build_zip({"notes.dat": _tar({"a.txt": b"x"}, fmt)}),
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+            "Nested archive detected: 'notes.dat'",
+        )
+
+    def test_tar_inside_gzip_entry_rejected(self):
+        """A tar inside an inspected gzip entry is rejected."""
+        data = gzip.compress(_tar({"../../evil.txt": b"x"}))
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"activity.gz": data}),
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+            "Nested archive detected",
+        )
+
+    def test_magic_at_other_offset_accepted(self):
+        """``ustar`` elsewhere in an entry is not a tar header."""
+        content = b"\x00" * 100 + b"ustar" + b"\x00" * 400
+        ZipContentInspector(FileSecurityConfig()).inspect_zip_content(
+            io.BytesIO(_build_zip({"notes.dat": content}))
+        )
+
+
+class TestNonZipNestedArchivesRejected:
+    """allow_nested_archives permits nested ZIP and gzip only."""
+
+    def test_inner_zip_accepted(self):
+        """A clean inner ZIP is accepted when nesting is allowed."""
+        inner = _build_zip({"a.txt": b"hello"})
+        _nested_inspector().inspect_zip_content(
+            io.BytesIO(_build_zip({"inner.zip": inner}))
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "logs.bz2",
+            "logs.xz",
+            "logs.tar",
+            "logs.tgz",
+            "logs.7z",
+            "logs.rar",
+            "logs.rar.",
+        ],
+    )
+    def test_non_zip_name_rejected(self, name):
+        """A non-ZIP archive name is rejected when nesting is allowed."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({name: b"hello"}),
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+            f"Nested archive detected: '{name}'",
+        )
+
+    @pytest.mark.parametrize("content", _OTHER_ARCHIVES)
+    @pytest.mark.parametrize("name", ["data.dat", "inner.zip"])
+    def test_non_zip_content_rejected(self, name, content):
+        """Non-ZIP archive content is rejected under any name."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({name: content}),
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+            f"Nested archive detected: '{name}'",
+        )
+
+    def test_non_zip_inside_inner_zip_rejected(self):
+        """A non-ZIP archive inside a nested ZIP is rejected."""
+        inner = _build_zip({"logs.dat": bz2.compress(b"x")})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"inner.zip": inner}),
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+            "inner.zip: Nested archive detected: 'logs.dat'",
+        )
+
+    def test_script_in_txt_entry_still_rejected(self):
+        """A plain ``.txt`` entry with a script is still rejected."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"notes.txt": b"<?php eval($_GET['x']); ?>"}),
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "Script content detected in 'notes.txt'",
+        )
+
+    def test_bzip2_bomb_rejected_end_to_end(self):
+        """FileValidator rejects a small bzip2 bomb entry."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        bomb = bz2.compress(b"\x00" * (10 * 1024 * 1024), 9)
+        data = _build_zip({"logs.dat": bomb})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            FileValidator(config).validate_zip_file_sync(
+                io.BytesIO(data), "upload.zip"
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
+
+
+def _no_content_scan_validator() -> FileValidator:
+    """Return a FileValidator with scan_zip_content disabled."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(scan_zip_content=False)
+    return FileValidator(config)
+
+
+def _symlink_zip() -> bytes:
+    """Return a ZIP holding one symbolic link entry."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        info = zipfile.ZipInfo("link")
+        info.external_attr = 0o120777 << 16
+        zf.writestr(info, b"/etc/passwd")
+    return buf.getvalue()
+
+
+class TestNameChecksWithoutContentScan:
+    """scan_zip_content=False skips content reads, not name checks."""
+
+    def test_clean_archive_accepted(self):
+        """A clean archive passes with the content scan off."""
+        data = _build_zip({"a.txt": b"hello", "dir/b.csv": b"1,2"})
+        _no_content_scan_validator().validate_zip_file_sync(
+            io.BytesIO(data), "upload.zip"
+        )
+
+    def test_entry_content_not_read(self, monkeypatch):
+        """No entry is opened, so content threats are not seen."""
+        data = _build_zip(
+            {
+                "notes.txt": b"<?php eval($_GET['x']); ?>",
+                "data.dat": gzip.compress(b"x"),
+            }
+        )
+
+        def _no_open(*args, **kwargs):
+            raise AssertionError("entry content was read")
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", _no_open)
+        _no_content_scan_validator().validate_zip_file_sync(
+            io.BytesIO(data), "upload.zip"
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "code"),
+        [
+            ("../evil.txt", ErrorCode.ZIP_DIRECTORY_TRAVERSAL),
+            ("C:/evil.txt", ErrorCode.ZIP_ABSOLUTE_PATH),
+            ("CON.txt", ErrorCode.ZIP_CONTENT_THREAT),
+            ("invoice.docm", ErrorCode.ZIP_CONTENT_THREAT),
+            ("run.bat", ErrorCode.ZIP_CONTENT_THREAT),
+            ("photo\u202egpj.pdf", ErrorCode.ZIP_CONTENT_THREAT),
+            ("notes.txt:hidden", ErrorCode.ZIP_CONTENT_THREAT),
+        ],
+    )
+    def test_unsafe_name_rejected_end_to_end(self, name, code):
+        """Entry names are checked with the content scan off."""
+        data = _build_zip({name: b"hello"})
+
+        with pytest.raises(ZipContentError) as exc_info:
+            _no_content_scan_validator().validate_zip_file_sync(
+                io.BytesIO(data), "upload.zip"
+            )
+
+        assert exc_info.value.error_code == code
+
+    def test_symlink_rejected_end_to_end(self):
+        """Symbolic links are rejected with the content scan off."""
+        with pytest.raises(ZipContentError) as exc_info:
+            _no_content_scan_validator().validate_zip_file_sync(
+                io.BytesIO(_symlink_zip()), "upload.zip"
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_SYMLINK_DETECTED
+
+
+class TestColonInEntryName:
+    """A ``:`` in an entry name is NTFS stream or device syntax."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "run.exe::$DATA",
+            "notes.txt::$DATA",
+            "run.exe:x",
+            "notes.txt:hidden.exe",
+            "CON:",
+            "AUX:x.txt",
+            "dir/COM1:x",
+            "ab:c/d.txt",
+            "dir:/",
+            "notes.txt\uff1ax",
+        ],
+    )
+    def test_colon_rejected(self, default_config, name):
+        """Names with a colon, also after NFKC folding, are rejected."""
+        _assert_threat(
+            _build_zip({name: b"hello"}), default_config, "Unsafe file name"
+        )
+
+    @pytest.mark.parametrize(
+        "name", ["notes.txt", "dir/notes.txt", "12-30 notes.txt"]
+    )
+    def test_name_without_colon_accepted(self, default_config, name):
+        """Ordinary names without a colon are accepted."""
+        ZipContentInspector(default_config).inspect_zip_content(
+            io.BytesIO(_build_zip({name: b"hello"}))
+        )
+
+    @pytest.mark.parametrize("name", ["C:x.txt", "C:/x.txt", "c:\\x.txt"])
+    def test_drive_letter_keeps_absolute_path_code(self, default_config, name):
+        """A drive letter is still reported as an absolute path."""
+        _assert_threat(
+            _build_zip({name: b"hello"}),
+            default_config,
+            "Absolute path detected",
+            ErrorCode.ZIP_ABSOLUTE_PATH,
+        )
+
+    def test_drive_letter_rejected_when_absolute_paths_allowed(self):
+        """allow_absolute_paths does not let a colon through."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_absolute_paths=True)
+        _assert_threat(
+            _build_zip({"C:x.txt": b"hello"}), config, "Unsafe file name"
+        )
+
+
+class TestEndRecordSearchResourceLimits:
+    """The end record search stops at the resource limits."""
+
+    def test_search_over_budget_raises(self, default_config, fake_clock):
+        """A slow search raises ResourceLimitError unchanged."""
+        inspector = ZipContentInspector(default_config)
+        data = _build_zip({"data.dat": bytes(range(256)) * 8192})
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_zip_content(io.BytesIO(data))
+            )
+
+        assert type(exc_info.value) is ResourceLimitError
+        assert "_is_rejected_archive" in {
+            entry.name for entry in exc_info.traceback
+        }
+
+    def test_search_within_budget_passes(self, default_config, fake_clock):
+        """A search that stays in budget is accepted."""
+        inspector = ZipContentInspector(default_config)
+        data = _build_zip({"data.dat": bytes(range(256)) * 8192})
+        fake_clock.step = 0.01
+
+        fake_clock.run_monitored(
+            lambda: inspector.inspect_zip_content(io.BytesIO(data))
+        )
+
+
+def _gzip_with_name(content: bytes, name: str) -> bytes:
+    """
+    Build a gzip stream whose header stores the given filename.
+
+    Args:
+        content: Data to compress.
+        name: Filename written to the gzip header (FNAME field).
+
+    Returns:
+        Raw gzip bytes.
+    """
+    buf = io.BytesIO()
+    with gzip.GzipFile(filename=name, mode="wb", fileobj=buf, mtime=0) as gz:
+        gz.write(content)
+    return buf.getvalue()
+
+
+def _with_trailer(data: bytes, crc_delta: int, size_delta: int) -> bytes:
+    """Change the CRC-32 and ISIZE in a gzip member's trailer."""
+    crc, size = struct.unpack("<2L", data[-8:])
+    trailer = struct.pack(
+        "<2L", (crc + crc_delta) & 0xFFFF_FFFF, size + size_delta
+    )
+    return data[:-8] + trailer
+
+
+_FIT = b"\x0e\x10\x43\x08\x00\x00\x00\x00.FIT" + bytes(range(256)) * 4
+_GPX_TRACK = b"<?xml version='1.0'?><gpx>" + b"<trkpt/>" * 200 + b"</gpx>"
+
+
+def _gzip_chain(content: bytes, levels: int) -> bytes:
+    """Gzip ``content`` ``levels`` times over."""
+    for _ in range(levels):
+        content = gzip.compress(content)
+    return content
+
+
+class TestGzipEntryContent:
+    """With nesting allowed, gzip entries are inflated and inspected."""
+
+    def test_activity_export_accepted(self):
+        """A Strava-style export of gzipped FIT and GPX files passes."""
+        fit = _gzip_with_name(_FIT, "a<%b.fit")
+        assert b"<%" in fit[:512]
+        data = _build_zip(
+            {
+                "activities/1.fit.gz": fit,
+                "activities/2.gpx.gz": gzip.compress(_GPX_TRACK),
+                "activities.csv": b"id,name\n1,Morning run\n",
+            }
+        )
+        _nested_inspector().inspect_zip_content(io.BytesIO(data))
+
+    def test_activity_export_accepted_end_to_end(self):
+        """FileValidator accepts the export when nesting is allowed."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        data = _deflated_zip(
+            {
+                "activities/1.fit.gz": gzip.compress(_FIT),
+                "activities/2.gpx.gz": gzip.compress(_GPX_TRACK),
+            }
+        )
+        FileValidator(config).validate_zip_file_sync(
+            io.BytesIO(data), "export.zip"
+        )
+
+    def test_activity_export_rejected_by_default(self, default_config):
+        """Without nesting allowed, gzip entries are nested archives."""
+        data = _build_zip({"activities/1.fit.gz": gzip.compress(_FIT)})
+        _assert_threat(
+            data,
+            default_config,
+            "Nested archive detected: 'activities/1.fit.gz'",
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+        )
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            gzip.compress(b"<gpx>") + gzip.compress(b"</gpx>"),
+            gzip.compress(b"", 0) * 50 + gzip.compress(_GPX_TRACK),
+            gzip.compress(_GPX_TRACK) + b"\x00" * 64,
+        ],
+        ids=["multi-member", "empty-members", "zero-padded"],
+    )
+    def test_member_layouts_accepted(self, content):
+        """Streams the top-level gzip check accepts pass here too."""
+        _nested_inspector().inspect_zip_content(
+            io.BytesIO(_build_zip({"a.gpx.gz": content}))
+        )
+
+    def test_gzip_under_any_name_inspected(self):
+        """Gzip content under a non-gzip name is inspected as well."""
+        data = _build_zip({"track.dat": gzip.compress(b"<?php ?>")})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "track.dat: Script content detected",
+        )
+
+    def test_ratio_bomb_rejected(self):
+        """A gzip entry inflating past the ratio limit is a bomb."""
+        data = _build_zip({"a.fit.gz": gzip.compress(b"\x00" * 2_000_000)})
+
+        with pytest.raises(ZipBombError) as exc_info:
+            _nested_inspector().inspect_zip_content(io.BytesIO(data))
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+        assert str(exc_info.value).startswith("a.fit.gz: ")
+
+    def test_ratio_bomb_rejected_end_to_end(self):
+        """FileValidator rejects a gzip bomb inside a ZIP."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(allow_nested_archives=True)
+        bomb = gzip.compress(b"\x00" * (50 * 1024 * 1024), 9)
+        data = _build_zip({"activities/1.fit.gz": bomb})
+
+        with pytest.raises(ZipBombError) as exc_info:
+            FileValidator(config).validate_zip_file_sync(
+                io.BytesIO(data), "export.zip"
+            )
+
+        assert (
+            exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
+        )
+
+    def test_size_at_limit_accepted(self):
+        """Output of exactly max_uncompressed_size passes."""
+        content = bytes(range(256)) * 4
+        data = _build_zip({"a.dat.gz": gzip.compress(content)})
+        _nested_inspector(
+            max_uncompressed_size=len(content)
+        ).inspect_zip_content(io.BytesIO(data))
+
+    def test_size_over_limit_rejected(self):
+        """Output one byte past max_uncompressed_size is a bomb."""
+        content = bytes(range(256)) * 4
+        data = _build_zip({"a.dat.gz": gzip.compress(content)})
+
+        with pytest.raises(ZipBombError) as exc_info:
+            _nested_inspector(
+                max_uncompressed_size=len(content) - 1
+            ).inspect_zip_content(io.BytesIO(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
+
+    @pytest.mark.parametrize(
+        ("name", "content", "text"),
+        [
+            ("x.txt.gz", b"<?php eval($_GET['x']); ?>", "Script content"),
+            ("x.gz", b"\x7fELF" + b"\x00" * 64, "Executable content"),
+            ("report.dat.gz", b"MZ\x90\x00" + b"\x00" * 64, "Executable"),
+            (
+                "x.txt.gz",
+                b"a" * 400 + b"<?php ?>" + b"b" * 2000,
+                "Script content",
+            ),
+        ],
+        ids=["script", "elf", "pe", "script-in-sample"],
+    )
+    def test_decompressed_threat_rejected(self, name, content, text):
+        """The inflated start is scanned like an entry's content."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({name: gzip.compress(content)}),
+            ErrorCode.ZIP_CONTENT_THREAT,
+            f"{name}: {text}",
+        )
+
+    def test_script_after_empty_members_rejected(self):
+        """The sample crosses empty members to reach a script."""
+        entry = gzip.compress(b"", 0) * 200 + gzip.compress(b"<?php ?>")
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"x.txt.gz": entry}),
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "Script content",
+        )
+
+    def test_content_after_sample_not_scanned(self):
+        """Only the first 512 inflated bytes are scanned for scripts."""
+        entry = gzip.compress(b"a" * 600 + b"<?php ?>")
+        _nested_inspector().inspect_zip_content(
+            io.BytesIO(_build_zip({"x.txt.gz": entry}))
+        )
+
+    def test_binary_inner_name_skips_script_scan(self):
+        """A binary name under ``.gz`` is not scanned for scripts."""
+        entry = gzip.compress(_FIT + b"<?php ?>")
+        _nested_inspector().inspect_zip_content(
+            io.BytesIO(_build_zip({"x.fit.gz": entry}))
+        )
+
+    def test_plaintext_named_gz_scanned_as_entry(self):
+        """A plaintext script named ``.fit.gz`` is scanned as is."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"x.fit.gz": b"<?php eval($_GET['x']); ?>"}),
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "Script content",
+        )
+
+    @pytest.mark.parametrize(
+        ("content", "text"),
+        [
+            (b"\x1f\x8b<?php eval($_GET['x']); ?>", "Invalid or corrupted"),
+            (
+                gzip.compress(b"x" * 4096)[:12] + b"<?php eval(1); ?>" * 30,
+                "Invalid or corrupted",
+            ),
+            (gzip.compress(bytes(range(256)) * 16)[:40], "Truncated"),
+            (gzip.compress(b"<gpx/>") + b"garbage", "Invalid or corrupted"),
+            (_with_trailer(gzip.compress(b"<gpx/>"), 1, 0), "Invalid"),
+            (_with_trailer(gzip.compress(b"<gpx/>"), 0, 1), "Invalid"),
+        ],
+        ids=[
+            "magic-only",
+            "header-then-plaintext",
+            "truncated",
+            "trailing-garbage",
+            "bad-crc",
+            "bad-isize",
+        ],
+    )
+    def test_invalid_gzip_rejected(self, content, text):
+        """Streams the top-level gzip check rejects are corrupt here."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"x.fit.gz": content}),
+            ErrorCode.ZIP_CORRUPT,
+            f"x.fit.gz: {text}",
+        )
+
+    def test_gzip_in_gzip_inspected(self):
+        """A gzip inside a gzip entry is inflated one level deeper."""
+        _nested_inspector().inspect_zip_content(
+            io.BytesIO(_build_zip({"x.gpx.gz": _gzip_chain(_GPX_TRACK, 2)}))
+        )
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"x.txt.gz": _gzip_chain(b"<?php ?>", 2)}),
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "Script content",
+        )
+
+    def test_gzip_chain_at_depth_limit_accepted(self):
+        """Gzip levels up to max_zip_depth are inspected."""
+        data = _build_zip({"x.gz": _gzip_chain(b"hello", 3)})
+        _nested_inspector(max_zip_depth=3).inspect_zip_content(
+            io.BytesIO(data)
+        )
+
+    def test_gzip_chain_over_depth_limit_rejected(self):
+        """A gzip level past max_zip_depth is rejected."""
+        data = _build_zip({"x.gz": _gzip_chain(b"hello", 4)})
+        _assert_nested_rejected(
+            _nested_inspector(max_zip_depth=3),
+            data,
+            ErrorCode.ZIP_RECURSIVE_STRUCTURE,
+            "nesting depth",
+        )
+
+    def test_zip_in_gzip_inspected(self):
+        """A ZIP inside a gzip entry is checked like any inner ZIP."""
+        clean = _build_zip({"a.gpx": _GPX_TRACK})
+        _nested_inspector().inspect_zip_content(
+            io.BytesIO(_build_zip({"inner.zip.gz": gzip.compress(clean)}))
+        )
+        evil = _build_zip({"../evil.txt": b"x"})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"inner.zip.gz": gzip.compress(evil)}),
+            ErrorCode.ZIP_DIRECTORY_TRAVERSAL,
+            "inner.zip.gz/inner.zip: Directory traversal",
+        )
+
+    def test_prefixed_zip_in_gzip_inspected(self):
+        """A ZIP behind a prefix inside a gzip entry is opened too."""
+        data = _build_zip({"a.dat.gz": gzip.compress(_prefixed_zip())})
+        _assert_nested_rejected(
+            _nested_inspector(),
+            data,
+            ErrorCode.ZIP_INVALID_STRUCTURE,
+            "a.dat.gz/a.dat: ZIP archive contains data outside",
+        )
+
+    def test_zip_in_gzip_counts_toward_depth(self):
+        """The ZIP inside a gzip entry is one level below the gzip."""
+        inner = _build_zip({"a.txt": b"hello"})
+        data = _build_zip({"inner.zip.gz": gzip.compress(inner)})
+        _nested_inspector(max_zip_depth=2).inspect_zip_content(
+            io.BytesIO(data)
+        )
+        _assert_nested_rejected(
+            _nested_inspector(max_zip_depth=1),
+            data,
+            ErrorCode.ZIP_RECURSIVE_STRUCTURE,
+            "nesting depth",
+        )
+
+    def test_other_archive_in_gzip_rejected(self):
+        """A bzip2 stream inside a gzip entry is rejected."""
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"x.gz": gzip.compress(bz2.compress(b"x"))}),
+            ErrorCode.ZIP_NESTED_ARCHIVE,
+            "x.gz: Nested archive detected: 'x'",
+        )
+
+    def test_gzip_counts_toward_total_entries(self):
+        """A gzip entry's content counts as one more entry."""
+        data = _build_zip({"x.gz": gzip.compress(b"hello")})
+        _nested_inspector(max_total_entries_recursive=2).inspect_zip_content(
+            io.BytesIO(data)
+        )
+        _assert_nested_rejected(
+            _nested_inspector(max_total_entries_recursive=1),
+            data,
+            ErrorCode.ZIP_COMPLEXITY_ATTACK,
+            "Total recursive entries",
+        )
+
+    def test_empty_members_over_budget_raise_limit_error(self, fake_clock):
+        """A time-limit breach while inflating is not a content threat."""
+        inspector = _nested_inspector()
+        data = _build_zip({"x.txt.gz": gzip.compress(b"", 0) * 5000})
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            fake_clock.run_monitored(
+                lambda: inspector.inspect_zip_content(io.BytesIO(data))
+            )
+
+        assert type(exc_info.value) is ResourceLimitError
+
+
+class TestDotOnlyPathComponents:
+    """A path component of only dots and spaces is a traversal."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["a/..", "a\\..", "a/. ./x.txt", "a/.. /x.txt", "a/. . /x.txt"],
+    )
+    def test_dot_component_rejected(self, default_config, name):
+        """Components Windows reads as ``..`` are traversals."""
+        _assert_threat(
+            _build_zip({name: b"hello"}),
+            default_config,
+            "Directory traversal",
+            ErrorCode.ZIP_DIRECTORY_TRAVERSAL,
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        ["./x.txt", "a/.config/x.txt", "a/b..c.txt", "notes..txt", "a/. /x"],
+    )
+    def test_other_dot_names_accepted(self, default_config, name):
+        """Single dots and dots inside a name are not traversals."""
+        ZipContentInspector(default_config).inspect_zip_content(
+            io.BytesIO(_build_zip({name: b"hello"}))
+        )
+
+
+def _bzip2_zip() -> bytes:
+    """Return a ZIP whose one entry is bzip2-compressed."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_BZIP2) as zf:
+        zf.writestr("notes.txt", b"A" * 100)
+    return buf.getvalue()
+
+
+def _forbid_open(monkeypatch) -> None:
+    """Make any read of entry data fail the test."""
+
+    def _no_open(*args, **kwargs):
+        raise AssertionError("entry data was read")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", _no_open)
+
+
+class TestInspectorRefusesUnsupportedMethods:
+    """The inspector itself never opens a non-stored/deflated entry."""
+
+    @pytest.mark.parametrize(
+        "build", [_build_zip, _deflated_zip], ids=["stored", "deflated"]
+    )
+    def test_supported_methods_accepted(self, default_config, build):
+        """Stored and deflated entries are inspected as usual."""
+        ZipContentInspector(default_config).inspect_zip_content(
+            io.BytesIO(build({"a.txt": b"hello"}))
+        )
+
+    @pytest.mark.parametrize("scan", [True, False])
+    def test_bzip2_entry_rejected_without_opening(self, monkeypatch, scan):
+        """inspect_zip_content rejects bzip2 before reading it."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(scan_zip_content=scan)
+        data = _bzip2_zip()
+        _forbid_open(monkeypatch)
+
+        _assert_threat(
+            data,
+            config,
+            "Unsupported compression method 12 for 'notes.txt'",
+            ErrorCode.ZIP_UNSUPPORTED_COMPRESSION,
+        )
+
+    def test_nested_inspection_rejects_without_opening(self, monkeypatch):
+        """inspect_nested_archives rejects bzip2 before reading it."""
+        data = _bzip2_zip()
+        _forbid_open(monkeypatch)
+
+        with pytest.raises(ZipContentError) as exc_info:
+            _nested_inspector().inspect_nested_archives(io.BytesIO(data))
+
+        assert (
+            exc_info.value.error_code == ErrorCode.ZIP_UNSUPPORTED_COMPRESSION
+        )
+
+
+class TestGzipEntryUnexpectedError:
+    """An unexpected failure while inflating rejects the entry."""
+
+    def test_unexpected_error_rejected(self, monkeypatch):
+        """A gzip stream that fails unexpectedly is uninspectable."""
+
+        def _fail(*args, **kwargs):
+            raise OSError("disk error")
+
+        monkeypatch.setattr(
+            "safeuploads.inspectors.gzip_inspector.iter_gzip_chunks", _fail
+        )
+        _assert_nested_rejected(
+            _nested_inspector(),
+            _build_zip({"x.gz": gzip.compress(b"hello")}),
+            ErrorCode.ZIP_CONTENT_THREAT,
+            "Could not inspect gzip stream 'x.gz'",
+        )

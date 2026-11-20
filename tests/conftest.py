@@ -113,7 +113,7 @@ def valid_png_bytes() -> bytes:
     Provide valid PNG file bytes.
 
     Returns:
-        Signature, a 1x1 IHDR chunk and IEND.
+        Signature, a 1x1 IHDR chunk, an IDAT chunk and IEND.
     """
     return images.png()
 

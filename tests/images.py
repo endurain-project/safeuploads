@@ -28,6 +28,27 @@ def jpeg_segment(marker: int, payload: bytes) -> bytes:
     )
 
 
+def jpeg_frame(width: int = 1, height: int = 1, marker: int = 0xC0) -> bytes:
+    """
+    Build a one-component JPEG frame header (SOF) segment.
+
+    Args:
+        width: Frame width.
+        height: Frame height.
+        marker: SOF marker byte (0xC0 is baseline).
+
+    Returns:
+        The frame header segment.
+    """
+    return jpeg_segment(
+        marker, struct.pack(">BHHB", 8, height, width, 1) + b"\x01\x11\x00"
+    )
+
+
+# Scan header for the one component of ``jpeg_frame``
+JPEG_SOS = jpeg_segment(0xDA, b"\x01\x01\x00\x00\x3f\x00")
+
+
 def jpeg(
     width: int = 1,
     height: int = 1,
@@ -37,23 +58,107 @@ def jpeg(
     frame_marker: int = 0xC0,
 ) -> bytes:
     """
-    Build a JPEG header with one frame header (SOF).
+    Build a JPEG header with one frame header (SOF) and a scan.
 
     Args:
         width: Frame width in the SOF segment.
         height: Frame height in the SOF segment.
         before_frame: Raw bytes placed between APP0 and the SOF.
-        body: Raw bytes placed after the SOF, before EOI.
+        body: Raw bytes placed after the scan header, before EOI.
         frame_marker: SOF marker byte (0xC0 is baseline).
 
     Returns:
-        SOI, APP0, ``before_frame``, SOF, ``body`` and EOI.
+        SOI, APP0, ``before_frame``, SOF, SOS, ``body`` and EOI.
     """
-    frame = jpeg_segment(
-        frame_marker,
-        struct.pack(">BHHB", 8, height, width, 1) + b"\x01\x11\x00",
+    frame = jpeg_frame(width, height, frame_marker)
+    return JPEG_PREFIX + before_frame + frame + JPEG_SOS + body + JPEG_EOI
+
+
+# Offset of the MPF TIFF header in a JPEG whose MPF segment
+# directly follows ``JPEG_PREFIX``: marker, length and "MPF\0"
+MPF_TIFF_START = len(JPEG_PREFIX) + 8
+
+
+def mpf_segment(
+    tags: list[tuple[int, int, int, bytes]], *, order: str = ">"
+) -> bytes:
+    """
+    Build an APP2 MPF segment holding one TIFF IFD.
+
+    Values longer than 4 bytes are placed after the IFD and the
+    entry holds their offset from the TIFF header.
+
+    Args:
+        tags: Tag, type, count and value bytes of each entry.
+        order: Byte order, ``">"`` (MM) or ``"<"`` (II).
+
+    Returns:
+        The APP2 segment.
+    """
+    header = b"MM\x00\x2a" if order == ">" else b"II\x2a\x00"
+    header += struct.pack(order + "I", 8)
+    data_at = 8 + 2 + 12 * len(tags) + 4
+    entries, values = b"", b""
+    for tag, kind, count, value in tags:
+        if len(value) > 4:
+            field = struct.pack(order + "I", data_at + len(values))
+            values += value
+        else:
+            field = value.ljust(4, b"\x00")
+        entries += struct.pack(order + "HHI", tag, kind, count) + field
+    ifd = struct.pack(order + "H", len(tags)) + entries + b"\x00" * 4
+    return jpeg_segment(0xE2, b"MPF\x00" + header + ifd + values)
+
+
+def mpf_tags(
+    images: list[tuple[int, int]], *, order: str = ">"
+) -> list[tuple[int, int, int, bytes]]:
+    """
+    Build the MP Index IFD entries listing the given images.
+
+    Args:
+        images: Size and data offset of each image.
+        order: Byte order, ``">"`` or ``"<"``.
+
+    Returns:
+        Version (0xB000), number of images (0xB001) and MP Entry
+        (0xB002) tags.
+    """
+    entries = b"".join(
+        struct.pack(order + "IIIHH", 0, size, offset, 0, 0)
+        for size, offset in images
     )
-    return JPEG_PREFIX + before_frame + frame + body + JPEG_EOI
+    return [
+        (0xB000, 7, 4, b"0100"),
+        (0xB001, 4, 1, struct.pack(order + "I", len(images))),
+        (0xB002, 7, len(entries), entries),
+    ]
+
+
+def mpo(
+    *frames: bytes, width: int = 1, height: int = 1, order: str = ">"
+) -> bytes:
+    """
+    Build a multi-picture JPEG whose MPF index lists every image.
+
+    Args:
+        frames: Images appended after the primary image.
+        width: Primary image width.
+        height: Primary image height.
+        order: MPF byte order, ``">"`` or ``"<"``.
+
+    Returns:
+        The primary image, with its MPF segment, and ``frames``.
+    """
+    count = 1 + len(frames)
+    placeholder = mpf_segment(mpf_tags([(0, 0)] * count, order=order))
+    offset = len(jpeg(width, height, before_frame=placeholder))
+    images = [(offset, 0)]
+    for frame in frames:
+        images.append((len(frame), offset - MPF_TIFF_START))
+        offset += len(frame)
+    segment = mpf_segment(mpf_tags(images, order=order), order=order)
+    return jpeg(width, height, before_frame=segment) + b"".join(frames)
 
 
 def png_chunk(kind: bytes, data: bytes) -> bytes:
@@ -71,25 +176,53 @@ def png_chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
 
 
-def png(width: int = 1, height: int = 1, *, body: bytes = b"") -> bytes:
+def png(
+    width: int = 1,
+    height: int = 1,
+    *,
+    before_data: bytes = b"",
+    body: bytes = b"",
+) -> bytes:
     """
-    Build a PNG with an IHDR chunk.
+    Build a PNG with an IHDR chunk and one IDAT chunk.
 
     Args:
         width: Width in the IHDR chunk.
         height: Height in the IHDR chunk.
-        body: Raw bytes placed after IHDR, before IEND.
+        before_data: Raw bytes placed between IHDR and IDAT.
+        body: Raw bytes placed after IDAT, before IEND.
 
     Returns:
-        Signature, IHDR, ``body`` and IEND.
+        Signature, IHDR, ``before_data``, IDAT, ``body`` and IEND.
     """
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return (
         PNG_SIGNATURE
-        + png_chunk(b"IHDR", ihdr)
+        + png_ihdr(width, height)
+        + before_data
+        + _PNG_IDAT
         + body
         + png_chunk(b"IEND", b"")
     )
+
+
+def png_ihdr(width: int = 1, height: int = 1) -> bytes:
+    """
+    Build an 8-bit RGB IHDR chunk.
+
+    Args:
+        width: Image width.
+        height: Image height.
+
+    Returns:
+        The IHDR chunk.
+    """
+    return png_chunk(
+        b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    )
+
+
+# Stands in for compressed pixel data, which the checks never read
+_PNG_IDAT = png_chunk(b"IDAT", zlib.compress(b"\x00" * 4))
 
 
 def riff_webp(chunks: bytes) -> bytes:

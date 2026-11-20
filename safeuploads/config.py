@@ -104,17 +104,23 @@ class SecurityLimits:
         max_zip_depth: Maximum directory nesting depth in ZIP.
         max_filename_length: Maximum length for filenames in ZIP.
         max_path_length: Maximum length for full paths in ZIP.
-        max_sanitized_name_length: Maximum length of the base
-            name (extension excluded) kept when sanitizing an
-            uploaded filename.
+        max_sanitized_name_length: Maximum length in UTF-8 bytes
+            of the base name (extension excluded) kept when
+            sanitizing an uploaded filename; with the longest
+            allowed extension it must fit in 255 bytes.
         max_number_files_same_type: Maximum number of files
             sharing the same extension inside a ZIP.
-        allow_nested_archives: Whether nested archives are permitted.
+        allow_nested_archives: Whether nested ZIP archives and gzip
+            streams are permitted and inspected; other archive
+            formats are always rejected.
         allow_symlinks: Whether symbolic links are permitted.
         allow_absolute_paths: Whether absolute paths are permitted.
-        scan_zip_content: Whether deep content inspection is enabled.
-        verify_zip_decompression: Whether to decompress every ZIP
-            entry to reject forged central-directory metadata.
+        scan_zip_content: Whether ZIP entry contents are read and
+            scanned (executable, archive and script signatures).
+            Entry names and metadata are always checked.
+        verify_zip_decompression: Whether to read every ZIP entry
+            through ``zipfile`` to verify its CRC-32. Declared sizes
+            are always checked against the data.
         max_total_entries_recursive: Maximum cumulative entry
             count across all nesting levels of nested archives.
         enable_audit_logging: Whether structured security audit
@@ -166,20 +172,23 @@ class SecurityLimits:
     max_zip_depth: int = 10  # Maximum nesting depth for directories in ZIP
     max_filename_length: int = 255  # Maximum length for individual file names
     max_path_length: int = 1024  # Maximum length for full file paths
-    # Maximum length of the base name (extension excluded) kept when
-    # sanitizing an uploaded filename; longer names are truncated.
+    # Maximum length in UTF-8 bytes of the base name (extension
+    # excluded) kept when sanitizing an uploaded filename; longer
+    # names are truncated between characters.
     max_sanitized_name_length: int = 100
     # Maximum number of files of the same type
     max_number_files_same_type: int = 1000
-    # Whether to allow nested archive files
+    # Whether to allow and inspect nested ZIP archives and gzip streams
     allow_nested_archives: bool = False
     # Whether to allow symbolic links in ZIP
     allow_symlinks: bool = False
     # Whether to allow absolute paths in ZIP
     allow_absolute_paths: bool = False
-    scan_zip_content: bool = True  # Whether to perform deep content inspection
-    # Decompress every ZIP entry to reject forged central-
-    # directory metadata (extra CPU/IO; off by default)
+    # Whether to read and scan ZIP entry contents; entry names and
+    # metadata are always checked
+    scan_zip_content: bool = True
+    # Read every ZIP entry through zipfile to verify its CRC-32
+    # (extra CPU/IO; off by default)
     verify_zip_decompression: bool = False
 
     # Recursive ZIP inspection limits
@@ -578,6 +587,9 @@ class FileSecurityConfig:
         errors.extend(cls._validate_extension_configurations(config))
 
         if not type_errors:
+            # Validate the stored name length against the extensions
+            errors.extend(cls._validate_sanitized_name_length(config, limits))
+
             # Validate ZIP compression settings
             errors.extend(cls._validate_compression_settings(limits))
 
@@ -839,6 +851,58 @@ class FileSecurityConfig:
             )
 
         return errors
+
+    @staticmethod
+    def _validate_sanitized_name_length(
+        config: "FileSecurityConfig | type[FileSecurityConfig]",
+        limits: SecurityLimits,
+    ) -> list[ConfigValidationIssue]:
+        """
+        Validate that a sanitized name fits a filesystem name.
+
+        Filesystems such as ext4, APFS and NTFS cap a name at 255
+        bytes or units. A sanitized name is the base name, at most
+        ``max_sanitized_name_length`` UTF-8 bytes, plus one of the
+        allowed extensions, so the limit plus the longest allowed
+        extension must not exceed 255 bytes.
+
+        Args:
+            config: Class or instance to read the allowed types from.
+            limits: Security limits to validate.
+
+        Returns:
+            List of detected configuration issues.
+        """
+        longest_extension = max(
+            (
+                len(ext.encode("utf-8"))
+                for _name, types, _label in (
+                    FileSecurityConfig._allowed_type_maps(config)
+                )
+                for ext in allowed_extensions(types)
+            ),
+            default=0,
+        )
+        longest_name = limits.max_sanitized_name_length + longest_extension
+        if longest_name <= 255:
+            return []
+        return [
+            _config_error(
+                "invalid_name_length",
+                (
+                    "max_sanitized_name_length"
+                    f" ({limits.max_sanitized_name_length} bytes) plus"
+                    f" the longest allowed extension ({longest_extension}"
+                    " bytes) exceeds the 255-byte filename limit of"
+                    " common filesystems"
+                ),
+                "file_sizes",
+                (
+                    "Set max_sanitized_name_length to"
+                    f" {max(255 - longest_extension, 0)} or less"
+                ),
+            )
+        ]
 
     @staticmethod
     def _validate_streaming_limits(
@@ -1368,8 +1432,9 @@ class FileSecurityConfig:
                     "nested_archives_require_scan",
                     (
                         "allow_nested_archives requires"
-                        " scan_zip_content; nested archives would"
-                        " not be inspected"
+                        " scan_zip_content; nested archives are"
+                        " inspected by reading entry contents, which"
+                        " scan_zip_content=False disables"
                     ),
                     "compression",
                     (

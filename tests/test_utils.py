@@ -2,11 +2,14 @@
 
 import gzip
 import io
+import mmap
+import sys
 import time
 import zlib
 
 import pytest
 
+from safeuploads import utils
 from safeuploads.exceptions import (
     ErrorCode,
     ResourceLimitError,
@@ -16,6 +19,17 @@ from safeuploads.utils import (
     check_resource_limits,
     iter_gzip_chunks,
 )
+
+_MB = 1024 * 1024
+_MEASURES_CURRENT_RSS = sys.platform in ("darwin", "linux")
+
+
+def _touched_mapping(size: int) -> mmap.mmap:
+    """Map ``size`` anonymous bytes and write every page."""
+    mapping = mmap.mmap(-1, size)
+    for offset in range(0, size, mmap.PAGESIZE):
+        mapping[offset] = 1
+    return mapping
 
 
 class TestResourceMonitorInit:
@@ -102,10 +116,137 @@ class TestResourceMonitorMemory:
         with ResourceMonitor(max_time_seconds=30.0, max_memory_mb=512):
             _ = b"x" * 1024  # Tiny allocation
 
-    def test_get_peak_rss_bytes_returns_positive(self):
-        """Test that peak RSS measurement returns positive value."""
-        rss = ResourceMonitor._get_peak_rss_bytes()
+    def test_get_rss_bytes_returns_positive(self):
+        """Test that the RSS measurement returns a positive value."""
+        rss = ResourceMonitor._get_rss_bytes()
         assert rss > 0
+
+    @pytest.mark.skipif(
+        not _MEASURES_CURRENT_RSS,
+        reason="current RSS is measured on Linux and macOS only",
+    )
+    def test_growth_below_earlier_peak_is_detected(self):
+        """Test growth stays visible after a higher, freed peak."""
+        # Raise the process peak, then return the memory to the OS
+        _touched_mapping(160 * _MB).close()
+
+        with ResourceMonitor(max_memory_mb=32) as monitor:
+            mapping = _touched_mapping(96 * _MB)
+            try:
+                with pytest.raises(ResourceLimitError) as exc_info:
+                    check_resource_limits()
+            finally:
+                mapping.close()
+            assert monitor.memory_delta < 32 * _MB
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_MEMORY_EXCEEDED
+        assert exc_info.value.memory_bytes > 32 * _MB
+
+    def test_memory_freed_inside_monitor_is_not_negative(self, monkeypatch):
+        """
+        Test RSS falling below the baseline counts as no growth.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        rss_mb = {"value": 300}
+        monkeypatch.setattr(
+            ResourceMonitor,
+            "_get_rss_bytes",
+            staticmethod(lambda: rss_mb["value"] * _MB),
+        )
+        with ResourceMonitor(max_memory_mb=50) as monitor:
+            rss_mb["value"] = 100
+            assert monitor.memory_delta == 0
+            check_resource_limits()
+            rss_mb["value"] = 351
+            with pytest.raises(ResourceLimitError) as exc_info:
+                check_resource_limits()
+            rss_mb["value"] = 300
+
+        assert exc_info.value.memory_bytes == 51 * _MB
+
+
+class TestRssReaders:
+    """Test the platform readers of the current resident set size."""
+
+    @pytest.mark.skipif(
+        sys.platform != "linux", reason="Linux selects the statm reader"
+    )
+    def test_linux_selects_statm_reader(self):
+        """Test Linux reads ``/proc/self/statm``."""
+        assert utils._read_rss_bytes is utils._read_statm_rss_bytes
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin", reason="macOS selects the mach reader"
+    )
+    def test_macos_selects_mach_reader(self):
+        """Test macOS reads ``task_info``."""
+        assert utils._read_rss_bytes is utils._read_mach_rss_bytes
+
+    def test_statm_reader_multiplies_resident_pages(self, monkeypatch):
+        """
+        Test the second statm field is read as resident pages.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        opened: list[str] = []
+
+        def _fake_open(path: str, mode: str) -> io.BytesIO:
+            opened.append(path)
+            return io.BytesIO(b"51200 1234 300 10 0 2000 0\n")
+
+        monkeypatch.setattr(utils, "open", _fake_open, raising=False)
+        monkeypatch.setattr(utils.mmap, "PAGESIZE", 16384)
+
+        assert utils._read_statm_rss_bytes() == 1234 * 16384
+        assert opened == ["/proc/self/statm"]
+
+    def test_statm_reader_failure_propagates(self, monkeypatch):
+        """
+        Test an unreadable statm raises instead of reading 0.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+
+        def _missing(path: str, mode: str) -> io.BytesIO:
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr(utils, "open", _missing, raising=False)
+
+        with pytest.raises(FileNotFoundError):
+            utils._read_statm_rss_bytes()
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin", reason="mach task_info is macOS only"
+    )
+    def test_mach_reader_tracks_current_rss(self):
+        """Test the mach reader sees memory come and go."""
+        before = utils._read_mach_rss_bytes()
+        mapping = _touched_mapping(64 * _MB)
+        during = utils._read_mach_rss_bytes()
+        mapping.close()
+        after = utils._read_mach_rss_bytes()
+
+        assert during - before >= 48 * _MB
+        assert during - after >= 48 * _MB
+
+    @pytest.mark.skipif(
+        sys.platform != "darwin", reason="mach task_info is macOS only"
+    )
+    def test_mach_reader_failure_raises(self, monkeypatch):
+        """
+        Test a failing ``task_info`` call raises ``OSError``.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(utils, "_task_info", lambda *args: 5)
+
+        with pytest.raises(OSError, match="task_info"):
+            utils._read_mach_rss_bytes()
 
 
 class TestResourceMonitorProperties:
@@ -204,7 +345,7 @@ class TestResourceMonitorMemoryExceeded:
             return 700 * 1024 * 1024
 
         monkeypatch.setattr(
-            ResourceMonitor, "_get_peak_rss_bytes", staticmethod(_fake_rss)
+            ResourceMonitor, "_get_rss_bytes", staticmethod(_fake_rss)
         )
 
         with (
@@ -237,7 +378,7 @@ class TestResourceMonitorMemoryExceeded:
         rss_mb = {"value": 100}  # 100 MB at entry
         monkeypatch.setattr(
             ResourceMonitor,
-            "_get_peak_rss_bytes",
+            "_get_rss_bytes",
             staticmethod(lambda: rss_mb["value"] * 1024 * 1024),
         )
 
@@ -301,7 +442,7 @@ class TestCheckResourceLimits:
 
     def test_memory_exceeded_raises_mid_operation(self, monkeypatch):
         """
-        Test the check raises when peak RSS grows past the limit.
+        Test the check raises when RSS grows past the limit.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
@@ -309,7 +450,7 @@ class TestCheckResourceLimits:
         rss_mb = {"value": 100}
         monkeypatch.setattr(
             ResourceMonitor,
-            "_get_peak_rss_bytes",
+            "_get_rss_bytes",
             staticmethod(lambda: rss_mb["value"] * 1024 * 1024),
         )
         with ResourceMonitor(max_memory_mb=512):

@@ -1,5 +1,7 @@
 """Tests for extension security validator."""
 
+import io
+
 import pytest
 
 from safeuploads.exceptions import (
@@ -7,10 +9,12 @@ from safeuploads.exceptions import (
     ExtensionSecurityError,
     FilenameSecurityError,
 )
+from safeuploads.file_validator import FileValidator
 from safeuploads.utils import allowed_extensions
 from safeuploads.validators.extension_validator import (
     ExtensionSecurityValidator,
 )
+from tests.images import png
 
 
 class TestExtensionSecurityValidator:
@@ -288,27 +292,46 @@ class TestTrailingDotsAndSpaces:
         validator.validate_extensions(filename)
 
 
-class TestAddedBlockedExtensions:
-    """Server-side script and Windows script variants are blocked."""
+_ADDED_BLOCKED_EXTENSIONS = [
+    ".phar",
+    ".php7",
+    ".php8",
+    ".phps",
+    ".pht",
+    ".phtml",
+    ".shtml",
+    ".shtm",
+    ".stm",
+    ".vbe",
+    ".wsc",
+    ".wsf",
+    ".jse",
+    ".msp",
+    ".pyw",
+    ".ps2",
+    ".msh",
+    ".iso",
+    ".img",
+    ".wsb",
+    ".xll",
+    ".one",
+    ".appref-ms",
+    ".settingcontent-ms",
+    ".library-ms",
+    ".ade",
+    ".mde",
+    ".php2",
+    ".php6",
+    ".pgif",
+    ".phtm",
+    ".inc",
+]
 
-    @pytest.mark.parametrize(
-        "ext",
-        [
-            ".phar",
-            ".php7",
-            ".php8",
-            ".phps",
-            ".pht",
-            ".phtml",
-            ".shtml",
-            ".shtm",
-            ".stm",
-            ".vbe",
-            ".wsc",
-            ".wsf",
-            ".jse",
-        ],
-    )
+
+class TestAddedBlockedExtensions:
+    """Script, installer, disk image and shortcut formats are blocked."""
+
+    @pytest.mark.parametrize("ext", _ADDED_BLOCKED_EXTENSIONS)
     def test_rejected_as_inner_extension(self, default_config, ext):
         """The extension is rejected even when followed by .jpg."""
         validator = ExtensionSecurityValidator(default_config)
@@ -318,6 +341,43 @@ class TestAddedBlockedExtensions:
 
         assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
         assert exc_info.value.extension == ext
+
+    @pytest.mark.parametrize("ext", _ADDED_BLOCKED_EXTENSIONS)
+    def test_rejected_as_final_extension(self, default_config, ext):
+        """The extension is rejected as the last extension."""
+        validator = ExtensionSecurityValidator(default_config)
+
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            validator.validate_extensions(f"X{ext.upper()}")
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+        assert exc_info.value.extension == ext
+
+    @pytest.mark.parametrize(
+        "filename", ["inc.png", "iso-100.jpg", "one_img.png", "msh.png"]
+    )
+    def test_same_text_as_base_name_accepted(self, default_config, filename):
+        """Only extensions are matched, not the base name."""
+        validator = ExtensionSecurityValidator(default_config)
+        validator.validate_extensions(filename)
+
+    @pytest.mark.parametrize("filename", ["x.inc.png", "disk.iso.jpg"])
+    def test_upload_with_inner_extension_rejected(self, filename):
+        """A real PNG upload with a blocked inner extension is rejected."""
+        with pytest.raises(ExtensionSecurityError) as exc_info:
+            FileValidator().validate_image_file_sync(
+                io.BytesIO(png()), filename
+            )
+
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_BLOCKED
+
+    def test_upload_without_blocked_extension_accepted(self):
+        """The same PNG with an ordinary name is accepted."""
+        result = FileValidator().validate_image_file_sync(
+            io.BytesIO(png()), "include.png"
+        )
+
+        assert result.filename == "include.png"
 
     def test_default_config_still_valid(self, default_config):
         """The default configuration reports no errors."""

@@ -34,10 +34,13 @@ intended upload directory.
   stripped, so C-string truncation attacks and names that
   change meaning after cleaning never reach storage (see
   Unicode Obfuscation below).
-- The extension and Windows reserved-name checks run again on
-  the final name after it is shortened to
-  `max_sanitized_name_length`, so truncation cannot expose a
-  blocked extension.
+- The base name is shortened to `max_sanitized_name_length`
+  UTF-8 bytes, cut between characters, the unit filesystem name
+  limits use; configuration validation requires the limit plus
+  the longest allowed extension to fit in 255 bytes
+  (`invalid_name_length`). The extension and Windows
+  reserved-name checks run again on the final name, so
+  truncation cannot expose a blocked extension or reserved name.
 
 ### Unicode Obfuscation (CWE-116)
 
@@ -51,7 +54,10 @@ is `.exe`.
 - All filenames are NFC-normalized before validation.
 - Characters in `UnicodeAttackCategory` (directional overrides,
   zero-width characters, confusing punctuation) are detected
-  and rejected.
+  and rejected. The zero-width set also holds letters and symbols
+  that render as blank space but are not format characters: the
+  Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) and the braille
+  blank (U+2800).
 - Every character in the Unicode general categories Cc
   (controls, including NUL, DEL and C1), Cf (format characters,
   including soft hyphen, bidi marks and zero-width joiner), Co
@@ -100,8 +106,11 @@ improperly.
   from `DangerousExtensionCategory` covering 16 categories:
   Windows executables, script files, web scripts, Unix/macOS
   executables, Java, mobile apps, browser extensions, package
-  formats, archives, virtualization, Office macros, system
-  files, drivers, themes, and help files.
+  formats, archives, virtualization, container and disk images
+  (`.iso`, `.img`, `.vhd`), Office documents and add-ins that can
+  run code (macros, `.xll`, `.one`, Access `.ade` and `.mde`),
+  system files and shortcuts (`.lnk`, `.appref-ms`,
+  `.settingcontent-ms`), drivers, themes, and help files.
 - Compound extensions (`.tar.gz`, `.user.js`, `.min.css`) are
   checked via `CompoundExtensionCategory`.
 - Trailing dots and spaces are ignored by the blocked-extension
@@ -143,19 +152,34 @@ uncompressed), exhausting disk and memory.
 
 - The size and ratio checks above read the ZIP central-
   directory `file_size` / `compress_size` fields, which are
-  attacker-controlled. A forged *small* `file_size` cannot bomb
-  a `zipfile`-based consumer: Python's `zipfile` caps reads at
-  the declared size and raises `BadZipFile` on the resulting
-  CRC mismatch. The residual risk is a consumer that inflates
-  the raw DEFLATE stream while ignoring the ZIP metadata.
+  attacker-controlled, so every entry's data must then hold
+  exactly its declared sizes: a stored entry's `compress_size`
+  must equal its `file_size`, and a deflated entry is inflated
+  in `chunk_size` chunks, stopping once the output passes
+  `file_size`, and must produce exactly `file_size` bytes from a
+  stream that ends exactly at `compress_size`. Otherwise the
+  archive is rejected with `ZIP_INVALID_STRUCTURE`, and deflate
+  data `zlib` cannot decode with `ZIP_CORRUPT`. A forged small
+  `file_size` therefore cannot hide expansion, or content such
+  as executables and nested archives, from the checks, whether
+  the consumer trusts the metadata or inflates the raw stream.
+  This check runs on every archive, independent of
+  `verify_zip_decompression` and `scan_zip_content`.
+- Only stored and deflated entries are accepted. `zipfile`
+  inflates other methods (bzip2, LZMA) without an output bound,
+  so an entry using one is rejected with
+  `ZIP_UNSUPPORTED_COMPRESSION` before any entry data is read.
 - safeuploads does **not** extract archives. Consumers must
-  extract safely — prefer `zipfile` (which enforces the
-  declared sizes) over raw `zlib` inflation.
-- Set `verify_zip_decompression=True` to make safeuploads read
-  every entry through `zipfile`, forcing CRC and decompression
-  validation. Archives whose real content does not match their
-  declared metadata are then rejected as `ZIP_CORRUPT`. This is
-  off by default because it decompresses the full archive.
+  extract safely and enforce their own size limits while
+  extracting.
+- Set `verify_zip_decompression=True` to make safeuploads also
+  read every entry through `zipfile`, verifying its CRC-32; an
+  entry whose CRC does not match, or that `zipfile` refuses to
+  read (compressed patched data, strong encryption), is rejected
+  as `ZIP_CORRUPT`. With `scan_zip_content` (default) the content
+  scan already reads every entry to its end, so a CRC mismatch
+  is seen there too. This is off by default because it reads the
+  full archive again.
 
 ### Recursive / Quine ZIP Archives
 
@@ -187,7 +211,12 @@ single-level content inspection.
 
 - When `allow_nested_archives=False` (default), any entry with
   an extension in `ZipThreatCategory.NESTED_ARCHIVES` raises
-  `ZIP_NESTED_ARCHIVE`.
+  `ZIP_NESTED_ARCHIVE`. `allow_nested_archives=True` permits
+  only nested ZIP archives and gzip streams: every other archive
+  extension (`.tar`, `.tgz`, `.tbz2`, `.bz2`, `.xz`, `.7z`,
+  `.rar`) and every other archive signature (bzip2, xz, 7z, RAR,
+  and the tar `ustar` magic at offset 257) is rejected with
+  `ZIP_NESTED_ARCHIVE` regardless of the flag.
 - Extensions are taken from the entry name after stripping
   trailing dots and spaces, as Windows drops them on
   extraction.
@@ -195,24 +224,49 @@ single-level content inspection.
   archives are not allowed, the first bytes of each entry are
   checked against `ZipThreatCategory.NESTED_ARCHIVE_SIGNATURES`
   (ZIP and ZIP-based formats such as `.docx` and `.jar`, gzip,
-  bzip2, xz, 7z and RAR). A renamed archive is rejected and
-  reported under `ZIP_CONTENT_THREAT`. Tar is recognised by
+  bzip2, xz, 7z and RAR), and the rest of the entry is read for
+  an end-of-central-directory signature (`PK\x05\x06`) in its
+  last 65,557 bytes, where `zipfile` and `unzip` look for an
+  archive, so bytes prepended to a ZIP do not hide it. A renamed
+  archive is rejected and reported under `ZIP_NESTED_ARCHIVE`.
+  Tar has no leading signature; a USTAR or GNU tar is recognised
+  by the `ustar` magic at offset 257 of its first header, within
+  the 512-byte sample, under any name and with nesting allowed
+  or not. A pre-POSIX tar carries no magic and is recognised by
   extension only.
 - When allowed, `ZipContentInspector.inspect_nested_archives()`
-  inspects every inner ZIP, found by a recursable archive
-  extension or a ZIP signature. The inner archive is streamed in
-  `chunk_size` chunks into a spooled temporary file and gets the
+  streams every file entry in `chunk_size` chunks into a spooled
+  temporary file and inspects every inner ZIP, found by a
+  recursable archive extension, a ZIP signature or an end record
+  signature in its last 65,557 bytes. The inner archive gets the
   same checks as the top level: the entry count, exact layout,
   size and ratio checks of `CompressionSecurityValidator` and
   the entry and structure checks of `ZipContentInspector`, plus
-  the depth, count and ancestor hash checks above.
-- An inner archive that is larger than
+  the depth, count and ancestor hash checks above. An inner ZIP
+  behind prepended bytes therefore fails the layout check
+  (`ZIP_INVALID_STRUCTURE`).
+- With nesting allowed, an entry that starts with the gzip magic
+  (`\x1f\x8b`), under any name, is inflated by
+  `GzipContentInspector` in `chunk_size` steps under
+  `max_uncompressed_size` and `max_compression_ratio` (relative
+  to the entry's size), like a top-level gzip upload, into a
+  spooled temporary file. Concatenated members and zero padding
+  are accepted; trailing data, a bad CRC-32 or size and a
+  truncated stream are rejected with `ZIP_CORRUPT`. The content
+  counts as one entry toward `max_total_entries_recursive`, is
+  scanned like an entry's content (the script scan is skipped
+  when the name without `.gz` has a binary extension, as in
+  `x.fit.gz`), and a ZIP or gzip stream inside it is inspected
+  one level deeper under `max_zip_depth`. Gzip levels are bounded
+  by depth; the ancestor hash check applies to ZIP levels.
+- An inner archive or entry that is larger than
   `max_individual_file_size` (`FILE_TOO_LARGE`), cannot be read,
   is corrupt (`ZIP_CORRUPT`) or cannot be inspected is rejected,
   not skipped. Threats name the nesting path (entry names joined
   by `/`), and a nested ratio bomb raises `ZipBombError` with
   the path in its message.
-- Nested archives need `scan_zip_content`: a configuration with
+- Nested archives need `scan_zip_content`: recursion and gzip
+  inflation read entry contents, so a configuration with
   `allow_nested_archives=True` and `scan_zip_content=False` is
   rejected at construction with the `nested_archives_require_scan`
   configuration error.
@@ -230,9 +284,9 @@ archive comment, two concatenated archives, an unlisted entry
 between listed ones, a local header whose sizes or name differ
 from the central directory, a Unicode Path extra field naming
 the entry differently from its raw header name, and a deflate
-stream that ends before a data-descriptor entry's declared
-size. The validated archive then passes while the extractor
-writes hidden files.
+stream that ends before its entry's declared compressed size or
+inflates past its declared size. The validated archive then
+passes while the extractor writes hidden files.
 
 **Mitigations:**
 
@@ -256,18 +310,24 @@ writes hidden files.
   central field while other extractors use the raw name or the
   local field, so the name checks would otherwise see a benign
   alias of a traversal or executable name.
+- Every entry's data must hold exactly its declared sizes (see
+  the metadata trust boundary above): a deflated entry's stream
+  must end exactly at its compressed size and inflate to exactly
+  its uncompressed size, and a stored entry's two sizes must be
+  equal.
 - Entries with a data descriptor are accepted only when a
   streaming reader can find the descriptor unambiguously: a
-  deflated entry is inflated in `chunk_size` chunks and its
-  stream must end exactly at the declared compressed size, and
-  a stored entry must be empty with a signed descriptor right
-  after its header. Other descriptor entries are rejected. The
+  deflated entry, whose stream ends where the descriptor starts,
+  or an empty stored entry with a signed descriptor right after
+  its header. Other descriptor entries are rejected. The
   descriptor values must equal the central directory's, in
   8-byte sizes when the local header has a ZIP64 extra field and
   in 4-byte sizes otherwise (APPNOTE 4.3.9.2), so every reader
   parses the descriptor the same way.
-- This check runs after the size and ratio limits, so inflation
-  is bounded by them, and it raises `ZIP_INVALID_STRUCTURE`.
+- This check applies to every entry and runs after the size and
+  ratio limits, so inflation is bounded by them; it raises
+  `ZIP_INVALID_STRUCTURE`, or `ZIP_CORRUPT` for deflate data
+  `zlib` cannot decode.
 - With `allow_nested_archives=True`, nested archives get the
   same layout check as the top level.
 
@@ -283,13 +343,26 @@ outside the extraction directory (Zip Slip).
 **Mitigations:**
 
 - `ZipContentInspector._inspect_zip_entry()` checks for
-  traversal patterns and absolute paths. A `ZipContentError`
+  traversal patterns and absolute paths. Entry names and
+  metadata are always checked; `scan_zip_content=False` only
+  skips reading entry contents. A `ZipContentError`
   carries the `error_code` of the first threat found, in entry
   order and then structure checks: `ZIP_DIRECTORY_TRAVERSAL`,
   `ZIP_ABSOLUTE_PATH`, `ZIP_SYMLINK_DETECTED`,
-  `ZIP_NESTED_ARCHIVE`, otherwise `ZIP_CONTENT_THREAT`. Its
-  `threats` attribute lists every message, and an inner archive
-  keeps the code of its own threat.
+  `ZIP_NESTED_ARCHIVE`, `ZIP_UNSUPPORTED_COMPRESSION`, otherwise
+  `ZIP_CONTENT_THREAT`. Its `threats` attribute lists every
+  message, and an inner archive keeps the code of its own threat.
+- A path component made only of dots and spaces with two or more
+  dots (`a/..`, `a/. ./x.txt`) is a traversal, because Windows
+  drops trailing dots and spaces from a component. `./x.txt`,
+  `a/.config/x` and `a/b..c.txt` are accepted.
+- An entry name containing `:`, in its NFC or NFKC form (so a
+  fullwidth colon U+FF1A too), is rejected with
+  `ZIP_CONTENT_THREAT`: NTFS reads it as an alternate data stream
+  (`run.exe::$DATA`) or device (`CON:`) separator. A drive
+  letter (`C:x`) is reported as `ZIP_ABSOLUTE_PATH`, and with
+  `allow_absolute_paths=True` it is still rejected, as
+  `ZIP_CONTENT_THREAT`.
 - Null bytes are rejected first, checked on the raw entry name
   (`ZipInfo.orig_filename`), to prevent C-string truncation
   bypasses (CWE-158). Python's `zipfile` truncates `filename`
@@ -341,24 +414,22 @@ hidden inside ZIP archives.
   `<?php`, `<script`, `<%`) in the first 512 bytes of each
   entry. Unlike content analysis, this scan still counts a bare
   `<%`.
-- An entry that starts with the gzip magic (`\x1f\x8b`) is
-  decided by content, not name: its first 512 decompressed bytes
-  are checked for executable signatures and script patterns, so
-  compressed bytes cannot match a pattern by chance. The script
-  scan is skipped when the name without `.gz` has a binary
-  extension (`x.fit.gz`). An entry with the gzip magic that is
-  not a readable gzip stream, or whose content is itself gzip,
-  is rejected as uninspectable. Only this start is decompressed,
-  so the expansion of the whole stream is not checked here.
+- An entry that starts with the gzip magic (`\x1f\x8b`) is not
+  script-scanned as it is, since compressed bytes match a
+  pattern only by chance. Without `allow_nested_archives` it is
+  rejected as a nested archive (`ZIP_NESTED_ARCHIVE`); with it,
+  the whole stream is inflated under the gzip limits and its
+  content is scanned (see Nested Archive Detection).
+- An entry compressed with a method other than stored or
+  deflated is rejected with `ZIP_UNSUPPORTED_COMPRESSION` and
+  never opened.
 - An entry whose content cannot be opened or read (encrypted,
-  unsupported compression method, local header name differing
-  from the central directory, or a CRC mismatch seen during
-  the read) is rejected with `ZIP_CONTENT_THREAT`, because its
-  content cannot be inspected.
-- A CRC mismatch is seen by this read only when the read
-  reaches the end of the entry's data, which is the case for
-  small entries. For larger entries it is caught only with
-  `verify_zip_decompression=True`.
+  local header name differing from the central directory, or a
+  CRC mismatch seen during the read) is rejected with
+  `ZIP_CONTENT_THREAT`, because its content cannot be inspected.
+- With `scan_zip_content` the whole entry is read (for the end
+  record search, or by the nested inspection), so a CRC mismatch
+  is always seen.
 
 ### Symbolic Links in ZIP (CWE-59)
 
@@ -488,6 +559,19 @@ to server-side file reads or SSRF.
   a target that builds no element tree, so memory does not grow
   with the document, and the resource limits are checked after
   each chunk.
+- A GPX or TCX upload must open with an XML declaration
+  (`<?xml` followed by a space, tab, CR or LF), after an optional
+  UTF-8 BOM and whitespace; another processing instruction such
+  as `<?xml-stylesheet ...?>` first is rejected with
+  `FILE_SIGNATURE_MISMATCH`.
+- The root element's local name must be `gpx` for `.gpx` and
+  `TrainingCenterDatabase` for `.tcx`, case-sensitive and in any
+  namespace, so another XML document (an XSLT stylesheet, XHTML)
+  is not accepted under an activity extension. A mismatch, or an
+  XML activity extension with no root element defined (such as
+  `.xml` added to `ALLOWED_ACTIVITY_TYPES`), raises
+  `XmlSecurityError` with `XML_ROOT_MISMATCH`. The content is not
+  validated against the GPX or TCX schema.
 
 ### Malformed FIT Files
 
@@ -584,6 +668,12 @@ PDF/HTML polyglots).
   entries are rejected rather than repaired: repairing readers
   rebuild the table by scanning, and may find objects the
   validator did not parse.
+- In a hybrid file the chain continues from the trailer's
+  `/Prev`, so an `/XRefStm` stream dictionary with its own
+  `/Prev` is rejected; the section it links would go unverified.
+- The newest trailer's `/Root` must resolve, through the
+  verified cross-reference (including object streams), to a
+  catalog dictionary whose `/Pages` resolves to a dictionary.
 - A stream's data ends at the first `endstream`, and `/Length`
   (resolved when indirect) must end it there, with only whitespace
   between, so readers that trust `/Length` and readers that search
@@ -596,7 +686,8 @@ PDF/HTML polyglots).
 - A key repeated with a different value in a stream dictionary,
   its `/DecodeParms` or a trailer is rejected; elsewhere it cannot
   change what the checks read, as every name is checked as a
-  token.
+  token. Repeated values are compared without recursion, so
+  deeply nested values are compared like shallow ones.
 - Malformed syntax (unterminated strings, arrays or dictionaries,
   invalid name escapes, unknown keywords, data between objects)
   is rejected with `PDF_INVALID_STRUCTURE` instead of being
@@ -629,19 +720,22 @@ significantly during validation consumes all available memory.
 - Streaming validation via `SpooledTemporaryFile` keeps memory
   usage under `max_memory_buffer_size` (default 10 MB) by
   spilling to disk for larger files.
-- `ResourceMonitor` tracks the process peak RSS
-  (`resource.getrusage()` `ru_maxrss`, a high-water mark) and
-  enforces `max_validation_memory_mb` (default 512 MB) as the
-  increase in process peak RSS since the monitor started. This
-  is not an upper bound for validation memory: an earlier, higher
-  process peak hides later allocations. Concurrent work in the
-  same process can also trip the limit; on Windows memory
-  accounting is disabled.
+- `ResourceMonitor` enforces `max_validation_memory_mb`
+  (default 512 MB) as the growth of the process's current RSS
+  since the monitor started, read from `/proc/self/statm` on
+  Linux and mach `task_info` on macOS. RSS is process-wide, so
+  concurrent validations and other work in the same process add
+  to each other's growth, and memory the allocator kept after a
+  free and later reuses is not counted as growth. Other Unix
+  platforms use the peak RSS (`ru_maxrss`), where an earlier,
+  higher peak hides later allocations; on Windows memory
+  accounting is disabled. A failing memory reading fails the
+  validation instead of skipping the check.
 - The limit is checked at loop boundaries (upload streaming, ZIP
-  entry loops, gzip decompression, each XML chunk, each JPEG
-  segment before the frame header, each HEIC box and item
-  entry) and on exit,
-  and raises `ResourceLimitError` with
+  entry loops, gzip decompression, each XML chunk, each PNG chunk
+  and JPEG segment before the image data, each HEIC box and item
+  entry, PDF tokenizing, inflation and predictor rows) and on
+  exit, and raises `ResourceLimitError` with
   `RESOURCE_MEMORY_EXCEEDED`. A single blocking call is not
   interrupted mid-call.
 - File size is enforced progressively during chunked reads,
@@ -690,10 +784,12 @@ size, similar to ZIP bombs.
   uncompressed size against `SecurityLimits` progressively.
 - The active `ResourceMonitor` is checked on every step, so a
   stream of empty members or a long header field cannot run past
-  `max_validation_time_seconds`. The same decompression samples
-  gzip ZIP entries. Zero padding between and after members is
-  accepted; other trailing data, reserved header flags and a
-  mismatched header CRC are rejected with `ZIP_CORRUPT`.
+  `max_validation_time_seconds`. The same decompression, through
+  `iter_decompressed_chunks`, inflates gzip ZIP entries when
+  nested archives are allowed. Zero padding between and after
+  members is accepted; other trailing data, reserved header
+  flags and a mismatched header CRC are rejected with
+  `ZIP_CORRUPT`.
 - Exceeding either limit raises a validation error immediately,
   without reading the rest of the stream.
 - Deflate data that `zlib` cannot decode is rejected with
@@ -721,7 +817,9 @@ reader or thumbnailer renders it.
   limited.
 - The whole PDF is read into memory, bounded by `max_pdf_size`
   (default 50 MB), and the active `ResourceMonitor` is checked
-  every 1,024 tokens and on every inflation step.
+  every 1,024 tokens, on every inflation step and every
+  `chunk_size` bytes of each predictor row, so a very wide row
+  cannot run past the time limit.
 
 ### Image Decompression Bombs (CWE-400)
 
@@ -743,16 +841,39 @@ so 60,000 × 60,000 pixels is about 10 GB.
   validation rejects a limit of 0 or less and warns above twice
   the default, where Pillow refuses to open an image.
 - PNG: the first chunk must be IHDR with 13 bytes of data, and
-  width and height must be 1 to 2³¹ − 1.
-- JPEG: the marker segments are walked from the start of image
-  to the first frame header (SOF0 to SOF15, except DHT, JPG and
-  DAC). Each segment's payload is skipped by its length, so a
-  frame header behind large EXIF, XMP or ICC segments is still
-  found. Scan data or end of image before a frame header, a
-  truncated segment, a segment length below 2, a standalone
-  marker before the frame, and a zero width or height
-  (including a height deferred to a DNL segment) are rejected
-  with `FileSignatureError` (`IMAGE_INVALID_STRUCTURE`).
+  width and height must be 1 to 2³¹ − 1. Pillow keeps the last
+  IHDR before the image data, so the chunks are walked by their
+  lengths, skipping their data by seek, from IHDR to the first
+  IDAT. A second IHDR, a chunk (including that IDAT) running past
+  the end of the file, and IEND or end of file before an IDAT are
+  rejected with `FileSignatureError` (`IMAGE_INVALID_STRUCTURE`).
+- JPEG: the marker segments of an image are walked from the
+  start of image to its first scan (SOS). Pillow keeps the last
+  frame header, so exactly one frame header (SOF0 to SOF15,
+  except DHT, JPG and DAC) must precede the scan. Each segment's
+  payload is skipped by its length, so a frame header behind
+  large EXIF, XMP or ICC segments is still found. A second frame
+  header, a DHP marker (hierarchical JPEG, which Pillow reads as
+  a frame header), the JPG and JPG0 to JPG13 markers (0xC8,
+  0xF0 to 0xFD, which Pillow reads without a length, so a
+  length walk and Pillow could disagree on the next marker),
+  other standalone markers, scan data or end of image before a
+  frame header, a truncated or malformed segment, a segment
+  length below 2, and a zero width or height (including a
+  height deferred to a DNL segment) are rejected with
+  `FileSignatureError` (`IMAGE_INVALID_STRUCTURE`).
+- JPEG multi-picture (MPO): Pillow decodes every image an APP2
+  `MPF` index lists when it lists more than one, at its data
+  offset from the MPF header, ignoring the listed size. The index
+  is parsed (TIFF byte order, one image count, 16-byte entries,
+  no repeated tag), and a second MPF segment is rejected, since
+  Pillow keeps the last. The first entry must be the primary
+  image at offset 0, and later offsets must increase strictly and
+  lie inside the file. Each listed image must start with a start
+  of image and pass the same walk before the next listed image
+  (the last before end of file), and its frame size must fit
+  `max_image_pixels`. MPF segments inside later images are
+  ignored, as Pillow ignores them.
 - WebP: the first chunk after the `WEBP` form type must be
   `VP8 ` (a key frame with a valid start code; the two
   upscaling bits of each dimension are ignored), `VP8L`
@@ -764,28 +885,39 @@ so 60,000 × 60,000 pixels is about 10 GB.
   an HEVC image (`hvc1`) or a grid, and its size is its one
   `ispe` property. Every `ispe` in the file is checked against
   the limit, so a thumbnail, alpha, depth or tile image cannot
-  declare a larger size than the primary. For a grid, which a
-  decoder sizes from its descriptor rather than its `ispe`, the
-  descriptor is read from the location in `iloc` (in `idat` or
-  at a file offset, at most 12 bytes) and its output size must
-  equal the `ispe`. The grid must reference (`dimg`) exactly
-  rows × columns HEVC tiles of one size that cover the output,
-  trimmed only at the right and bottom edges, so the tiles
-  decoded add up to about the output size. Missing, repeated,
-  truncated or oversized boxes, unsupported box versions,
-  protected (encrypted) items, other codecs or derivations as
-  the primary item, and data outside the file or `idat` are
-  rejected with `IMAGE_INVALID_STRUCTURE`.
+  declare a larger size than the primary. A decoder can decode
+  any image item, so every item must be an HEVC image (`hvc1`:
+  the primary, tiles, thumbnails and auxiliary alpha, depth or
+  gain-map images), a grid or an ISO 21496-1 tone map (`tmap`),
+  each with an `ispe`, or Exif or XMP (`mime`) metadata; any
+  other item type (overlays, identity derivations, other codecs)
+  is rejected. For every grid, which a decoder sizes from its
+  descriptor rather than its `ispe`, the descriptor is read from
+  the location in `iloc` (in `idat` or at a file offset, at most
+  12 bytes) and its output size must equal the `ispe`. The grid
+  must reference (`dimg`) exactly rows × columns HEVC tiles of
+  one size that cover the output, trimmed only at the right and
+  bottom edges, so the tiles decoded add up to about the output
+  size. A tone map must reference exactly two distinct inputs, a
+  base image then a gain map, each an HEVC image or grid, and its
+  `ispe` must equal the base image's, the size a decoder outputs.
+  Missing, repeated, truncated or oversized boxes, unsupported box
+  versions, protected (encrypted) items, a primary item that is
+  not an HEVC image or grid, and data outside the file or `idat`
+  are rejected with `IMAGE_INVALID_STRUCTURE`.
 - The check runs after the signature check and before content
   analysis, on the upload streamed to a spooled temp file. The
-  JPEG walk checks the active `ResourceMonitor` on every
-  segment; its cost grows with the number of segments before
-  the frame header, so a 20 MB JPEG made only of 4-byte
-  segments takes seconds, bounded by `max_image_size` and
-  `max_validation_time_seconds`. A run of 0xFF fill bytes is
-  skipped `chunk_size` bytes at a time. The HEIC walk checks it
-  on every box and every `ipma` and `iloc` entry; the `meta`
-  box is read into memory whole, bounded by `max_image_size`.
+  PNG walk checks the active `ResourceMonitor` on every chunk,
+  and the JPEG walk on every segment of the primary image and of
+  each MPF image; their cost grows with the number of chunks or
+  segments before the image data, so a 20 MB JPEG made only of
+  4-byte segments takes seconds, bounded by `max_image_size` and
+  `max_validation_time_seconds`. Listed MPF images are walked
+  only up to the next one, so the JPEG walk reads the file about
+  twice at most. A run of 0xFF fill bytes is skipped
+  `chunk_size` bytes at a time. The HEIC walk checks it on every
+  box and every `ipma` and `iloc` entry; the `meta` box is read
+  into memory whole, bounded by `max_image_size`.
 
 **Decoding trust boundary:**
 
@@ -797,11 +929,11 @@ so 60,000 × 60,000 pixels is about 10 GB.
   are triggered by decoding. The library cannot detect them, and
   decoding inside the validator would expose the validating
   process to them.
-- Only the first image is checked. The APNG and WebP
-  specifications require animation frames to fit the declared
-  canvas, but the number of frames is not limited, and data
-  after a JPEG's end of image (such as the secondary images of
-  an MPO file) is not parsed.
+- Images a JPEG's MPF index lists are checked; other data after
+  a JPEG's end of image is not parsed. For APNG and animated WebP
+  only the canvas is checked: the specifications require
+  animation frames to fit it, but the number of frames is not
+  limited.
 - HEIC: the size an HEVC bitstream's own parameter sets declare
   is not read, so a coded image larger than its `ispe` is not
   detected; libheif's security limits bound it when decoding.
@@ -826,11 +958,19 @@ threat detections) go unlogged, preventing incident response.
 
 - `SecurityAuditLogger` emits structured log records under the
   `safeuploads.audit` logger for every validation start,
-  success, failure, and threat detection.
+  success, failure, and threat detection. A cancelled async
+  validation ends with a failure record whose result is
+  `cancelled`, and the cancellation is re-raised.
 - Correlation IDs (via `contextvars`) link all log messages
   from a single validation call. A correlation ID the host has
   already set is reused, so host logs and audit records share
   it, and the previous value is restored after validation.
+- A host sets each request's ID with `correlation_scope(cid)`,
+  which restores the previous ID when its block exits, even on
+  an exception. `set_correlation_id()` leaves the ID set for the
+  rest of the context, so on a pooled thread it would label
+  later requests' records. Both raise `TypeError` for an ID that
+  is neither a `str` nor `None`.
 - The `filename`, `result` and `details` fields of an audit
   record are attacker-controlled, so `SecurityAuditLogger`
   escapes control, format (such as bidi overrides), surrogate,

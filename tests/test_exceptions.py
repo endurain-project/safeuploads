@@ -801,6 +801,7 @@ class TestPackageExports:
             "ImageDimensionValidator",
             "PdfSecurityError",
             "PdfContentInspector",
+            "correlation_scope",
         ],
     )
     def test_names_exported(self, name):

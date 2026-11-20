@@ -172,6 +172,72 @@ class TestFileSizeLimitValidation:
         error_types = [e.error_type for e in errors if e.severity == "error"]
         assert "invalid_name_length" in error_types
 
+    @pytest.mark.parametrize("length", [251, 255, 256])
+    def test_name_over_255_bytes_with_extension_generates_error(
+        self, monkeypatch, length
+    ):
+        """
+        Test that a limit leaving no room for an extension errors.
+
+        The longest default extension (``.jpeg``, ``.heic``) is 5
+        bytes, so a base name over 250 bytes can make a stored
+        name longer than 255 bytes.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+            length: Configured sanitized name length.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_sanitized_name_length=length),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        error_types = [e.error_type for e in errors if e.severity == "error"]
+        assert "invalid_name_length" in error_types
+
+    def test_name_of_255_bytes_with_extension_is_valid(self, monkeypatch):
+        """
+        Test that a base name plus the longest extension of 255 passes.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture.
+        """
+        monkeypatch.setattr(
+            FileSecurityConfig,
+            "limits",
+            SecurityLimits(max_sanitized_name_length=250),
+        )
+        errors = FileSecurityConfig.validate_configuration()
+        assert not [e for e in errors if e.error_type == "invalid_name_length"]
+
+    def test_longer_allowed_extension_lowers_the_limit(self):
+        """
+        Test that a host's longer extension is counted.
+
+        An allowed ``.activity`` (9 bytes) leaves 246 bytes for the
+        base name, so the default-valid 250 is rejected.
+        """
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_sanitized_name_length=250)
+        config.ALLOWED_ACTIVITY_TYPES = {
+            **config.ALLOWED_ACTIVITY_TYPES,
+            "application/octet-stream": frozenset({".fit", ".activity"}),
+        }
+        error_types = [
+            e.error_type
+            for e in config.validate_instance()
+            if e.severity == "error"
+        ]
+        assert "invalid_name_length" in error_types
+
+        config.limits = SecurityLimits(max_sanitized_name_length=246)
+        assert not [
+            e
+            for e in config.validate_instance()
+            if e.error_type == "invalid_name_length"
+        ]
+
 
 class TestMimeConfigurationValidation:
     """Tests for _validate_mime_configurations validation branches."""

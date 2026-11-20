@@ -99,8 +99,8 @@ config.ALLOWED_IMAGE_TYPES = {
     "image/png": frozenset({".png"}),
 }
 
-# Opt in to strict ZIP checking: decompress every entry to
-# reject archives with forged central-directory metadata
+# Opt in to verifying every ZIP entry's CRC-32 (declared sizes
+# are always checked against the data)
 config.limits.verify_zip_decompression = True
 
 validator = FileValidator(config=config)
@@ -142,7 +142,7 @@ except FileValidationError as err:
 
 - **Filename Security**: Unicode normalization, directory traversal prevention, Windows reserved names blocking
 - **Extension Validation**: Allow/block lists with configurable rules, dangerous extension detection
-- **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits, optional strict decompression verification
+- **Compression Security**: ZIP bomb detection, nested archive inspection, recursive structure and quine detection, size and ratio limits, declared sizes checked against the entry data, optional CRC-32 verification
 - **Content Inspection**: Deep ZIP content analysis with configurable depth and entry limits
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, gzip, and PDF, with the extension required to match the detected type
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files

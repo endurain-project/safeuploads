@@ -14,11 +14,13 @@ passing.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
 import time
 import unicodedata
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -42,20 +44,74 @@ def get_correlation_id() -> str | None:
     return correlation_id_var.get()
 
 
+def _set_correlation_id(
+    cid: str | None,
+) -> tuple[str, contextvars.Token[str | None]]:
+    """
+    Check and set a correlation ID, generating one for None.
+
+    Args:
+        cid: Explicit ID to use. Generates a UUID4 hex if None.
+
+    Returns:
+        Tuple of the ID that was set and the token that restores
+        the previous value.
+
+    Raises:
+        TypeError: If ``cid`` is neither a ``str`` nor None.
+    """
+    if cid is None:
+        cid = uuid.uuid4().hex
+    elif not isinstance(cid, str):
+        raise TypeError(
+            f"correlation ID must be a str or None, not {type(cid).__name__}"
+        )
+    return cid, correlation_id_var.set(cid)
+
+
 def set_correlation_id(cid: str | None = None) -> str:
     """
     Set a new correlation ID for the current context.
 
+    The ID stays set until the context ends; on a reused worker
+    thread that can be a later request. ``correlation_scope``
+    restores the previous ID when its block exits.
+
     Args:
-        cid: Explicit ID to use. Generates a UUID4 if None.
+        cid: Explicit ID to use. Generates a UUID4 hex if None.
 
     Returns:
         The correlation ID that was set.
+
+    Raises:
+        TypeError: If ``cid`` is neither a ``str`` nor None.
     """
-    if cid is None:
-        cid = uuid.uuid4().hex
-    correlation_id_var.set(cid)
-    return cid
+    return _set_correlation_id(cid)[0]
+
+
+@contextlib.contextmanager
+def correlation_scope(cid: str | None = None) -> Iterator[str]:
+    """
+    Set a correlation ID for the duration of a ``with`` block.
+
+    The previous ID is restored when the block exits, also when it
+    raises, so a pooled thread or task does not carry the ID into
+    later work.
+
+    Args:
+        cid: Explicit ID to use. Generates a UUID4 hex if None.
+
+    Yields:
+        The correlation ID that was set.
+
+    Raises:
+        TypeError: If ``cid`` is neither a ``str`` nor None.
+    """
+    cid, token = _set_correlation_id(cid)
+    try:
+        yield cid
+    finally:
+        correlation_id_var.reset(token)
 
 
 def reset_correlation_id() -> None:

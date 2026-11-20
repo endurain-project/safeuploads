@@ -449,3 +449,47 @@ class TestGzipMemberHandling:
                 io.BytesIO(data), len(data)
             )
         assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+
+def _incompressible(size: int) -> bytes:
+    """Return ``size`` deterministic bytes deflate cannot shrink."""
+    blocks = (
+        hashlib.sha256(i.to_bytes(4, "little")).digest()
+        for i in range(size // 32 + 1)
+    )
+    return b"".join(blocks)[:size]
+
+
+class TestIterDecompressedChunks:
+    """iter_decompressed_chunks yields the output under the limits."""
+
+    def test_yields_decompressed_content(self, default_config):
+        """The chunks join to the decompressed content of all members."""
+        content = _incompressible(256_000)
+        data = gzip.compress(content[:1000]) + gzip.compress(content[1000:])
+        inspector = GzipContentInspector(default_config)
+
+        chunks = list(
+            inspector.iter_decompressed_chunks(io.BytesIO(data), len(data))
+        )
+
+        assert b"".join(chunks) == content
+        assert max(map(len, chunks)) <= default_config.limits.chunk_size
+
+    def test_stops_before_chunk_over_size_limit(self):
+        """No chunk past max_uncompressed_size is yielded."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            max_uncompressed_size=100_000, chunk_size=10_000
+        )
+        data = gzip.compress(_incompressible(256_000))
+        received: list[bytes] = []
+        chunks = GzipContentInspector(config).iter_decompressed_chunks(
+            io.BytesIO(data), len(data)
+        )
+
+        with pytest.raises(ZipBombError) as exc_info:
+            received.extend(chunks)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
+        assert sum(map(len, received)) <= 100_000

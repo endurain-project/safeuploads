@@ -28,15 +28,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Errors ``zipfile`` raises for an archive it cannot parse or read:
-# BadZipFile for a malformed structure, UnicodeDecodeError for a
-# UTF-8-flagged name (or Unicode Path field) that is not UTF-8, and
-# NotImplementedError for an extract version above 63, an unsupported
-# compression method, or compressed patched data / strong encryption
+# Errors raised for an archive that cannot be parsed or read:
+# BadZipFile for a malformed structure or a CRC mismatch,
+# UnicodeDecodeError for a UTF-8-flagged name (or Unicode Path field)
+# that is not UTF-8, NotImplementedError for an extract version above
+# 63 or compressed patched data / strong encryption, and zlib.error
+# for deflate data that does not decode
 ZIP_PARSE_ERRORS = (
     zipfile.BadZipFile,
     UnicodeDecodeError,
     NotImplementedError,
+    zlib.error,
 )
 
 # ZIP record layouts and limits, as zipfile reads them
@@ -63,6 +65,17 @@ _UNICODE_PATH_EXTRA_ID = 0x7075
 _DATA_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
 _DATA_DESCRIPTOR_MAX_SIZE = 24
 _UINT32_MAX = 0xFFFF_FFFF
+# The only compression methods accepted; zipfile inflates others
+# (bzip2, LZMA) without an output bound
+SUPPORTED_COMPRESSION_METHODS = frozenset(
+    {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+)
+# Nested archive names allow_nested_archives permits: ZIP archives,
+# which are recursed into, and gzip streams, which are inflated and
+# inspected; every other archive name is rejected
+PERMITTED_NESTED_ARCHIVE_EXTS = frozenset(
+    ZipThreatCategory.RECURSABLE_ARCHIVES.value | {".gz"}
+)
 
 
 class _CentralDirectory(NamedTuple):
@@ -405,14 +418,16 @@ def _deflate_fills_entry(
     chunk_size: int,
 ) -> bool:
     """
-    Check that an entry's deflate stream ends at its compressed size.
+    Check that an entry's deflate stream fills exactly its sizes.
 
-    ``zipfile`` stops reading an entry once the deflate stream
-    ends, so bytes after that point within ``compress_size`` are
-    never read, while a streaming reader resumes there looking for
-    the data descriptor. The data is inflated in chunks, never
-    producing more than ``file_size`` bytes in total or
-    ``chunk_size`` bytes per call.
+    ``zipfile`` stops reading an entry at ``file_size`` bytes or
+    when the deflate stream ends, so output past ``file_size`` and
+    bytes after the stream's end within ``compress_size`` are never
+    inspected, while an extractor inflating the raw stream writes
+    that output and a streaming reader resumes after the stream
+    looking for the next record. The data is inflated in chunks,
+    producing at most ``chunk_size`` bytes per call and stopping
+    once the output passes ``file_size``.
 
     Args:
         file_obj: Seekable file containing ZIP data.
@@ -421,10 +436,11 @@ def _deflate_fills_entry(
         chunk_size: Bytes read, and at most inflated, per step.
 
     Returns:
-        True if the stream is valid deflate data that ends exactly
-        at ``compress_size`` and inflates to ``file_size`` bytes.
+        True if the stream ends exactly at ``compress_size`` and
+        inflates to exactly ``file_size`` bytes.
 
     Raises:
+        zlib.error: If the data is not valid deflate data.
         ResourceLimitError: If the active resource monitor's
             time or memory limit is exceeded.
     """
@@ -432,20 +448,17 @@ def _deflate_fills_entry(
     remaining = entry.compress_size
     produced = 0
     file_obj.seek(offset)
-    try:
-        while not decompressor.eof:
-            check_resource_limits()
-            data = decompressor.unconsumed_tail
-            if not data and remaining:
-                data = file_obj.read(min(chunk_size, remaining))
-                remaining -= len(data)
-            output = decompressor.decompress(data, chunk_size)
-            produced += len(output)
-            # No input and no output left means the stream is cut
-            if produced > entry.file_size or not (data or output):
-                return False
-    except zlib.error:
-        return False
+    while not decompressor.eof:
+        check_resource_limits()
+        data = decompressor.unconsumed_tail
+        if not data and remaining:
+            data = file_obj.read(min(chunk_size, remaining))
+            remaining -= len(data)
+        output = decompressor.decompress(data, chunk_size)
+        produced += len(output)
+        # No input and no output left means the stream is cut
+        if produced > entry.file_size or not (data or output):
+            return False
     return (
         remaining == 0
         and not decompressor.unused_data
@@ -471,18 +484,22 @@ def _layout_is_exact(
     agree with its central-directory entry, both extra fields must
     be well formed, and every Unicode Path extra field must carry
     the entry's raw name. With flag bit 3 each local CRC-32 and
-    size must be zero or equal to the central value. An entry
+    size must be zero or equal to the central value. Every entry's
+    data must hold exactly its declared sizes: a stored entry's
+    ``compress_size`` equals its ``file_size``, and a deflated
+    entry is inflated (bounded by ``file_size``) and must produce
+    ``file_size`` bytes from a stream ending exactly at
+    ``compress_size``; any other method is rejected. An entry
     spans its local header (with the local name and extra
     lengths), its compressed data and, when flag bit 3 is set, a
     data descriptor matching its central-directory values, in the
     8-byte size form when the local header has a ZIP64 extra field
     and in the 4-byte form otherwise. Bit 3 is allowed only where
     a streaming reader finds the descriptor without trusting it: a
-    deflated entry whose deflate stream ends exactly where the
-    descriptor starts, or an empty stored entry whose signed
-    descriptor follows its header directly. Stored data, or data
-    of other methods this check does not inflate, has no end such
-    a reader can find.
+    deflated entry, whose stream ends where the descriptor starts,
+    or an empty stored entry whose signed descriptor follows its
+    header directly. Other stored data has no end such a reader
+    can find.
 
     ``header_offset`` already includes ``zipfile``'s ``concat``
     adjustment, so offsets compared here are file offsets.
@@ -497,6 +514,8 @@ def _layout_is_exact(
         the central directory or the end records.
 
     Raises:
+        zlib.error: If a deflated entry's data is not valid
+            deflate data.
         ResourceLimitError: If the active resource monitor's
             time or memory limit is exceeded.
     """
@@ -531,25 +550,26 @@ def _layout_is_exact(
         data_start = entry.header_offset + _LOCAL_HEADER_SIZE
         data_start += fields[10] + fields[11]
         data_end = data_start + entry.compress_size
-        if not entry.flag_bits & _DATA_DESCRIPTOR_FLAG:
-            if data_end != next_offset:
-                return False
-            continue
         stored = entry.compress_type == zipfile.ZIP_STORED
         if stored:
-            # A reader scanning for the descriptor signature finds
-            # it right after the header only when there is no data
-            delimited = (
-                entry.CRC == entry.compress_size == entry.file_size == 0
-            )
+            sized = entry.compress_size == entry.file_size
         else:
-            delimited = (
+            sized = (
                 entry.compress_type == zipfile.ZIP_DEFLATED
                 and _deflate_fills_entry(
                     file_obj, data_start, entry, chunk_size
                 )
             )
-        if not delimited or not _descriptor_matches(
+        if not sized:
+            return False
+        if not entry.flag_bits & _DATA_DESCRIPTOR_FLAG:
+            if data_end != next_offset:
+                return False
+            continue
+        # A reader scanning for the descriptor signature finds it
+        # right after a stored entry's header only when it is empty
+        empty = entry.CRC == entry.compress_size == 0
+        if (stored and not empty) or not _descriptor_matches(
             file_obj, data_end, next_offset - data_end, entry, stored, zip64
         ):
             return False
@@ -575,6 +595,9 @@ class CompressionSecurityValidator(BaseValidator):
         self._nested_archive_exts: tuple[str, ...] = tuple(
             ZipThreatCategory.NESTED_ARCHIVES.value
         )
+        self._permitted_nested_exts: tuple[str, ...] = tuple(
+            PERMITTED_NESTED_ARCHIVE_EXTS
+        )
 
     def validate_zip_compression_ratio(
         self, file_obj: SeekableFile, compressed_size: int
@@ -585,17 +608,22 @@ class CompressionSecurityValidator(BaseValidator):
         The central-directory records are counted, reading only
         their fixed headers, before ``zipfile`` parses them, so an
         archive with too many entries is rejected at bounded cost;
-        the parsed count is checked again after parsing.
-        Once the declared sizes pass, the listed entries, the
+        the parsed count is checked again after parsing. Every
+        entry must be stored or deflated; any other compression
+        method is rejected before entry data is read. Size and
+        ratio checks read the declared ``file_size`` and
+        ``compress_size``. Once they pass, the listed entries, the
         central directory and the end records must fill the file
         exactly, with no gap, overlap, prepended or trailing bytes,
-        and each local header must agree with its directory entry.
-        Size and ratio checks read the declared ``file_size`` and
-        ``compress_size`` from the archive's central directory,
-        which an attacker can forge. Enable
-        ``limits.verify_zip_decompression`` to additionally
-        decompress every entry and reject archives whose real
-        content does not match the declared metadata.
+        each local header must agree with its directory entry, and
+        each entry's data must hold exactly its declared sizes
+        (deflated entries are inflated, bounded by the declared
+        ``file_size``). A nested archive name is rejected unless
+        ``allow_nested_archives`` is set and the name is a ZIP
+        archive's or a gzip stream's. Enable
+        ``limits.verify_zip_decompression`` to additionally read
+        every entry through ``zipfile`` and reject one whose CRC-32
+        does not match its data.
 
         Args:
             file_obj: Seekable file-like object containing ZIP data.
@@ -605,10 +633,14 @@ class CompressionSecurityValidator(BaseValidator):
             ZipBombError: If compression ratio exceeds maximum allowed
                 or total uncompressed size is too large.
             CompressionSecurityError: If ZIP structure is invalid
-                (including bytes outside the listed entries and a
-                directory entry that declares file data), too many
-                entries, nested archives detected, or individual
-                file too large.
+                (including bytes outside the listed entries, data
+                that does not match its declared sizes and a
+                directory entry that declares file data), an entry
+                uses an unsupported compression method
+                (``ZIP_UNSUPPORTED_COMPRESSION``), the archive is
+                corrupt (``ZIP_CORRUPT``), it has too many entries,
+                a nested archive is detected, or an individual file
+                is too large.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
             FileProcessingError: If unexpected error occurs during
@@ -652,6 +684,7 @@ class CompressionSecurityValidator(BaseValidator):
                 # Analyze each entry in the ZIP
                 for entry in zip_entries:
                     check_resource_limits()
+                    self._check_compression_method(entry)
 
                     # Check for timeout
                     if (
@@ -765,11 +798,17 @@ class CompressionSecurityValidator(BaseValidator):
                                 ),
                             )
 
-                    # Check for nested archive files
+                    # Check for nested archive files; only ZIP and
+                    # gzip names are permitted, and only with
+                    # allow_nested_archives
                     filename_lower = entry.filename.lower()
-                    if any(
-                        filename_lower.endswith(ext)
-                        for ext in self._nested_archive_exts
+                    if filename_lower.endswith(
+                        self._nested_archive_exts
+                    ) and not (
+                        self.config.limits.allow_nested_archives
+                        and filename_lower.endswith(
+                            self._permitted_nested_exts
+                        )
                     ):
                         nested_archives.append(entry.filename)
 
@@ -884,10 +923,7 @@ class CompressionSecurityValidator(BaseValidator):
                         )
 
                 # Reject nested archives (potential security risk)
-                if (
-                    nested_archives
-                    and not self.config.limits.allow_nested_archives
-                ):
+                if nested_archives:
                     logger.warning(
                         "Nested archives detected",
                         extra=log_extra(
@@ -930,11 +966,11 @@ class CompressionSecurityValidator(BaseValidator):
                     )
 
                 # Runs once the declared sizes are within limits,
-                # because it inflates entries with data descriptors
+                # because it inflates every deflated entry
                 self._check_layout(file_obj, zip_entries)
 
                 # Optional: read every entry through zipfile to
-                # confirm the declared metadata is not forged.
+                # verify its CRC-32.
                 if self.config.limits.verify_zip_decompression:
                     self._verify_entries_decompress(zip_file, zip_entries)
 
@@ -983,6 +1019,44 @@ class CompressionSecurityValidator(BaseValidator):
                 message="ZIP validation failed due to an internal error",
             ) from err
 
+    def _check_compression_method(self, entry: zipfile.ZipInfo) -> None:
+        """
+        Raise unless an entry is stored or deflated.
+
+        ``zipfile`` inflates other methods (bzip2, LZMA) without an
+        output bound, so one small entry can expand to gigabytes in
+        a single read; such entries are rejected before any entry
+        data is read.
+
+        Args:
+            entry: Central-directory entry to check.
+
+        Raises:
+            CompressionSecurityError: With
+                ``ZIP_UNSUPPORTED_COMPRESSION`` if the entry uses
+                another compression method.
+        """
+        if entry.compress_type in SUPPORTED_COMPRESSION_METHODS:
+            return
+        logger.warning(
+            "Unsupported ZIP compression method",
+            extra=log_extra(
+                {
+                    "error_type": "zip_unsupported_compression",
+                    "file_name": entry.filename,
+                    "compress_type": entry.compress_type,
+                }
+            ),
+        )
+        raise CompressionSecurityError(
+            message=(
+                f"Unsupported compression method {entry.compress_type}"
+                f" for '{entry.filename}'; only stored and deflated"
+                " entries are accepted"
+            ),
+            error_code=ErrorCode.ZIP_UNSUPPORTED_COMPRESSION,
+        )
+
     def _check_entry_count(self, file_count: int) -> None:
         """
         Raise if a ZIP holds more entries than allowed.
@@ -1029,7 +1103,10 @@ class CompressionSecurityValidator(BaseValidator):
         Raises:
             CompressionSecurityError: If any byte of the file lies
                 outside the listed entries, the central directory
-                and the end records.
+                and the end records, or an entry's data does not
+                hold exactly its declared sizes.
+            zlib.error: If a deflated entry's data is not valid
+                deflate data.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
         """
@@ -1050,17 +1127,18 @@ class CompressionSecurityValidator(BaseValidator):
         zip_entries: list[zipfile.ZipInfo],
     ) -> None:
         """
-        Decompress every entry to detect forged metadata.
+        Read every entry through ``zipfile`` to verify its CRC-32.
 
-        The size checks above trust the central-directory
-        ``file_size``. Reading each entry forces ``zipfile`` to
-        validate the CRC and decompression, so an archive whose
-        real content does not match its declared sizes raises
-        ``zipfile.BadZipFile`` (surfaced by the caller as a
-        corrupt archive), and an entry ``zipfile`` cannot read
-        raises one of ``ZIP_PARSE_ERRORS`` the same way. Reads are
-        bounded by the already-validated declared sizes, and
-        resource limits are checked after every chunk.
+        The layout check has already confirmed that each entry's
+        data holds exactly its declared sizes. Reading each entry
+        makes ``zipfile`` compute its CRC-32, so an entry whose
+        CRC does not match its data raises ``zipfile.BadZipFile``
+        (surfaced by the caller as a corrupt archive), and an
+        entry ``zipfile`` refuses to read (compressed patched data,
+        strong encryption) raises one of ``ZIP_PARSE_ERRORS`` the
+        same way. Reads are bounded by the already-validated
+        declared sizes, and resource limits are checked after
+        every chunk.
 
         Args:
             zip_file: Open ZIP archive to verify.

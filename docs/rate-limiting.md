@@ -63,15 +63,15 @@ validator = FileValidator()
 @app.post("/upload/image")
 @limiter.limit("10/minute")
 async def upload_image(request: Request, file: UploadFile):
-    await validator.validate_image_file(file)
-    return {"filename": file.filename}
+    result = await validator.validate_image_file(file)
+    return {"filename": result.filename}
 
 
 @app.post("/upload/zip")
 @limiter.limit("5/minute")
 async def upload_zip(request: Request, file: UploadFile):
-    await validator.validate_zip_file(file)
-    return {"filename": file.filename}
+    result = await validator.validate_zip_file(file)
+    return {"filename": result.filename}
 ```
 
 ### Per-User Limits (Authenticated)
@@ -97,8 +97,8 @@ async def upload_image_authed(
     file: UploadFile,
     user=Depends(get_current_user),
 ):
-    await validator.validate_image_file(file)
-    return {"filename": file.filename}
+    result = await validator.validate_image_file(file)
+    return {"filename": result.filename}
 ```
 
 ### Custom Error Response

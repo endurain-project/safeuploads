@@ -270,6 +270,41 @@ class TestRejectedUnicodeCategories:
         assert validator.validate_unicode_security(name) == name
 
 
+class TestBlankLetters:
+    """Letters and symbols that render as blank space are rejected."""
+
+    @pytest.mark.parametrize(
+        "char",
+        ["\u115f", "\u1160", "\u3164", "\uffa0", "\u2800"],
+        ids=[
+            "hangul-choseong-filler",
+            "hangul-jungseong-filler",
+            "hangul-filler",
+            "halfwidth-hangul-filler",
+            "braille-blank",
+        ],
+    )
+    @pytest.mark.parametrize("template", ["{}.png", "a{}b.png", "x.png{}"])
+    def test_blank_character_rejected(self, default_config, char, template):
+        """The character is rejected wherever it appears."""
+        validator = UnicodeSecurityValidator(default_config)
+
+        with pytest.raises(UnicodeSecurityError) as exc_info:
+            validator.validate_unicode_security(template.format(char))
+
+        assert exc_info.value.error_code == ErrorCode.UNICODE_DANGEROUS_CHARS
+        assert exc_info.value.dangerous_chars[0][1] == ord(char)
+
+    @pytest.mark.parametrize(
+        "name", ["\ud55c\uae00.png", "\u3131\u314f.png", "\u2801.png"]
+    )
+    def test_visible_neighbours_accepted(self, default_config, name):
+        """Hangul syllables, jamo and non-blank braille are accepted."""
+        validator = UnicodeSecurityValidator(default_config)
+
+        assert validator.validate_unicode_security(name) == name
+
+
 class TestCompatibilityForm:
     """The NFKC form is used for checks and never returned."""
 

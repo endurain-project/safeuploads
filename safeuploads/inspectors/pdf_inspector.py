@@ -5,9 +5,10 @@ tokenized, so names in objects that no cross-reference entry lists
 are checked too, and the structure readers rely on is verified so
 that no reader can parse an object the scan did not see: every
 cross-reference entry must point at a parsed object, every stream
-``/Length`` must end where the scan found ``endstream``, and every
-object stream offset must start one of its parsed objects. Anything
-that does not verify is rejected instead of being repaired.
+``/Length`` must end where the scan found ``endstream``, every
+object stream offset must start one of its parsed objects, and the
+newest trailer's ``/Root`` must lead to a catalog with a page tree.
+Anything that does not verify is rejected instead of being repaired.
 """
 
 from __future__ import annotations
@@ -190,6 +191,33 @@ class _Entry:
 def _name(value: _Value | None) -> bytes | None:
     """Return the bytes of a name value, or None for other values."""
     return value.value if isinstance(value, _Name) else None
+
+
+def _equal(first: _Value, second: _Value) -> bool:
+    """
+    Compare two values with an explicit stack instead of recursion.
+
+    Arrays and dictionaries match item by item, so nesting depth
+    costs memory only; other values compare with ``==``, under
+    which every string is the same ``_STRING``.
+
+    Returns:
+        Whether the values are equal.
+    """
+    pending = [(first, second)]
+    while pending:
+        left, right = pending.pop()
+        if isinstance(left, list):
+            if not isinstance(right, list) or len(left) != len(right):
+                return False
+            pending.extend(zip(left, right, strict=True))
+        elif isinstance(left, _Dict):
+            if not isinstance(right, _Dict) or left.keys() != right.keys():
+                return False
+            pending.extend((left[key], right[key]) for key in left)
+        elif left != right:
+            return False
+    return True
 
 
 class _Lexer:
@@ -421,8 +449,9 @@ class _Document:
         if not _HEADER.match(self.data):
             self.fail("PDF header is missing or has an invalid version")
         self._scan()
-        self._read_xref_chain()
+        trailer = self._read_xref_chain()
         self._read_object_streams()
+        self._check_catalog(trailer)
         self._check_lengths()
         # Bound what readers decompress from the remaining streams
         for stream in self.streams:
@@ -546,7 +575,7 @@ class _Document:
                 self.fail("PDF contains a dictionary key that is not a name")
             # Readers disagree on which duplicate wins. Strings compare
             # equal, as no check reads their contents.
-            if result.get(key.value, value) != value:
+            if key.value in result and not _equal(result[key.value], value):
                 result.conflicting = True
             result[key.value] = value
         return result
@@ -778,7 +807,7 @@ class _Document:
             self.fail("PDF cross-reference entry does not point to its object")
         return obj
 
-    def _read_xref_chain(self) -> None:
+    def _read_xref_chain(self) -> _Dict:
         """
         Follow ``startxref``, ``/XRefStm`` and ``/Prev`` and verify.
 
@@ -786,23 +815,33 @@ class _Document:
         newer section listed that number already, and every in-use
         file offset is verified.
 
+        Returns:
+            The trailer or xref stream dictionary at ``startxref``.
+
         Raises:
             PdfSecurityError: A section is missing, malformed or
-                visited twice, or an entry does not verify.
+                visited twice, an ``/XRefStm`` stream has a
+                ``/Prev``, or an entry does not verify.
         """
         visited: set[int] = set()
-        offset: int | None = self.startxref
-        while offset is not None:
-            trailer = self._read_xref_section(offset, visited, table=True)
+        newest = self._read_xref_section(self.startxref, visited, table=True)
+        trailer = newest
+        while True:
             hybrid = trailer.get(b"XRefStm")
             if hybrid is not None:
                 if type(hybrid) is not int:
                     self.fail("PDF trailer has an invalid /XRefStm")
-                self._read_xref_section(hybrid, visited, table=False)
+                # The chain continues from the trailer's /Prev, so a
+                # section linked from the stream would go unverified
+                entries = self._read_xref_section(hybrid, visited, table=False)
+                if b"Prev" in entries:
+                    self.fail("PDF /XRefStm stream has a /Prev")
             prev = trailer.get(b"Prev")
-            if prev is not None and type(prev) is not int:
+            if prev is None:
+                return newest
+            if type(prev) is not int:
                 self.fail("PDF trailer has an invalid /Prev")
-            offset = prev
+            trailer = self._read_xref_section(prev, visited, table=True)
 
     def _read_xref_section(
         self, offset: int, visited: set[int], *, table: bool
@@ -1029,6 +1068,27 @@ class _Document:
         ):
             self.fail("PDF cross-reference entry does not point to its object")
         return members[entry.field3][1]
+
+    def _check_catalog(self, trailer: _Dict) -> None:
+        """
+        Require ``/Root`` to lead to a catalog with a page tree.
+
+        Both are resolved through the verified cross-reference, so
+        they are objects the scan parsed.
+
+        Args:
+            trailer: The newest trailer or xref stream dictionary.
+
+        Raises:
+            PdfSecurityError: ``/Root`` or the catalog's ``/Pages``
+                is missing, does not resolve, or is not a
+                dictionary.
+        """
+        catalog = self._direct(trailer.get(b"Root"))
+        if not isinstance(catalog, _Dict):
+            self.fail("PDF trailer /Root is not a catalog dictionary")
+        if not isinstance(self._direct(catalog.get(b"Pages")), _Dict):
+            self.fail("PDF catalog /Pages is not a page tree dictionary")
 
     # -- Streams --------------------------------------------------------
 
@@ -1321,6 +1381,7 @@ class _Document:
             PdfSecurityError: The predictor is not None or PNG, its
                 parameters are invalid, or the rows do not fit the
                 data.
+            ResourceLimitError: A resource limit is exceeded.
         """
         if parms is None:
             return data
@@ -1348,43 +1409,72 @@ class _Document:
             self.fail("PDF predictor rows do not match the stream data")
         output = bytearray()
         previous = bytearray(row if data else 0)
+        chunk_size = self.limits.chunk_size
         for start in range(0, len(data), stride):
-            check_resource_limits()
             kind = data[start]
-            current = bytearray(data[start + 1 : start + stride])
-            if kind == 1:
-                for i in range(pixel, row):
-                    current[i] = (current[i] + current[i - pixel]) & 0xFF
-            elif kind == 2:
-                for i in range(row):
-                    current[i] = (current[i] + previous[i]) & 0xFF
-            elif kind == 3:
-                for i in range(row):
-                    left = current[i - pixel] if i >= pixel else 0
-                    current[i] = (
-                        current[i] + (left + previous[i]) // 2
-                    ) & 0xFF
-            elif kind == 4:
-                for i in range(row):
-                    left = current[i - pixel] if i >= pixel else 0
-                    up = previous[i]
-                    corner = previous[i - pixel] if i >= pixel else 0
-                    estimate = left + up - corner
-                    near_left = abs(estimate - left)
-                    near_up = abs(estimate - up)
-                    near_corner = abs(estimate - corner)
-                    if near_left <= near_up and near_left <= near_corner:
-                        predicted = left
-                    elif near_up <= near_corner:
-                        predicted = up
-                    else:
-                        predicted = corner
-                    current[i] = (current[i] + predicted) & 0xFF
-            elif kind != 0:
+            if kind > 4:
                 self.fail("PDF predictor row has an unknown filter type")
+            current = bytearray(data[start + 1 : start + stride])
+            # /Columns has no upper bound, so one row can hold the
+            # whole stream; the limits are checked every chunk_size
+            # bytes of it.
+            for begin in range(0, row, chunk_size):
+                check_resource_limits()
+                end = min(begin + chunk_size, row)
+                _unfilter_span(kind, current, previous, pixel, begin, end)
             output += current
             previous = current
         return bytes(output)
+
+
+def _unfilter_span(
+    kind: int,
+    current: bytearray,
+    previous: bytearray,
+    pixel: int,
+    begin: int,
+    end: int,
+) -> None:
+    """
+    Undo a PNG filter type on ``current[begin:end]`` in place.
+
+    Spans of a row are undone in order, so the bytes before
+    ``begin`` are already decoded.
+
+    Args:
+        kind: PNG filter type, 0 to 4.
+        current: The row being decoded.
+        previous: The decoded row above it.
+        pixel: Bytes per pixel.
+        begin: First offset of the span.
+        end: Offset just past the span.
+    """
+    if kind == 1:
+        for i in range(max(begin, pixel), end):
+            current[i] = (current[i] + current[i - pixel]) & 0xFF
+    elif kind == 2:
+        for i in range(begin, end):
+            current[i] = (current[i] + previous[i]) & 0xFF
+    elif kind == 3:
+        for i in range(begin, end):
+            left = current[i - pixel] if i >= pixel else 0
+            current[i] = (current[i] + (left + previous[i]) // 2) & 0xFF
+    elif kind == 4:
+        for i in range(begin, end):
+            left = current[i - pixel] if i >= pixel else 0
+            up = previous[i]
+            corner = previous[i - pixel] if i >= pixel else 0
+            estimate = left + up - corner
+            near_left = abs(estimate - left)
+            near_up = abs(estimate - up)
+            near_corner = abs(estimate - corner)
+            if near_left <= near_up and near_left <= near_corner:
+                predicted = left
+            elif near_up <= near_corner:
+                predicted = up
+            else:
+                predicted = corner
+            current[i] = (current[i] + predicted) & 0xFF
 
 
 class PdfContentInspector(BaseInspector):
@@ -1396,7 +1486,7 @@ class PdfContentInspector(BaseInspector):
     stream data (including inside object streams), reads stream
     data from another file, uses a stream filter it cannot decode,
     has a structure readers could parse differently from the scan,
-    or whose Flate streams decompress past
+    has no catalog with a page tree, or whose Flate streams decompress past
     ``max_pdf_uncompressed_size`` or ``max_compression_ratio``.
 
     Attributes:

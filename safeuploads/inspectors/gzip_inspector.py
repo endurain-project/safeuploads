@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import zlib
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from ..audit import get_correlation_id, log_extra
@@ -53,6 +54,43 @@ class GzipContentInspector(BaseInspector):
                 size exceeds configured limits.
             CompressionSecurityError: If the gzip structure is
                 invalid or corrupted.
+            ResourceLimitError: If the active resource monitor's
+                time or memory limit is exceeded.
+            FileProcessingError: If an unexpected error occurs.
+        """
+        for _ in self.iter_decompressed_chunks(file_obj, compressed_size):
+            pass
+        file_obj.seek(0)
+
+    def iter_decompressed_chunks(
+        self,
+        file_obj: SeekableFile,
+        compressed_size: int,
+    ) -> Iterator[bytes]:
+        """
+        Decompress a gzip stream under the decompression bomb limits.
+
+        Inflates the stream in ``chunk_size`` steps with
+        ``iter_gzip_chunks`` (concatenated members and zero padding
+        accepted, anything else after a member rejected) and checks
+        the running total against ``max_uncompressed_size`` and,
+        relative to ``compressed_size``, ``max_compression_ratio``
+        before each chunk is yielded.
+
+        Args:
+            file_obj: Seekable file containing gzip data; it is read
+                from offset 0.
+            compressed_size: Size of the compressed stream in bytes.
+
+        Yields:
+            Non-empty chunks of decompressed data.
+
+        Raises:
+            ZipBombError: If compression ratio or uncompressed
+                size exceeds configured limits.
+            CompressionSecurityError: With ``ZIP_CORRUPT`` if the
+                gzip structure, CRC-32 or size is invalid or the
+                stream is truncated.
             ResourceLimitError: If the active resource monitor's
                 time or memory limit is exceeded.
             FileProcessingError: If an unexpected error occurs.
@@ -129,6 +167,8 @@ class GzipContentInspector(BaseInspector):
                             error_code=(ErrorCode.COMPRESSION_RATIO_EXCEEDED),
                         )
 
+                yield chunk
+
         except (ZipBombError, ResourceLimitError):
             raise
         except zlib.error as err:
@@ -176,5 +216,3 @@ class GzipContentInspector(BaseInspector):
                 bytes_to_mb(total_uncompressed),
                 overall_ratio,
             )
-
-        file_obj.seek(0)

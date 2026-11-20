@@ -8,7 +8,7 @@ import os
 import tempfile
 import time
 from collections.abc import Callable, Generator, Mapping
-from concurrent.futures import Executor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -92,7 +92,8 @@ class ValidationResult:
 
     Attributes:
         filename: Sanitized filename. Its extension is one the
-            configuration lists for ``mime_type``.
+            configuration lists for ``mime_type``. The async
+            methods also assign it to the upload's ``filename``.
         mime_type: MIME type libmagic detected from the content,
             for the ``Content-Type`` of a stored or served copy. A
             ZIP or gzip that libmagic reports only as
@@ -127,7 +128,7 @@ class FileValidator:
     def __init__(
         self,
         config: FileSecurityConfig | None = None,
-        executor: Executor | None = None,
+        executor: ThreadPoolExecutor | None = None,
     ):
         """
         Initialize file validator with configuration and detection utilities.
@@ -135,11 +136,13 @@ class FileValidator:
         Args:
             config: Optional configuration object defining file security
                 rules. Defaults to new FileSecurityConfig instance.
-            executor: Optional executor used by the async
+            executor: Optional thread pool used by the async
                 ``validate_*_file`` methods to run blocking
                 inspection off the event loop. Defaults to the
-                asyncio default thread pool. The ``*_sync`` methods
-                never use it.
+                asyncio default thread pool. It must be a thread
+                pool: the offloaded work is a closure over an open
+                temp file, which a process pool cannot pickle. The
+                ``*_sync`` methods never use it.
 
         Raises:
             FileSecurityConfigurationError: If the configuration
@@ -422,22 +425,6 @@ class FileValidator:
                 original_error=err,
             ) from err
 
-    def _validate_filename(self, file: UploadFile) -> None:
-        """
-        Validate filename of uploaded file and sanitize it in place.
-
-        Args:
-            file: Uploaded file whose filename should be validated and
-                sanitized.
-
-        Raises:
-            FilenameSecurityError: Filename is empty, invalid, or fails
-                sanitization.
-            FileProcessingError: Unexpected error during filename
-                validation.
-        """
-        file.filename = self._validated_filename(file.filename)
-
     @staticmethod
     def _raise_if_too_large(total_bytes: int, max_file_size: int) -> None:
         """
@@ -675,7 +662,8 @@ class FileValidator:
         Binds a correlation ID, emits an audit start event and one
         terminal success, failure or resource-limit event, wraps
         unexpected errors in ``FileProcessingError`` and restores
-        the correlation ID on exit.
+        the correlation ID on exit. A cancelled validation ends with
+        a failure event whose result is ``"cancelled"``.
 
         Args:
             filename: Raw filename supplied by the client.
@@ -690,6 +678,8 @@ class FileValidator:
             ResourceLimitError: Propagated from the body.
             FileProcessingError: Propagated as-is or wrapping an
                 unexpected internal error.
+            asyncio.CancelledError: Propagated unchanged when the
+                awaiting task is cancelled.
         """
         cid, cid_token = bind_correlation_id()
         run = _ValidationRun(filename or "unknown")
@@ -712,6 +702,12 @@ class FileValidator:
         ) as exc:
             ms = (time.monotonic() - t0) * 1000
             self._audit.failure(run.filename, cid, ms, str(exc))
+            raise
+        except asyncio.CancelledError:
+            # A ``BaseException``: without this branch a cancelled
+            # validation would leave only its start event
+            ms = (time.monotonic() - t0) * 1000
+            self._audit.failure(run.filename, cid, ms, "cancelled")
             raise
         except Exception as err:
             ms = (time.monotonic() - t0) * 1000
@@ -914,7 +910,10 @@ class FileValidator:
 
         Sanitizes the filename, checks its extension, streams the
         upload under the size limit and runs ``inspect`` in a worker
-        thread.
+        thread. The sanitized name is assigned to ``file.filename``,
+        and every later step uses the returned name rather than
+        reading ``file.filename`` back, so an upload object that
+        does not keep the assignment cannot change it.
 
         Args:
             file: Uploaded file to validate.
@@ -933,11 +932,11 @@ class FileValidator:
         Raises:
             FileValidationError: If a validation check fails.
         """
-        self._validate_filename(file)
-        filename = file.filename or "unknown"
-        run.filename = filename
+        name = self._validated_filename(file.filename)
+        file.filename = name
+        run.filename = name
         self.extension_validator.validate_allowed(
-            filename, allowed_extensions(allowed_types)
+            name, allowed_extensions(allowed_types)
         )
 
         with self._resource_monitor():
@@ -945,9 +944,9 @@ class FileValidator:
                 file, max_file_size
             )
             detected_mime = await self._inspect_temp_file(
-                temp_file, inspect, file_size, filename
+                temp_file, inspect, file_size, name
             )
-        return ValidationResult(filename, detected_mime)
+        return ValidationResult(name, detected_mime)
 
     def _validate_streamed_sync(
         self,
@@ -1126,10 +1125,10 @@ class FileValidator:
             temp_file, file_size
         )
 
-        # Perform ZIP content inspection if enabled
-        if self.config.limits.scan_zip_content:
-            temp_file.seek(0)
-            self.zip_inspector.inspect_zip_content(temp_file)
+        # Entry names and metadata are always inspected;
+        # scan_zip_content gates only reading entry contents
+        temp_file.seek(0)
+        self.zip_inspector.inspect_zip_content(temp_file)
 
         logger.debug(
             "ZIP file validation passed: %r (%s, %s bytes)",
@@ -1261,9 +1260,10 @@ class FileValidator:
         if is_fit:
             self.fit_validator.validate(temp_file, filename=filename)
         else:
-            # XXE-safe XML validation for GPX/TCX
+            # XXE-safe XML validation and root element check for
+            # GPX/TCX
             self.xml_validator.validate_xml_safety(
-                temp_file, filename=filename
+                temp_file, extension=ext, filename=filename
             )
 
         # Optional content analysis

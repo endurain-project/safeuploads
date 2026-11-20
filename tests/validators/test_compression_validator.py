@@ -1,5 +1,6 @@
 """Tests for CompressionSecurityValidator."""
 
+import bz2
 import io
 import struct
 import types
@@ -17,6 +18,7 @@ from safeuploads.exceptions import (
     ZipBombError,
 )
 from safeuploads.file_validator import FileValidator
+from safeuploads.inspectors import zip_inspector
 from safeuploads.validators import compression_validator
 from safeuploads.validators.compression_validator import (
     CompressionSecurityValidator,
@@ -836,22 +838,11 @@ class TestVerifyZipDecompression:
             zf.writestr("big.bin", b"\x00" * (1024 * 1024))
         return buf.getvalue()
 
-    def test_forged_metadata_passes_when_verify_disabled(self):
-        """A forged small file_size passes when verification is off."""
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_forged_metadata_rejected(self, verify):
+        """A forged small file_size is rejected in either mode."""
         config = FileSecurityConfig()
-        config.limits = SecurityLimits(verify_zip_decompression=False)
-        validator = CompressionSecurityValidator(config)
-        forged = _forge_small_file_size(self._bomb_zip())
-
-        # Metadata is trusted, so the understated size passes.
-        validator.validate_zip_compression_ratio(
-            io.BytesIO(forged), len(forged)
-        )
-
-    def test_forged_metadata_rejected_when_verify_enabled(self):
-        """Verification rejects forged metadata as a corrupt ZIP."""
-        config = FileSecurityConfig()
-        config.limits = SecurityLimits(verify_zip_decompression=True)
+        config.limits = SecurityLimits(verify_zip_decompression=verify)
         validator = CompressionSecurityValidator(config)
         forged = _forge_small_file_size(self._bomb_zip())
 
@@ -859,7 +850,7 @@ class TestVerifyZipDecompression:
             validator.validate_zip_compression_ratio(
                 io.BytesIO(forged), len(forged)
             )
-        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
 
     def test_valid_zip_passes_with_verify_enabled(self):
         """A well-formed ZIP (with a dir entry) passes verification."""
@@ -1348,6 +1339,32 @@ def _declared_zip(entries: list[tuple[str, int, int]]) -> bytes:
     return bytes(data)
 
 
+def _deflated_at_ratio(ratio: int) -> bytes:
+    """
+    Build a one-entry deflated ZIP whose entry is exactly ``ratio``:1.
+
+    The run of repeated bytes after an incompressible prefix grows
+    until the content is ``ratio`` times its deflated length, so the
+    result does not depend on the zlib build's exact output.
+    """
+    for run in range(4000):
+        content = bytes(range(10)) + b"a" * run
+        compressed = _raw_deflate(content)
+        if len(content) == ratio * len(compressed):
+            return _hand_zip(
+                [
+                    (
+                        b"a.bin",
+                        compressed,
+                        zipfile.ZIP_DEFLATED,
+                        zlib.crc32(content),
+                        len(content),
+                    )
+                ]
+            )
+    raise AssertionError(f"no content deflates to exactly {ratio}:1")
+
+
 def _stored_zip(names: list[str]) -> bytes:
     """Build a stored ZIP with one one-byte entry per name."""
     buf = io.BytesIO()
@@ -1368,8 +1385,8 @@ class TestCompressionLimitBoundaries:
     """Tests that each limit accepts its value and rejects the next."""
 
     def test_entry_ratio_at_limit_accepted(self):
-        """A declared 1000:100 entry is exactly 10:1 and passes."""
-        data = _declared_zip([("a.bin", 100, 1000)])
+        """A deflated entry of exactly 10:1 passes."""
+        data = _deflated_at_ratio(10)
         validator = _limits_validator(max_compression_ratio=10)
 
         validator.validate_zip_compression_ratio(io.BytesIO(data), 10_000)
@@ -1723,19 +1740,20 @@ def _with_compress_size(data: bytes, compress_size: int) -> bytes:
 
 def _with_header_past_end(data: bytes) -> bytes:
     """
-    Point the second record past the end of the file.
+    Point the second record at the end of the file.
 
-    The first entry's compressed size grows, in its local header
-    and its record, so its data ends where the second record's
-    local header is said to start.
+    The first stored entry's sizes grow, in its local header and its
+    record, so its data ends where the second record's local header
+    is said to start.
     """
     first, second = _directory_records(data)
     first, second = bytearray(first), bytearray(second)
-    struct.pack_into("<L", second, 42, 1 << 20)
+    struct.pack_into("<L", second, 42, len(data))
     name_len = struct.unpack_from("<H", first, 28)[0]
-    compress_size = (1 << 20) - 30 - name_len
-    struct.pack_into("<L", first, 20, compress_size)
-    data = _patch_first_local(data, 18, "<L", compress_size)
+    size = len(data) - 30 - name_len
+    struct.pack_into("<2L", first, 20, size, size)
+    data = _patch_first_local(data, 18, "<L", size)
+    data = _patch_first_local(data, 22, "<L", size)
     return _with_directory(data, [bytes(first), bytes(second)], 0)
 
 
@@ -2251,14 +2269,6 @@ _LAYOUT_INVALID = [
         id="empty-stored-nonzero-crc",
     ),
     pytest.param(
-        _descriptor_zip(compression=zipfile.ZIP_BZIP2),
-        id="bzip2-with-descriptor",
-    ),
-    pytest.param(
-        _descriptor_zip(compression=zipfile.ZIP_LZMA),
-        id="lzma-with-descriptor",
-    ),
-    pytest.param(
         _with_descriptor_form(_DESCRIPTOR_ZIP, wide=True, signed=True),
         id="descriptor-wide-without-local-zip64",
     ),
@@ -2280,10 +2290,6 @@ _LAYOUT_INVALID = [
             _raw_deflate(_GPX, zlib.Z_SYNC_FLUSH), _GPX
         ),
         id="deflate-unterminated",
-    ),
-    pytest.param(
-        _hand_built_descriptor_zip(b"\xff" * 16, b"x" * 16),
-        id="deflate-corrupt",
     ),
     pytest.param(
         _hand_built_descriptor_zip(_raw_deflate(_GPX), _GPX[:-1]),
@@ -2415,7 +2421,8 @@ def _unparsable_zip(kind: str) -> bytes:
     Args:
         kind: ``"utf8_name"`` for invalid UTF-8 under the UTF-8
             flag, ``"version"`` for an extract version of 64, or
-            ``"method"`` for an unsupported compression method.
+            ``"patched"`` for compressed patched data (flag bit 5),
+            which ``zipfile`` refuses only when the entry is read.
 
     Returns:
         Raw archive bytes.
@@ -2433,8 +2440,8 @@ def _unparsable_zip(kind: str) -> bytes:
     if kind == "version":
         struct.pack_into("<H", data, central + 6, 64)
     else:
-        struct.pack_into("<H", data, local + 8, 99)
-        struct.pack_into("<H", data, central + 10, 99)
+        struct.pack_into("<H", data, local + 6, 0x20)
+        struct.pack_into("<H", data, central + 8, 0x20)
     return bytes(data)
 
 
@@ -2446,7 +2453,7 @@ class TestUnparsableArchivesAreCorrupt:
         [
             ("utf8_name", False),
             ("version", False),
-            ("method", True),
+            ("patched", True),
         ],
     )
     def test_rejected_as_corrupt(self, kind, verify):
@@ -2475,3 +2482,495 @@ class TestUnparsableArchivesAreCorrupt:
         validator.validate_zip_compression_ratio(
             io.BytesIO(bytes(data)), len(data)
         )
+
+
+def _hand_zip(entries: list[tuple[bytes, bytes, int, int, int]]) -> bytes:
+    """
+    Build a ZIP by hand from ``(name, data, method, crc, file_size)``.
+
+    ``data`` is stored as the entry's compressed data, and the local
+    header and central record both declare ``method``, ``crc``,
+    ``len(data)`` and ``file_size``, so the layout is exact whatever
+    the declared uncompressed size claims.
+    """
+    local = b""
+    central = b""
+    for name, data, method, crc, file_size in entries:
+        values = (crc, len(data), file_size)
+        central += (
+            struct.pack(
+                "<4s4B4HL2L5H2L",
+                b"PK\x01\x02",
+                20,
+                3,
+                20,
+                0,
+                0,
+                method,
+                0,
+                0x21,
+                *values,
+                len(name),
+                0,
+                0,
+                0,
+                0,
+                _ZIP_UNIX_ATTR,
+                len(local),
+            )
+            + name
+        )
+        local += (
+            struct.pack(
+                "<4s2B4HL2L2H",
+                b"PK\x03\x04",
+                20,
+                0,
+                0,
+                method,
+                0,
+                0x21,
+                *values,
+                len(name),
+                0,
+            )
+            + name
+            + data
+        )
+    count = len(entries)
+    eocd = struct.pack(
+        _EOCD, b"PK\x05\x06", 0, 0, count, count, len(central), len(local), 0
+    )
+    return local + central + eocd
+
+
+def _declaring(
+    content: bytes, file_size: int, method: int = zipfile.ZIP_DEFLATED
+) -> bytes:
+    """
+    Build a one-entry ZIP holding ``content`` but declaring ``file_size``.
+
+    The declared CRC-32 is that of the first ``file_size`` bytes, the
+    part ``zipfile`` reads, so the CRC check passes.
+    """
+    data = _raw_deflate(content) if method == zipfile.ZIP_DEFLATED else content
+    crc = zlib.crc32(content[:file_size])
+    return _hand_zip([(b"data.txt", data, method, crc, file_size)])
+
+
+_PE = b"MZ\x90\x00" + b"\x00" * 200
+_SCRIPT = b"<script>alert(document.cookie)</script>"
+_ZEROS = b"\x00" * (20 * 1024 * 1024)
+
+
+class TestDeclaredSizesMatchData:
+    """Every entry's data must hold exactly its declared sizes."""
+
+    @pytest.mark.parametrize(
+        "method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED]
+    )
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_matching_sizes_accepted(self, method, verify):
+        """An entry declaring its real size passes either mode."""
+        data = _declaring(_GPX, len(_GPX), method)
+
+        _limits_validator(
+            verify_zip_decompression=verify
+        ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_understated_deflate_size_rejected(self, verify):
+        """Deflate data inflating past its declared size is rejected."""
+        data = _declaring(_ZEROS, 1000)
+        assert zipfile.ZipFile(io.BytesIO(data)).read("data.txt") == (
+            b"\x00" * 1000
+        )
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                verify_zip_decompression=verify
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert type(exc_info.value) is CompressionSecurityError
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    def test_inflation_stops_past_declared_size(self, monkeypatch):
+        """Inflation stops within one chunk of the declared size."""
+        produced = []
+        real = zlib.decompressobj
+
+        class _Counting:
+            def __init__(self, *args):
+                self._inner = real(*args)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def decompress(self, data, max_length=0):
+                output = self._inner.decompress(data, max_length)
+                produced.append(len(output))
+                return output
+
+        monkeypatch.setattr(zlib, "decompressobj", _Counting)
+        data = _declaring(_ZEROS, 1000)
+        validator = _limits_validator(chunk_size=4096)
+
+        with pytest.raises(CompressionSecurityError):
+            validator.validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert 1000 < sum(produced) <= 1000 + 4096
+
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_overstated_deflate_size_rejected(self, verify):
+        """Deflate data ending before its declared size is rejected."""
+        data = _declaring(_GPX, len(_GPX) + 1)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                verify_zip_decompression=verify
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    @pytest.mark.parametrize(
+        "method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED]
+    )
+    @pytest.mark.parametrize(
+        "content",
+        [_PE, _SCRIPT, _build_stored(_EVIL)],
+        ids=["pe", "script", "zip"],
+    )
+    def test_zero_declared_size_rejected(self, method, content):
+        """Data behind a declared size of 0 cannot hide content."""
+        data = _declaring(content, 0, method)
+        assert zipfile.ZipFile(io.BytesIO(data)).read("data.txt") == b""
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator().validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    @pytest.mark.parametrize("file_size", [4, 6])
+    def test_stored_size_mismatch_rejected(self, file_size):
+        """Stored data longer or shorter than declared is rejected."""
+        data = _declaring(b"hello", file_size, zipfile.ZIP_STORED)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator().validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    async def test_understated_size_rejected_end_to_end(
+        self, mock_upload_file
+    ):
+        """FileValidator rejects a bomb hidden behind a small size."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(verify_zip_decompression=True)
+        data = _declaring(_ZEROS, 1000)
+        upload = mock_upload_file(filename="track.zip", content=data)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            await FileValidator(config).validate_zip_file(upload)
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+
+class TestVerifyChecksCrc:
+    """verify_zip_decompression adds the CRC-32 check."""
+
+    @staticmethod
+    def _bad_crc_zip() -> bytes:
+        return _hand_zip(
+            [
+                (
+                    b"data.txt",
+                    _raw_deflate(_GPX),
+                    zipfile.ZIP_DEFLATED,
+                    zlib.crc32(_GPX) ^ 1,
+                    len(_GPX),
+                )
+            ]
+        )
+
+    def test_crc_mismatch_passes_without_verify(self):
+        """Without verification the CRC-32 is not computed."""
+        data = self._bad_crc_zip()
+
+        _limits_validator().validate_zip_compression_ratio(
+            io.BytesIO(data), len(data)
+        )
+
+    def test_crc_mismatch_rejected_with_verify(self):
+        """Verification rejects an entry whose CRC-32 is wrong."""
+        data = self._bad_crc_zip()
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                verify_zip_decompression=True
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+
+class TestCompressionMethods:
+    """Only stored and deflated entries are accepted."""
+
+    @staticmethod
+    def _method_zip(method: int, name: bytes = b"notes.txt") -> bytes:
+        content = b"A" * 100
+        return _hand_zip(
+            [(name, bz2.compress(content), method, zlib.crc32(content), 100)]
+        )
+
+    def test_stored_and_deflated_accepted(self):
+        """Archives mixing stored and deflated entries pass."""
+        data = _hand_zip(
+            [
+                (
+                    b"a.gpx",
+                    _GPX,
+                    zipfile.ZIP_STORED,
+                    zlib.crc32(_GPX),
+                    len(_GPX),
+                ),
+                (
+                    b"b.gpx",
+                    _raw_deflate(_GPX),
+                    zipfile.ZIP_DEFLATED,
+                    zlib.crc32(_GPX),
+                    len(_GPX),
+                ),
+            ]
+        )
+
+        _limits_validator(
+            verify_zip_decompression=True
+        ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    def test_method_set_shared_with_inspector(self):
+        """The inspector checks methods against the validator's set."""
+        assert (
+            zip_inspector.SUPPORTED_COMPRESSION_METHODS
+            is compression_validator.SUPPORTED_COMPRESSION_METHODS
+        )
+        supported = compression_validator.SUPPORTED_COMPRESSION_METHODS
+        assert supported == {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+
+    @pytest.mark.parametrize("method", [1, 6, 9, 12, 14, 93, 98, 99])
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_other_methods_rejected_before_reading(
+        self, monkeypatch, method, verify
+    ):
+        """Other methods are rejected before any entry is read."""
+        data = self._method_zip(method)
+
+        def _no_open(*args, **kwargs):
+            raise AssertionError("entry data was read")
+
+        monkeypatch.setattr(zipfile.ZipFile, "open", _no_open)
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                verify_zip_decompression=verify
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert type(exc_info.value) is CompressionSecurityError
+        assert (
+            exc_info.value.error_code == ErrorCode.ZIP_UNSUPPORTED_COMPRESSION
+        )
+        assert "'notes.txt'" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "compression", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA]
+    )
+    @pytest.mark.parametrize("descriptor", [False, True])
+    def test_zipfile_written_archive_rejected(self, compression, descriptor):
+        """Real bzip2 and LZMA archives are rejected by method."""
+        if descriptor:
+            data = _descriptor_zip(compression=compression)
+        else:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", compression) as zf:
+                zf.writestr("a.txt", b"hello " * 20)
+            data = buf.getvalue()
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator().validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert (
+            exc_info.value.error_code == ErrorCode.ZIP_UNSUPPORTED_COMPRESSION
+        )
+
+    def test_directory_with_other_method_rejected(self):
+        """A directory entry declaring bzip2 is rejected as well."""
+        data = _hand_zip([(b"docs/", b"", 12, 0, 0)])
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator().validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert (
+            exc_info.value.error_code == ErrorCode.ZIP_UNSUPPORTED_COMPRESSION
+        )
+
+    async def test_bzip2_bomb_rejected_end_to_end(self, mock_upload_file):
+        """A tiny bzip2 entry declaring a small size is rejected."""
+        compressed = bz2.compress(b"A" * (8 * 1024 * 1024), 9)
+        data = _hand_zip(
+            [
+                (
+                    b"notes.txt",
+                    compressed,
+                    12,
+                    zlib.crc32(b"A" * 100),
+                    100,
+                )
+            ]
+        )
+        upload = mock_upload_file(filename="track.zip", content=data)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            await FileValidator().validate_zip_file(upload)
+
+        assert (
+            exc_info.value.error_code == ErrorCode.ZIP_UNSUPPORTED_COMPRESSION
+        )
+
+
+class TestCorruptDeflateData:
+    """Deflate data that does not decode is a corrupt archive."""
+
+    @staticmethod
+    def _corrupt_zip() -> bytes:
+        # Block type 3 is reserved, so inflation fails at once
+        return _hand_zip(
+            [
+                (
+                    b"data.txt",
+                    b"\xff" * 16,
+                    zipfile.ZIP_DEFLATED,
+                    zlib.crc32(b"hello"),
+                    5,
+                )
+            ]
+        )
+
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_valid_deflate_accepted(self, verify):
+        """A well-formed deflated entry passes either mode."""
+        data = _declaring(b"hello", 5)
+
+        _limits_validator(
+            verify_zip_decompression=verify
+        ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    @pytest.mark.parametrize("descriptor", [False, True])
+    @pytest.mark.parametrize("verify", [False, True])
+    def test_invalid_deflate_is_corrupt(self, verify, descriptor):
+        """zlib.error from invalid deflate data maps to ZIP_CORRUPT."""
+        if descriptor:
+            data = _hand_built_descriptor_zip(b"\xff" * 16, b"x" * 16)
+        else:
+            data = self._corrupt_zip()
+        with pytest.raises(zlib.error):
+            zlib.decompress(b"\xff" * 16, -15)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                verify_zip_decompression=verify
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert type(exc_info.value) is CompressionSecurityError
+        assert exc_info.value.error_code == ErrorCode.ZIP_CORRUPT
+
+    def test_unterminated_deflate_rejected(self):
+        """A stream without its final block fails the size check."""
+        content = b"hello world"
+        data = _hand_zip(
+            [
+                (
+                    b"data.txt",
+                    _raw_deflate(content, zlib.Z_SYNC_FLUSH),
+                    zipfile.ZIP_DEFLATED,
+                    zlib.crc32(content),
+                    len(content),
+                )
+            ]
+        )
+        assert zipfile.ZipFile(io.BytesIO(data)).read("data.txt") == content
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                verify_zip_decompression=True
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+
+class TestNonZipNestedArchives:
+    """allow_nested_archives permits nested ZIPs only."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "logs.bz2",
+            "logs.xz",
+            "logs.tar",
+            "logs.tgz",
+            "logs.tbz2",
+            "logs.7z",
+            "logs.rar",
+            "logs.gz.rar",
+            "LOGS.BZ2",
+        ],
+    )
+    def test_non_zip_name_rejected_when_nested_allowed(self, name):
+        """A non-ZIP archive name is rejected even when nesting is on."""
+        data = _stored_zip([name])
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                allow_nested_archives=True
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
+        assert name in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "inner.zip",
+            "INNER.ZIP",
+            "a.gz.zip",
+            "activities/1.fit.gz",
+            "logs.zip.gz",
+            "LOGS.GZ",
+        ],
+    )
+    def test_zip_name_accepted_when_nested_allowed(self, name):
+        """A ZIP or gzip name passes when nesting is on."""
+        data = _stored_zip([name])
+
+        _limits_validator(
+            allow_nested_archives=True
+        ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    @pytest.mark.parametrize("name", ["inner.zip", "logs.gz"])
+    def test_zip_name_rejected_by_default(self, name):
+        """ZIP and gzip names are still rejected when nesting is off."""
+        data = _stored_zip([name])
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator().validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE

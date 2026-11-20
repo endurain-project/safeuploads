@@ -205,6 +205,35 @@ class TestDangerousExtensionCategory:
                     f"Extension '{ext}' in {category.name} must start with '.'"
                 )
 
+    @pytest.mark.parametrize(
+        ("ext", "category"),
+        [
+            (".msp", DangerousExtensionCategory.WINDOWS_EXECUTABLES),
+            (".ps2", DangerousExtensionCategory.SCRIPT_FILES),
+            (".msh", DangerousExtensionCategory.SCRIPT_FILES),
+            (".pyw", DangerousExtensionCategory.WEB_SCRIPTS),
+            (".php2", DangerousExtensionCategory.WEB_SCRIPTS),
+            (".php6", DangerousExtensionCategory.WEB_SCRIPTS),
+            (".pgif", DangerousExtensionCategory.WEB_SCRIPTS),
+            (".phtm", DangerousExtensionCategory.WEB_SCRIPTS),
+            (".inc", DangerousExtensionCategory.WEB_SCRIPTS),
+            (".iso", DangerousExtensionCategory.VIRTUALIZATION_FORMATS),
+            (".img", DangerousExtensionCategory.VIRTUALIZATION_FORMATS),
+            (".wsb", DangerousExtensionCategory.VIRTUALIZATION_FORMATS),
+            (".xll", DangerousExtensionCategory.OFFICE_MACROS),
+            (".one", DangerousExtensionCategory.OFFICE_MACROS),
+            (".ade", DangerousExtensionCategory.OFFICE_MACROS),
+            (".mde", DangerousExtensionCategory.OFFICE_MACROS),
+            (".appref-ms", DangerousExtensionCategory.SYSTEM_FILES),
+            (".settingcontent-ms", DangerousExtensionCategory.SYSTEM_FILES),
+            (".library-ms", DangerousExtensionCategory.SYSTEM_FILES),
+        ],
+    )
+    def test_extension_in_category(self, ext, category):
+        """Each blocked extension belongs to exactly one category."""
+        assert FileSecurityConfig.get_extension_category(ext) is category
+        assert ext in FileSecurityConfig.BLOCKED_EXTENSIONS
+
 
 class TestCompoundExtensionCategory:
     """Tests for CompoundExtensionCategory enum members."""
@@ -300,6 +329,14 @@ class TestUnicodeAttackCategory:
             None
         """
         assert 0xFEFF in UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS.value
+
+    @pytest.mark.parametrize(
+        "code_point", [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800]
+    )
+    def test_zero_width_characters_contains_blank_letters(self, code_point):
+        """Hangul fillers and the braille blank render as nothing."""
+        assert code_point in UnicodeAttackCategory.ZERO_WIDTH_CHARACTERS.value
+        assert code_point in FileSecurityConfig.DANGEROUS_UNICODE_CHARS
 
     def test_confusing_punctuation_contains_fullwidth_stop(self):
         """

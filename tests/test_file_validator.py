@@ -240,16 +240,12 @@ class TestSanitizeFilename:
         assert validator._sanitize_filename("").startswith("file_")
         assert validator._sanitize_filename(".jpg") == ".jpg"
 
-    @pytest.mark.asyncio
-    async def test_validate_filename_rejects_empty_filename(
-        self, mock_upload_file
-    ):
+    def test_validated_filename_rejects_empty_filename(self):
         """Test that an empty filename is rejected before sanitizing."""
         validator = FileValidator()
-        file = mock_upload_file(filename="", content=b"x")
 
         with pytest.raises(FilenameSecurityError) as exc_info:
-            validator._validate_filename(file)
+            validator._validated_filename("")
 
         assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
 
@@ -365,37 +361,95 @@ class TestSanitizeFilenameTruncation:
 class TestValidateFilename:
     """Test filename validation."""
 
-    @pytest.mark.asyncio
-    async def test_validate_filename_success(self, mock_upload_file):
-        """Test successful filename validation."""
+    def test_validated_filename_success(self):
+        """Test a clean filename comes back unchanged."""
         validator = FileValidator()
-        file = mock_upload_file(filename="document.pdf", content=b"test")
 
-        # Should not raise
-        validator._validate_filename(file)
-        assert file.filename == "document.pdf"
+        assert validator._validated_filename("document.pdf") == "document.pdf"
 
-    @pytest.mark.asyncio
-    async def test_validate_filename_missing(self, mock_upload_file):
+    def test_validated_filename_missing(self):
         """Test validation fails with missing filename."""
         validator = FileValidator()
-        file = mock_upload_file(filename=None, content=b"test")
 
-        with pytest.raises(
-            FilenameSecurityError, match="Filename is required"
-        ):
-            validator._validate_filename(file)
+        with pytest.raises(FilenameSecurityError) as exc_info:
+            validator._validated_filename(None)
 
-    @pytest.mark.asyncio
-    async def test_validate_filename_sanitizes_in_place(
-        self, mock_upload_file
-    ):
-        """Test that filename is sanitized in place."""
+        assert exc_info.value.error_code == ErrorCode.FILENAME_EMPTY
+
+    def test_validated_filename_returns_sanitized_name(self):
+        """Test dangerous characters are replaced in the result."""
         validator = FileValidator()
-        file = mock_upload_file(filename="file<>.txt", content=b"test")
 
-        validator._validate_filename(file)
-        assert file.filename == "file__.txt"  # Dangerous chars replaced
+        assert validator._validated_filename("file<>.txt") == "file__.txt"
+
+
+class _DiscardingNameUpload:
+    """Upload adapter whose ``filename`` setter stores nothing."""
+
+    def __init__(self, filename: str, content: bytes) -> None:
+        self._filename = filename
+        self._buffer = io.BytesIO(content)
+        self.size = len(content)
+
+    @property
+    def filename(self) -> str:
+        return self._filename
+
+    @filename.setter
+    def filename(self, value: str) -> None:
+        pass
+
+    async def read(self, size: int = -1) -> bytes:
+        return self._buffer.read(size)
+
+    async def seek(self, offset: int) -> int:
+        return self._buffer.seek(offset)
+
+
+class TestAsyncPathUsesSanitizedName:
+    """The async methods use the sanitized name, not the upload's."""
+
+    async def test_clean_name_returned(self, valid_png_bytes):
+        """A clean name passes and comes back unchanged."""
+        upload = _DiscardingNameUpload("photo.png", valid_png_bytes)
+
+        result = await FileValidator().validate_image_file(upload)
+
+        assert result == ValidationResult("photo.png", "image/png")
+
+    async def test_traversal_name_sanitized_without_setter(
+        self, valid_png_bytes, caplog
+    ):
+        """A name the adapter cannot store is still sanitized."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(enable_audit_logging=True)
+        upload = _DiscardingNameUpload(
+            "../../etc/x  <evil>.png", valid_png_bytes
+        )
+
+        with caplog.at_level(logging.INFO, logger="safeuploads.audit"):
+            result = await FileValidator(config).validate_image_file(upload)
+
+        assert result.filename == "x  _evil_.png"
+        success = [
+            r
+            for r in caplog.records
+            if getattr(r, "audit_event_type", "") == "validation_success"
+        ]
+        assert [r.audit_filename for r in success] == ["x  _evil_.png"]
+
+    async def test_upload_filename_set_to_sanitized_name(
+        self, mock_upload_file, valid_png_bytes
+    ):
+        """The sanitized name is also assigned to the upload."""
+        upload = mock_upload_file(
+            filename="pho<>to.png", content=valid_png_bytes
+        )
+
+        result = await FileValidator().validate_image_file(upload)
+
+        assert result.filename == "pho__to.png"
+        assert upload.filename == "pho__to.png"
 
 
 class TestStreamedSizeCheck:
@@ -1037,20 +1091,18 @@ class TestFileValidatorMagicUnavailable:
 
 
 class TestValidateFilenameExceptionWrapping:
-    """Tests for _validate_filename exception wrapping behaviour."""
+    """Tests for _validated_filename exception wrapping behaviour."""
 
     def test_unexpected_exception_is_wrapped_in_processing_error(
-        self, monkeypatch, mock_upload_file
+        self, monkeypatch
     ):
         """
         Test that an unexpected exception is wrapped in FileProcessingError.
 
         Args:
             monkeypatch: pytest monkeypatch fixture.
-            mock_upload_file: File factory fixture.
         """
         validator = FileValidator()
-        file = mock_upload_file(filename="photo.jpg", content=b"x")
 
         def _explode(filename: str) -> str:
             raise RuntimeError("unexpected internal error")
@@ -1058,7 +1110,7 @@ class TestValidateFilenameExceptionWrapping:
         monkeypatch.setattr(validator, "_sanitize_filename", _explode)
 
         with pytest.raises(FileProcessingError) as exc_info:
-            validator._validate_filename(file)
+            validator._validated_filename("photo.jpg")
         assert exc_info.value.error_code == ErrorCode.PROCESSING_ERROR
 
 
@@ -1437,13 +1489,13 @@ class TestResourceLimitsEnforcedDuringWork:
     async def test_zip_memory_over_budget_raises_inside_loop(
         self, mock_upload_file, fake_clock, monkeypatch
     ):
-        """Test peak-RSS growth during ZIP inspection is rejected."""
+        """Test RSS growth during ZIP inspection is rejected."""
         validator = _audited_validator()
         fake_clock.step = 0.0
         _advance_clock_during_inspection(validator, fake_clock, monkeypatch)
         monkeypatch.setattr(
             ResourceMonitor,
-            "_get_peak_rss_bytes",
+            "_get_rss_bytes",
             staticmethod(lambda: (1 << 30) if fake_clock.advancing else 1),
         )
         file = mock_upload_file(filename="a.zip", content=_zip_of(50))

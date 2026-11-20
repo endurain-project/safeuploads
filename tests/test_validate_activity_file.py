@@ -393,6 +393,67 @@ class TestValidateActivityFileXmlSecurity:
         assert exc_info.value.error_code == ErrorCode.XML_MALFORMED
 
 
+_XSLT_DOCUMENT = (
+    b'<?xml version="1.0"?>'
+    b'<xsl:stylesheet version="1.0"'
+    b' xmlns:xsl="http://www.w3.org/1999/XSL/Transform">'
+    b'<xsl:template match="/">'
+    b"<html><script>alert(1)</script></html>"
+    b"</xsl:template>"
+    b"</xsl:stylesheet>"
+)
+
+
+class TestValidateActivityFileXmlStructure:
+    """GPX and TCX need an XML declaration and their own root."""
+
+    @pytest.mark.parametrize(
+        ("name", "content"),
+        [
+            ("track.gpx", _GPX_CONTENT),
+            ("osmand.gpx", _OSMAND_GPX_CONTENT),
+            ("workout.tcx", _TCX_CONTENT),
+        ],
+    )
+    async def test_expected_root_accepted(
+        self, mock_upload_file, name, content
+    ):
+        validator = FileValidator()
+        await validator.validate_activity_file(mock_upload_file(name, content))
+
+    @pytest.mark.parametrize(
+        ("name", "content"),
+        [
+            ("track.gpx", _XSLT_DOCUMENT),
+            ("workout.tcx", _XSLT_DOCUMENT),
+            ("track.gpx", _TCX_CONTENT),
+            ("workout.tcx", _GPX_CONTENT),
+        ],
+        ids=["xslt-gpx", "xslt-tcx", "tcx-as-gpx", "gpx-as-tcx"],
+    )
+    async def test_other_root_rejected(self, mock_upload_file, name, content):
+        validator = FileValidator()
+        with pytest.raises(XmlSecurityError) as exc_info:
+            await validator.validate_activity_file(
+                mock_upload_file(name, content)
+            )
+        assert exc_info.value.error_code == ErrorCode.XML_ROOT_MISMATCH
+
+    async def test_stylesheet_without_declaration_rejected(
+        self, mock_upload_file
+    ):
+        validator = FileValidator()
+        content = (
+            b'<?xml-stylesheet type="text/xsl" href="x.xsl"?>'
+            + (_GPX_CONTENT.split(b"?>", 1)[1])
+        )
+        with pytest.raises(FileSignatureError) as exc_info:
+            await validator.validate_activity_file(
+                mock_upload_file("track.gpx", content)
+            )
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
+
+
 class TestValidateActivityFileExceptionWrapping:
     """Tests that unexpected errors are wrapped in FileProcessingError."""
 

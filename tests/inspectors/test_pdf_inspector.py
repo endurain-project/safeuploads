@@ -8,6 +8,7 @@ import pytest
 
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import ErrorCode, PdfSecurityError
+from safeuploads.inspectors import pdf_inspector
 from safeuploads.inspectors.pdf_inspector import PdfContentInspector
 from tests import pdfs
 
@@ -170,6 +171,27 @@ class TestAcceptedDocuments:
     def test_ascii_hex_odd_digit_count(self):
         body = pdfs.stream(b"/Filter /ASCIIHexDecode", b"414>")
         _inspect(pdfs.document(extra=[body]))
+
+    @pytest.mark.parametrize("kind", ["array", "dict"])
+    def test_deep_nesting_without_duplicate_key(self, kind):
+        value = _nested(kind, b"1")
+        _inspect(pdfs.document(extra=[pdfs.stream(b"/X " + value, b"abc")]))
+
+    @pytest.mark.parametrize("kind", ["array", "dict"])
+    def test_deeply_nested_duplicate_key_with_equal_value(self, kind):
+        value = _nested(kind, b"1")
+        body = pdfs.stream(b"/X " + value + b" /X " + value, b"abc")
+        _inspect(pdfs.document(extra=[body]))
+
+    def test_catalog_and_page_tree_in_object_stream(self):
+        page = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"
+        _inspect(
+            pdfs.build(
+                [],
+                compressed=[pdfs.CATALOG, pdfs.PAGES, page],
+                xref_stream=True,
+            )
+        )
 
     def test_trailing_whitespace_after_eof(self):
         _inspect(pdfs.document(tail=b"\r\n \n"))
@@ -454,6 +476,13 @@ class TestStreams:
         err = _rejected(data)
         assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
 
+    @pytest.mark.parametrize("kind", ["array", "dict"])
+    def test_deeply_nested_conflicting_duplicate(self, kind):
+        first, second = _nested(kind, b"1"), _nested(kind, b"2")
+        body = pdfs.stream(b"/X " + first + b" /X " + second, b"abc")
+        err = _rejected(pdfs.document(extra=[body]))
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
     def test_endstream_glued_to_keyword(self):
         data = pdfs.document(extra=[pdfs.stream(b"", b"abc")])
         data = data.replace(b"endstream\nendobj", b"endstreamendobj")
@@ -680,14 +709,18 @@ class TestCrossReference:
         err = _rejected(data)
         assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
 
-    @pytest.mark.parametrize("valid", [True, False])
-    def test_hybrid_xref_stream(self, valid):
+    @pytest.mark.parametrize(
+        ("offset_valid", "entries"),
+        [(True, b""), (False, b""), (True, b" /Prev 0")],
+        ids=["valid", "wrong-offset", "prev-in-stream"],
+    )
+    def test_hybrid_xref_stream(self, offset_valid, entries):
         base = pdfs.document()
         xref = base.index(b"xref\n")
-        offset = xref if valid else 17
+        offset = xref if offset_valid else 17
         rows = b"\x01" + offset.to_bytes(4, "big") + b"\x00"
         body = pdfs.stream(
-            b"/Type /XRef /W [1 4 1] /Size 6 /Index [5 1]", rows
+            b"/Type /XRef /W [1 4 1] /Size 6 /Index [5 1]" + entries, rows
         )
         data = base[:xref] + b"5 0 obj\n" + body + b"\nendobj\n" + base[xref:]
         start = data.index(b"xref\n", xref)
@@ -695,11 +728,73 @@ class TestCrossReference:
         data = data[: data.rindex(b"startxref")] + (
             b"startxref\n%d\n%%%%EOF\n" % start
         )
-        if valid:
+        if offset_valid and not entries:
             _inspect(data)
         else:
             err = _rejected(data)
             assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
+
+class TestCatalog:
+    """The newest trailer must lead to a catalog with a page tree."""
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(
+                pdfs.document().replace(b"/Root 1 0 R ", b""),
+                id="root-missing",
+            ),
+            pytest.param(
+                pdfs.document().replace(b"/Root 1 0 R", b"/Root 9 0 R"),
+                id="root-object-missing",
+            ),
+            pytest.param(
+                pdfs.document().replace(b"/Root 1 0 R", b"/Root (1 0)"),
+                id="root-string",
+            ),
+            pytest.param(
+                pdfs.build([b"[2 0 R]", pdfs.PAGES]), id="root-array"
+            ),
+            pytest.param(
+                pdfs.build([pdfs.stream(pdfs.CATALOG[3:-3], b""), pdfs.PAGES]),
+                id="root-stream",
+            ),
+            pytest.param(
+                pdfs.build([b"<< /Type /Catalog >>"]), id="pages-missing"
+            ),
+            pytest.param(
+                pdfs.build([pdfs.CATALOG]), id="pages-object-missing"
+            ),
+            pytest.param(
+                pdfs.build([pdfs.CATALOG, b"[3 0 R]"]), id="pages-array"
+            ),
+            pytest.param(
+                pdfs.build([pdfs.CATALOG, pdfs.stream(pdfs.PAGES[3:-3], b"")]),
+                id="pages-stream",
+            ),
+            pytest.param(
+                pdfs.build([], compressed=[b"5"], xref_stream=True),
+                id="compressed-root-integer",
+            ),
+            pytest.param(
+                pdfs.build(
+                    [], compressed=[pdfs.CATALOG, b"null"], xref_stream=True
+                ),
+                id="compressed-pages-null",
+            ),
+        ],
+    )
+    def test_invalid_catalog(self, data):
+        err = _rejected(data)
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
+    def test_newest_catalog_without_page_tree(self):
+        updated = pdfs.append_update(
+            pdfs.document(), {1: b"<< /Type /Catalog >>"}
+        )
+        err = _rejected(updated)
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
 
 
 class TestXrefStreams:
@@ -900,6 +995,68 @@ class TestObjectStreams:
         )
         _inspect(pdfs.document(extra=[body]))
 
+    @pytest.mark.parametrize("filter_type", [0, 1, 2, 3, 4])
+    @pytest.mark.parametrize(
+        ("value", "code"),
+        [
+            (b"<< /A [1 2 3] /B /UseNone >>", None),
+            (b"<< /S /JavaScript >>", ErrorCode.PDF_ACTIVE_CONTENT),
+        ],
+        ids=["valid", "javascript"],
+    )
+    def test_predictor_rows_wider_than_a_chunk(self, filter_type, value, code):
+        # Three-byte pixels over five-byte chunks, two rows deep, so
+        # pixels and filter references straddle every chunk boundary
+        text = b"9 0 " + value
+        text += b" " * (-len(text) % 6)
+        row = len(text) // 2
+        encoded = bytearray()
+        previous = bytes(row)
+        for start in (0, row):
+            current = text[start : start + row]
+            encoded.append(filter_type)
+            encoded += _png_encode(filter_type, current, previous, pixel=3)
+            previous = current
+        body = pdfs.stream(
+            b"/Type /ObjStm /N 1 /First 4 /DecodeParms"
+            b" << /Predictor 12 /Colors 3 /Columns %d >>" % (row // 3),
+            bytes(encoded),
+            flate=True,
+        )
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(chunk_size=5)
+        data = pdfs.document(extra=[body])
+        if code is None:
+            _inspect(data, config)
+        else:
+            assert _rejected(data, config).error_code == code
+
+    def test_resource_limits_are_checked_inside_a_predictor_row(
+        self, monkeypatch
+    ):
+        chunk_size = 64
+        width = 50 * chunk_size + 10
+        text = b"9 0 << /A 1 >>".ljust(width)
+        predicted = pdfs.stream(
+            b"/Type /ObjStm /N 1 /First 4"
+            b" /DecodeParms << /Predictor 12 /Columns %d >>" % width,
+            b"\x04" + _png_encode(4, text, bytes(width)),
+            flate=True,
+        )
+        plain = pdfs.stream(b"/Type /ObjStm /N 1 /First 4", text, flate=True)
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(chunk_size=chunk_size)
+        calls = []
+        monkeypatch.setattr(
+            pdf_inspector, "check_resource_limits", lambda: calls.append(1)
+        )
+        _inspect(pdfs.document(extra=[plain]), config)
+        without_predictor = len(calls)
+        calls.clear()
+        _inspect(pdfs.document(extra=[predicted]), config)
+        # One check per chunk of the row, not one for the whole row
+        assert len(calls) - without_predictor >= width // chunk_size
+
     def test_gap_before_first_object(self):
         _inspect(self._object_stream_pdf(b"9 2 ", b"  1", n=1))
 
@@ -960,13 +1117,22 @@ class TestObjectStreams:
         assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
 
 
-def _png_encode(filter_type: int, row: bytes, previous: bytes) -> bytes:
-    """Encode one row with a PNG filter type (one byte per pixel)."""
+def _nested(kind: str, inner: bytes, depth: int = 50_000) -> bytes:
+    """Wrap ``inner`` in ``depth`` arrays or single-key dictionaries."""
+    if kind == "array":
+        return b"[" * depth + inner + b"]" * depth
+    return b"<</B " * depth + inner + b">>" * depth
+
+
+def _png_encode(
+    filter_type: int, row: bytes, previous: bytes, pixel: int = 1
+) -> bytes:
+    """Encode one row with a PNG filter type."""
     out = bytearray()
     for i, value in enumerate(row):
-        left = row[i - 1] if i else 0
+        left = row[i - pixel] if i >= pixel else 0
         up = previous[i]
-        upper_left = previous[i - 1] if i else 0
+        upper_left = previous[i - pixel] if i >= pixel else 0
         if filter_type == 0:
             predicted = 0
         elif filter_type == 1:

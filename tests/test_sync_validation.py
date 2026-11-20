@@ -306,10 +306,10 @@ class TestSyncImageRejects:
     """Hostile or invalid images are rejected like the async method."""
 
     def test_wrong_signature_raises(self):
-        """Non-image bytes under a .jpg name fail the MIME check."""
-        with pytest.raises(MimeTypeError) as exc_info:
+        """Non-image bytes under a .jpg name fail the signature check."""
+        with pytest.raises(FileSignatureError) as exc_info:
             _run_sync(FileValidator(), "image", "a.jpg", b"not an image!!")
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     def test_polyglot_content_threat_raises(self):
         """A ZIP signature past the header is a content threat."""
@@ -352,10 +352,10 @@ class TestSyncImageRejects:
         assert exc_info.value.error_code == ErrorCode.IMAGE_INVALID_STRUCTURE
 
     def test_avi_named_webp_raises(self):
-        """AVI content under a .webp name fails the MIME check."""
-        with pytest.raises(MimeTypeError) as exc_info:
+        """AVI content under a .webp name fails the signature check."""
+        with pytest.raises(FileSignatureError) as exc_info:
             _run_sync(FileValidator(), "image", "clip.webp", _AVI)
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     def test_oversize_raises(self):
         """A file over max_image_size raises FILE_TOO_LARGE."""
@@ -724,7 +724,7 @@ class TestSyncFileObjects:
     @pytest.mark.parametrize(
         ("stem", "code"),
         [
-            ("image", ErrorCode.MIME_TYPE_MISMATCH),
+            ("image", ErrorCode.FILE_SIGNATURE_MISMATCH),
             ("zip", ErrorCode.FILE_SIGNATURE_MISMATCH),
             ("activity", ErrorCode.FILE_SIGNATURE_MISMATCH),
             ("gzip", ErrorCode.FILE_SIGNATURE_MISMATCH),

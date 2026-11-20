@@ -3,6 +3,8 @@
 import gzip
 import hashlib
 import io
+import struct
+import zipfile
 import zlib
 
 import pytest
@@ -15,6 +17,7 @@ from safeuploads.exceptions import (
     FileProcessingError,
     ResourceLimitError,
     ZipBombError,
+    ZipContentError,
 )
 from safeuploads.inspectors.gzip_inspector import GzipContentInspector
 
@@ -493,3 +496,247 @@ class TestIterDecompressedChunks:
 
         assert exc_info.value.error_code == ErrorCode.ZIP_BOMB_DETECTED
         assert sum(map(len, received)) <= 100_000
+
+
+_FHCRC = 0x02
+_FEXTRA = 0x04
+_FNAME = 0x08
+_FCOMMENT = 0x10
+
+
+def build_gzip_member(
+    payload: bytes,
+    *,
+    name: bytes | None = None,
+    comment: bytes | None = None,
+    extra: bytes | None = None,
+    header_crc: bool = False,
+    level: int = 6,
+) -> bytes:
+    """
+    Build one gzip member with the given optional header fields.
+
+    Args:
+        payload: Data to compress.
+        name: FNAME bytes, written NUL-terminated, or None.
+        comment: FCOMMENT bytes, written NUL-terminated, or None.
+        extra: FEXTRA data, written after its length, or None.
+        header_crc: Whether to add an FHCRC field.
+        level: Deflate level; 0 writes stored blocks.
+
+    Returns:
+        Raw gzip member bytes.
+    """
+    flags = 0
+    fields = b""
+    if extra is not None:
+        flags |= _FEXTRA
+        fields += struct.pack("<H", len(extra)) + extra
+    if name is not None:
+        flags |= _FNAME
+        fields += name + b"\x00"
+    if comment is not None:
+        flags |= _FCOMMENT
+        fields += comment + b"\x00"
+    if header_crc:
+        flags |= _FHCRC
+    header = b"\x1f\x8b\x08" + bytes([flags]) + b"\x00" * 5 + b"\xff"
+    header += fields
+    if header_crc:
+        header += struct.pack("<H", zlib.crc32(header) & 0xFFFF)
+    deflate = zlib.compressobj(level, zlib.DEFLATED, -zlib.MAX_WBITS)
+    body = deflate.compress(payload) + deflate.flush()
+    trailer = struct.pack("<2L", zlib.crc32(payload), len(payload))
+    return header + body + trailer
+
+
+def _zip_with_executable() -> bytes:
+    """Return a ZIP archive holding one ``evil.exe`` entry."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("evil.exe", b"harmless")
+    return buf.getvalue()
+
+
+def build_fextra_polyglot() -> bytes:
+    """
+    Build a gzip file whose FEXTRA field holds a whole ZIP archive.
+
+    The ZIP's end record declares a comment covering the deflate data
+    and trailer that follow it, so ``zipfile`` opens the file as an
+    archive holding ``evil.exe`` while gzip readers see ``benign``.
+
+    Returns:
+        Raw gzip/ZIP polyglot bytes.
+    """
+    payload = b"benign\n"
+    tail = len(build_gzip_member(payload)) - 10
+    archive = _zip_with_executable()[:-2] + struct.pack("<H", tail)
+    data = build_gzip_member(payload, extra=archive)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.namelist() == ["evil.exe"]
+    assert gzip.decompress(data) == payload
+    return data
+
+
+def build_stored_polyglot() -> bytes:
+    """
+    Build a gzip file whose stored deflate block is a ZIP archive.
+
+    Level 0 copies the ZIP bytes verbatim into the gzip data, where
+    ``zipfile`` finds its end record behind the gzip header.
+
+    Returns:
+        Raw gzip/ZIP polyglot bytes.
+    """
+    data = build_gzip_member(_zip_with_executable(), level=0)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.namelist() == ["evil.exe"]
+    return data
+
+
+def _inspect(data: bytes, config=None) -> None:
+    """Run inspect_gzip_content on ``data``."""
+    inspector = GzipContentInspector(config or FileSecurityConfig())
+    inspector.inspect_gzip_content(io.BytesIO(data), len(data))
+
+
+def _rejected(data: bytes, config=None) -> CompressionSecurityError:
+    """Return the CompressionSecurityError inspecting ``data`` raises."""
+    with pytest.raises(CompressionSecurityError) as exc_info:
+        _inspect(data, config)
+    return exc_info.value
+
+
+class TestGzipZipPolyglot:
+    """A gzip file zipfile also opens as a ZIP archive is rejected."""
+
+    def test_plain_gzip_accepted(self):
+        """Gzip data without a ZIP end record passes."""
+        _inspect(build_gzip_member(b"benign\n" * 100, level=0))
+
+    def test_fextra_polyglot_rejected(self):
+        """A ZIP hidden in the FEXTRA field is rejected."""
+        err = _rejected(build_fextra_polyglot())
+        assert err.error_code == ErrorCode.GZIP_ZIP_POLYGLOT
+
+    def test_stored_block_polyglot_rejected(self):
+        """A ZIP stored verbatim in a deflate block is rejected."""
+        err = _rejected(build_stored_polyglot())
+        assert err.error_code == ErrorCode.GZIP_ZIP_POLYGLOT
+
+    def test_polyglot_rejected_before_inflating(self):
+        """iter_decompressed_chunks yields nothing for a polyglot."""
+        data = build_stored_polyglot()
+        chunks = GzipContentInspector(
+            FileSecurityConfig()
+        ).iter_decompressed_chunks(io.BytesIO(data), len(data))
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            next(chunks)
+        assert exc_info.value.error_code == ErrorCode.GZIP_ZIP_POLYGLOT
+
+
+class TestGzipMemberNames:
+    """Every member's FNAME gets the archive entry-name checks."""
+
+    @pytest.mark.parametrize(
+        "name", [b"activity.fit", b"notes.txt", b"caf\xe9.csv", b""]
+    )
+    def test_safe_name_accepted(self, name):
+        """Ordinary stored names pass."""
+        _inspect(build_gzip_member(b"hello\n", name=name))
+
+    @pytest.mark.parametrize(
+        ("name", "code", "text"),
+        [
+            (
+                b"../../evil.txt",
+                ErrorCode.ZIP_DIRECTORY_TRAVERSAL,
+                "Directory traversal",
+            ),
+            (b"evil.exe", ErrorCode.ZIP_CONTENT_THREAT, "Dangerous file"),
+            (b"evil.exe/.", ErrorCode.ZIP_CONTENT_THREAT, "Dangerous file"),
+            (b"shell.php", ErrorCode.ZIP_CONTENT_THREAT, "Dangerous file"),
+            (b"CON.txt", ErrorCode.ZIP_CONTENT_THREAT, "reserved"),
+            (b"/etc/passwd", ErrorCode.ZIP_ABSOLUTE_PATH, "Absolute path"),
+        ],
+    )
+    def test_unsafe_name_rejected(self, name, code, text):
+        """A traversal, executable or reserved FNAME is rejected."""
+        err = _rejected(build_gzip_member(b"hello\n", name=name))
+        assert type(err) is ZipContentError
+        assert err.error_code == code
+        assert text in str(err)
+
+    def test_unicode_name_rejected(self):
+        """An ISO-8859-1 control character in FNAME is rejected."""
+        err = _rejected(build_gzip_member(b"hello\n", name=b"a\x85b.txt"))
+        assert err.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "Unicode" in str(err)
+
+    def test_later_member_name_checked(self):
+        """The FNAME of every member is checked, not only the first."""
+        data = build_gzip_member(b"a", name=b"a.txt") + build_gzip_member(
+            b"b", name=b"evil.bat"
+        )
+        err = _rejected(data)
+        assert err.error_code == ErrorCode.ZIP_CONTENT_THREAT
+        assert "evil.bat" in str(err)
+
+    def test_all_header_fields_parsed(self):
+        """FEXTRA, FCOMMENT and a valid FHCRC around FNAME are read."""
+        data = build_gzip_member(
+            b"hello\n",
+            name=b"evil.exe",
+            comment=b"c" * 100_000,
+            extra=b"x" * 1000,
+            header_crc=True,
+        )
+        assert gzip.decompress(data) == b"hello\n"
+        err = _rejected(data, _small_chunks())
+        assert err.error_code == ErrorCode.ZIP_CONTENT_THREAT
+
+    def test_header_fields_accepted_with_safe_name(self):
+        """A member with every optional header field passes."""
+        data = build_gzip_member(
+            b"hello\n",
+            name=b"notes.txt",
+            comment=b"exported",
+            extra=b"x" * 1000,
+            header_crc=True,
+        )
+        _inspect(data, _small_chunks())
+
+    def test_name_too_long_rejected(self):
+        """An FNAME longer than 65,535 bytes is a corrupt header."""
+        data = build_gzip_member(b"hello\n", name=b"a" * 70_000)
+        assert _rejected(data).error_code == ErrorCode.ZIP_CORRUPT
+
+    def test_wrong_header_crc_rejected(self):
+        """A header CRC that does not match is a corrupt header."""
+        data = bytearray(
+            build_gzip_member(b"hello\n", name=b"a.txt", header_crc=True)
+        )
+        data[16] ^= 0xFF
+        assert _rejected(bytes(data)).error_code == ErrorCode.ZIP_CORRUPT
+
+    @pytest.mark.parametrize("cut", [5, 11, 14, 17])
+    def test_truncated_header_rejected(self, cut):
+        """A header cut inside a field is a corrupt header."""
+        data = build_gzip_member(
+            b"hello\n", name=b"a.txt", extra=b"xy", header_crc=True
+        )
+        assert _rejected(data[:cut]).error_code == ErrorCode.ZIP_CORRUPT
+
+    def test_reserved_flag_rejected(self):
+        """A header with a reserved flag bit set is corrupt."""
+        data = bytearray(build_gzip_member(b"hello\n"))
+        data[3] |= 0x20
+        assert _rejected(bytes(data)).error_code == ErrorCode.ZIP_CORRUPT
+
+
+def _small_chunks() -> FileSecurityConfig:
+    """Return a configuration reading 64 bytes per step."""
+    config = FileSecurityConfig()
+    config.limits = SecurityLimits(chunk_size=64)
+    return config

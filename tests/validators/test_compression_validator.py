@@ -2974,3 +2974,89 @@ class TestNonZipNestedArchives:
             )
 
         assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
+
+
+class TestEffectiveNestedArchiveNames:
+    """Archive names are found the way extractors write them."""
+
+    @pytest.mark.parametrize(
+        "name", ["x.7z/.", "x.7z\\.", "x.rar/ ", "a/x.tgz/."]
+    )
+    def test_hidden_archive_name_rejected(self, name):
+        """A trailing dot or blank component does not hide ``.7z``."""
+        data = _stored_zip([name])
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                allow_nested_archives=True
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_NESTED_ARCHIVE
+
+    @pytest.mark.parametrize("name", ["x.txt/.", "inner.zip/."])
+    def test_permitted_names_accepted(self, name):
+        """Other names, and permitted archives, keep passing."""
+        data = _stored_zip([name])
+
+        _limits_validator(
+            allow_nested_archives=True
+        ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+
+def _encrypted(data: bytes, central: bool = True) -> bytes:
+    """Set the encryption flag in the first local and central header."""
+    out = bytearray(data)
+    out[data.find(b"PK\x03\x04") + 6] |= 0x01
+    if central:
+        out[data.find(b"PK\x01\x02") + 8] |= 0x01
+    return bytes(out)
+
+
+class TestEncryptedEntries:
+    """Encrypted entries are rejected from their header flags."""
+
+    def test_unencrypted_entry_accepted(self):
+        """An entry without the encryption flag passes."""
+        data = _stored_zip(["a.txt"])
+
+        _limits_validator(
+            scan_zip_content=False
+        ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+    @pytest.mark.parametrize("scan", [True, False])
+    def test_encrypted_entry_rejected(self, scan):
+        """The encryption flag is rejected with or without a scan."""
+        data = _encrypted(_stored_zip(["a.txt"]))
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            assert zf.infolist()[0].flag_bits & 0x01
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator(
+                scan_zip_content=scan
+            ).validate_zip_compression_ratio(io.BytesIO(data), len(data))
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_ENCRYPTED_ENTRY
+
+    def test_local_only_encryption_flag_rejected(self):
+        """A local header that alone claims encryption is rejected."""
+        data = _encrypted(_stored_zip(["a.txt"]), central=False)
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            _limits_validator().validate_zip_compression_ratio(
+                io.BytesIO(data), len(data)
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_INVALID_STRUCTURE
+
+    def test_rejected_end_to_end_without_scan(self):
+        """FileValidator rejects it with scan_zip_content off."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(scan_zip_content=False)
+        data = _encrypted(_stored_zip(["a.txt"]))
+
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            FileValidator(config).validate_zip_file_sync(
+                io.BytesIO(data), "a.zip"
+            )
+
+        assert exc_info.value.error_code == ErrorCode.ZIP_ENCRYPTED_ENTRY

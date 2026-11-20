@@ -182,6 +182,57 @@ def document(
     return build(objects, compressed=list(compressed), **kwargs)
 
 
+def linearized(*, startxref_main: bool = False) -> bytes:
+    """
+    Build a linearized one-page PDF.
+
+    The linearization dictionary (object 5) comes first, then the
+    first-page xref table for objects 3-5, whose trailer /Prev
+    points at the main xref table for objects 1-2 at the end of the
+    file, and a ``startxref 0``. The final startxref points at the
+    first-page table.
+
+    Args:
+        startxref_main: Point the final startxref at the main table
+            instead, so no section links to the first-page table.
+
+    Returns:
+        The PDF bytes.
+    """
+    bodies = {
+        3: PAGE,
+        4: stream(b"", CONTENT, flate=True),
+        1: CATALOG,
+        2: PAGES,
+    }
+    offsets = dict.fromkeys(range(1, 6), 0)
+    main = 0
+    # Every offset is fixed width, so the second pass lays the file
+    # out exactly as the first one and writes the offsets it found.
+    for _ in range(2):
+        out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        offsets[5] = len(out)
+        out += b"5 0 obj\n<< /Linearized 1 /O 3 /N 1 >>\nendobj\n"
+        first_page = len(out)
+        out += b"xref\n3 3\n"
+        for num in (3, 4, 5):
+            out += b"%010d 00000 n \n" % offsets[num]
+        out += b"trailer\n<< /Root 1 0 R /Size 6 /Prev %010d >>\n" % main
+        out += b"startxref\n0\n%%EOF\n"
+        for num, body in bodies.items():
+            offsets[num] = len(out)
+            out += b"%d 0 obj\n%s\nendobj\n" % (num, body)
+        main = len(out)
+        out += b"xref\n0 3\n0000000000 65535 f \n"
+        for num in (1, 2):
+            out += b"%010d 00000 n \n" % offsets[num]
+        out += b"trailer\n<< /Root 1 0 R /Size 6 >>\n"
+    out += b"startxref\n%d\n%%%%EOF\n" % (
+        main if startxref_main else first_page
+    )
+    return bytes(out)
+
+
 def append_update(pdf: bytes, objects: dict[int, bytes]) -> bytes:
     """
     Append an incremental update replacing or adding objects.

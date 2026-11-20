@@ -4,6 +4,7 @@ Parses the syntax of a PDF without rendering it. The whole file is
 tokenized, so names in objects that no cross-reference entry lists
 are checked too, and the structure readers rely on is verified so
 that no reader can parse an object the scan did not see: every
+cross-reference section must be reached from ``startxref``, every
 cross-reference entry must point at a parsed object, every stream
 ``/Length`` must end where the scan found ``endstream``, every
 object stream offset must start one of its parsed objects, and the
@@ -14,6 +15,7 @@ Anything that does not verify is rejected instead of being repaired.
 from __future__ import annotations
 
 import base64
+import bisect
 import itertools
 import logging
 import re
@@ -41,11 +43,14 @@ _SEPARATORS = frozenset(b"\x00\t\n\x0c\r ()<>[]{}/%")
 
 # One token after any whitespace and comments. The token group is
 # optional, so a match with no group is the end of the region or a
-# character no token starts with.
+# character no token starts with. A number is matched atomically:
+# a shorter number is always followed by a digit or ".", so giving
+# digits back never helps, and doing so would make a long digit run
+# glued to a regular character take quadratic time.
 _TOKEN = re.compile(
     rb"(?:[\x00\t\n\x0c\r ]+|%[^\r\n]*)*(?:"
     rb"(?P<name>/" + _REGULAR + rb"*)"
-    rb"|(?P<number>[+-]?(?:\d+\.?\d*|\.\d+)(?!" + _REGULAR + rb"))"
+    rb"|(?P<number>(?>[+-]?(?:\d+\.?\d*|\.\d+))(?!" + _REGULAR + rb"))"
     rb"|(?P<dict_open><<)"
     rb"|(?P<dict_close>>>)"
     rb"|(?P<hex_string><[0-9A-Fa-f\x00\t\n\x0c\r ]*>)"
@@ -58,7 +63,6 @@ _TOKEN = re.compile(
 _STRING_PART = re.compile(rb"\\.|[()]", re.DOTALL)
 _NAME_ESCAPES = re.compile(rb"(?:[^#]|#[0-9A-Fa-f]{2})*")
 _NAME_ESCAPE = re.compile(rb"#([0-9A-Fa-f]{2})")
-_NON_WHITESPACE = re.compile(rb"[^\x00\t\n\x0c\r ]")
 _HEADER = re.compile(rb"%PDF-[12]\.\d")
 _TAIL = re.compile(rb"[\x00\t\n\x0c\r ]*%%EOF[\x00\t\n\x0c\r ]*\Z")
 
@@ -252,7 +256,7 @@ class _Lexer:
             PdfSecurityError: The bytes do not start a valid token,
                 or a name is blocked or marks encryption.
         """
-        self._document.count_token()
+        self._document.count_step()
         match = _TOKEN.match(self.data, self.pos, self.end)
         if match is None or match.lastgroup is None:
             if match is not None and match.end() == self.end:
@@ -354,9 +358,13 @@ class _Document:
         self.xref_tables: dict[int, tuple[list[_Entry], _Dict]] = {}
         self.xref: dict[int, _Entry] = {}
         self.compressed: list[_Entry] = []
+        # Object and xref table header offsets in file order, and
+        # where the whitespace run just before each one starts
+        self.headers: list[int] = []
+        self.header_runs: list[int] = []
         self.startxref = 0
         self.decoded = 0
-        self.tokens = 0
+        self.steps = 0
 
     def error(
         self,
@@ -394,16 +402,16 @@ class _Document:
         """
         raise self.error(message, code)
 
-    def count_token(self) -> None:
+    def count_step(self) -> None:
         """
-        Count a token and enforce the resource limits periodically.
+        Count a token or xref entry and enforce the limits periodically.
 
         Raises:
             ResourceLimitError: The active monitor's time or memory
                 limit is exceeded.
         """
-        self.tokens += 1
-        if self.tokens % 1024 == 0:
+        self.steps += 1
+        if self.steps % 1024 == 0:
             check_resource_limits()
 
     def name(self, raw: bytes) -> _Name:
@@ -615,13 +623,16 @@ class _Document:
         lexer = _Lexer(self, self.data, 0, len(self.data))
         startxref_end: int | None = None
         while True:
+            previous_end = lexer.pos
             kind, value, start = lexer.next()
             if kind == "eof":
                 break
             startxref_end = None
             if type(value) is int:
+                self._record_header(previous_end, start)
                 self._read_object(lexer, value, start)
             elif value == b"xref":
+                self._record_header(previous_end, start)
                 self._read_xref_table(lexer, start)
             elif value == b"startxref":
                 _, offset, _ = lexer.next()
@@ -635,6 +646,22 @@ class _Document:
         # but %%EOF may follow it.
         if startxref_end is None or not _TAIL.match(self.data, startxref_end):
             self.fail("PDF does not end with startxref and %%EOF")
+
+    def _record_header(self, gap_start: int, start: int) -> None:
+        """
+        Record an object or xref table header for ``_header_at``.
+
+        Args:
+            gap_start: End of the previous token, or 0. Only
+                whitespace and comments lie between it and
+                ``start``, and the byte before it is not
+                whitespace, so the whitespace run just before the
+                header starts after the gap's last other byte.
+            start: Offset of the header.
+        """
+        gap = self.data[gap_start:start]
+        self.header_runs.append(gap_start + len(gap.rstrip(_WHITESPACE)))
+        self.headers.append(start)
 
     def _read_object(self, lexer: _Lexer, num: int, offset: int) -> None:
         """
@@ -764,27 +791,32 @@ class _Document:
 
     # -- Cross-reference ------------------------------------------------
 
-    def _skip_whitespace(self, offset: int) -> int:
+    def _header_at(self, offset: int) -> int:
         """
-        Return the first non-whitespace offset from ``offset``.
+        Return the header a cross-reference offset points at.
 
         Readers skip whitespace at a cross-reference offset, so an
-        offset just before an object still points at it.
+        offset into the whitespace run just before an object or
+        xref table header still points at it. The scan recorded
+        each run, so a binary search finds the one holding the
+        offset without rescanning the whitespace.
 
         Args:
             offset: Offset from a cross-reference section.
 
         Returns:
-            The offset of the next non-whitespace byte, or the file
-            length.
+            The offset of that header, or ``offset`` itself when no
+            header follows it after only whitespace.
 
         Raises:
             PdfSecurityError: The offset is outside the file.
         """
         if not 0 <= offset <= len(self.data):
             self.fail("PDF cross-reference offset is outside the file")
-        match = _NON_WHITESPACE.search(self.data, offset)
-        return match.start() if match else len(self.data)
+        index = bisect.bisect_right(self.header_runs, offset) - 1
+        if index >= 0 and offset <= self.headers[index]:
+            return self.headers[index]
+        return offset
 
     def _object_at(self, offset: int, num: int, gen: int) -> _Object:
         """
@@ -802,7 +834,7 @@ class _Document:
             PdfSecurityError: No parsed object with that number and
                 generation starts at the offset.
         """
-        obj = self.objects.get(self._skip_whitespace(offset))
+        obj = self.objects.get(self._header_at(offset))
         if obj is None or obj.num != num or obj.gen != gen:
             self.fail("PDF cross-reference entry does not point to its object")
         return obj
@@ -821,7 +853,9 @@ class _Document:
         Raises:
             PdfSecurityError: A section is missing, malformed or
                 visited twice, an ``/XRefStm`` stream has a
-                ``/Prev``, or an entry does not verify.
+                ``/Prev``, an entry does not verify, or the scan
+                found an xref table or stream the chain does not
+                reach.
         """
         visited: set[int] = set()
         newest = self._read_xref_section(self.startxref, visited, table=True)
@@ -838,10 +872,25 @@ class _Document:
                     self.fail("PDF /XRefStm stream has a /Prev")
             prev = trailer.get(b"Prev")
             if prev is None:
-                return newest
+                break
             if type(prev) is not int:
                 self.fail("PDF trailer has an invalid /Prev")
             trailer = self._read_xref_section(prev, visited, table=True)
+        # Some readers start from another section, such as the
+        # first-page table of a linearized file, so every section
+        # must be one the chain verified.
+        xref_streams = {
+            offset
+            for offset, obj in self.objects.items()
+            if obj.stream is not None
+            and _name(obj.stream.entries.get(b"Type")) == b"XRef"
+        }
+        if not visited.issuperset(self.xref_tables.keys() | xref_streams):
+            self.fail(
+                "PDF has a cross-reference section that startxref does"
+                " not lead to"
+            )
+        return newest
 
     def _read_xref_section(
         self, offset: int, visited: set[int], *, table: bool
@@ -860,8 +909,9 @@ class _Document:
         Raises:
             PdfSecurityError: No section starts at the offset, it was
                 read before, or one of its entries does not verify.
+            ResourceLimitError: A resource limit is exceeded.
         """
-        pos = self._skip_whitespace(offset)
+        pos = self._header_at(offset)
         if pos in visited:
             self.fail("PDF cross-reference sections form a loop")
         visited.add(pos)
@@ -882,6 +932,7 @@ class _Document:
             entries = self._xref_stream_entries(obj.stream)
             trailer = obj.stream.entries
         for entry in entries:
+            self.count_step()
             self.xref.setdefault(entry.num, entry)
             if entry.kind == 1:
                 self._object_at(entry.field2, entry.num, entry.field3)
@@ -901,6 +952,7 @@ class _Document:
 
         Raises:
             PdfSecurityError: The dictionary or data is invalid.
+            ResourceLimitError: A resource limit is exceeded.
         """
         entries = stream.entries
         widths = self._ints(entries.get(b"W"), "xref stream /W")
@@ -931,6 +983,7 @@ class _Document:
         pos = 0
         for first, count in zip(index[::2], index[1::2], strict=True):
             for num in range(first, first + count):
+                self.count_step()
                 record = data[pos : pos + row]
                 pos += row
                 kind = int.from_bytes(record[:type_end]) if type_end else 1

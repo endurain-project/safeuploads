@@ -291,6 +291,8 @@ class FileSecurityConfig:
             # JavaScript actions and the document JavaScript name tree
             "JS",
             "JavaScript",
+            # JavaScript a 3D artwork stream runs when it is loaded
+            "OnInstantiate",
             # Launch an application or open a file
             "Launch",
             # Embedded files: stream type, name tree, file
@@ -914,7 +916,9 @@ class FileSecurityConfig:
         A non-positive buffer or chunk size would disable the
         bounded reads (``read(-1)`` reads everything and a
         spooled buffer of 0 never spills to disk), so each is
-        required to be positive. With content analysis enabled
+        required to be positive, and ``chunk_size`` may not exceed
+        ``max_memory_buffer_size`` so one read never outgrows the
+        in-memory buffer. With content analysis enabled
         only the first ``content_scan_max_size`` bytes of an
         image, activity or PDF upload are scanned, so the window
         must cover ``max_image_size``, ``max_activity_file_size``
@@ -944,6 +948,23 @@ class FileSecurityConfig:
                         f"Set {name} to a positive value",
                     )
                 )
+
+        if (
+            limits.chunk_size > limits.max_memory_buffer_size
+            and limits.max_memory_buffer_size > 0
+        ):
+            errors.append(
+                _config_error(
+                    "invalid_streaming_limit",
+                    (
+                        f"chunk_size ({limits.chunk_size} bytes) must not"
+                        " exceed max_memory_buffer_size"
+                        f" ({limits.max_memory_buffer_size} bytes)"
+                    ),
+                    "streaming",
+                    "Set chunk_size to at most max_memory_buffer_size",
+                )
+            )
 
         if limits.enable_content_analysis:
             for name in (

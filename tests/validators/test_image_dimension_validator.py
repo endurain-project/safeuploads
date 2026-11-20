@@ -885,6 +885,16 @@ class TestHeic:
         meta = heif_meta([_ILOC, _IINF, _IPRP])
         _assert_invalid(heif_ftyp() + meta + meta)
 
+    def test_other_top_level_box_accepted(self):
+        _validate(heic(64, 48) + heif_box(b"free", b"\x00" * 4))
+
+    def test_image_sequence_rejected(self):
+        # A movie box carries an image sequence whose track sizes
+        # the checks do not read
+        tkhd = heif_box(b"tkhd", b"\x00" * 84)
+        moov = heif_box(b"moov", heif_box(b"trak", tkhd))
+        _assert_invalid(heic(64, 48) + moov)
+
     @pytest.mark.parametrize(
         "tail",
         [

@@ -135,6 +135,10 @@ class ErrorCode(StrEnum):
     ZIP_TOO_LARGE = "ZIP_TOO_LARGE"
     # An entry uses a compression method other than stored or deflated
     ZIP_UNSUPPORTED_COMPRESSION = "ZIP_UNSUPPORTED_COMPRESSION"
+    # An entry is flagged as encrypted, so its content cannot be checked
+    ZIP_ENCRYPTED_ENTRY = "ZIP_ENCRYPTED_ENTRY"
+    # A gzip file whose bytes zipfile also opens as a ZIP archive
+    GZIP_ZIP_POLYGLOT = "GZIP_ZIP_POLYGLOT"
     ZIP_NESTED_ARCHIVE = "ZIP_NESTED_ARCHIVE"
     ZIP_DIRECTORY_TRAVERSAL = "ZIP_DIRECTORY_TRAVERSAL"
     ZIP_SYMLINK_DETECTED = "ZIP_SYMLINK_DETECTED"

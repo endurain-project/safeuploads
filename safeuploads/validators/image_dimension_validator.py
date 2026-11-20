@@ -651,7 +651,9 @@ def _heif_meta_span(
     Walk the top-level boxes to the payload of the one meta box.
 
     Each box is skipped by its size without reading its payload.
-    A size of 0 extends the box to the end of the file.
+    A size of 0 extends the box to the end of the file. A movie
+    box is rejected: it carries an image sequence whose track
+    sizes are not checked.
 
     Args:
         file_obj: Seekable file containing the HEIF.
@@ -663,7 +665,8 @@ def _heif_meta_span(
 
     Raises:
         FileSignatureError: If a box header is truncated, a box
-            size is invalid, or there is not exactly one meta box.
+            size is invalid, there is a movie box, or there is not
+            exactly one meta box.
         ResourceLimitError: If a resource limit is exceeded.
     """
     meta: tuple[int, int] | None = None
@@ -681,6 +684,8 @@ def _heif_meta_span(
             size = file_end - pos
         if size < cursor.pos or size > file_end - pos:
             raise _invalid("Invalid HEIF box size", filename)
+        if kind == b"moov":
+            raise _invalid("HEIF image sequences are not supported", filename)
         if kind == b"meta":
             if meta is not None:
                 raise _invalid(

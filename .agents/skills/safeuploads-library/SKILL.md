@@ -14,7 +14,7 @@ Where this skill and any of them disagree, they win.
 - One validator or inspector per concern, extending `BaseValidator` where it validates; `FileValidator` orchestrates and holds no check logic of its own.
 - A new limit or allow-list entry lives in `FileSecurityConfig` or `SecurityLimits`, with its cross-field validation and a docs entry.
 - Never loosen a default (limit, allow-list, block-list, ratio, depth) to make a test or one caller pass; ask first.
-- Keep the filename check order: Unicode sanitization, then Windows reserved names, then the remaining normalization.
+- Keep the filename check order: Unicode sanitization, then path and dangerous-character replacement, then Windows reserved names, then the remaining checks.
 - Raise a `safeuploads.exceptions` subclass with its `ErrorCode`; the message is safe to show a caller and never contains file contents or filesystem paths.
 - Blocking work (archive inspection, hashing, magic) stays off the event loop: async methods use the existing worker-thread offload and `executor` option; `*_sync` methods run it in the calling thread and keep the event-loop guard.
 - A released `ErrorCode` never changes meaning; a new failure mode gets a new code.

@@ -2,6 +2,7 @@
 
 import base64
 import io
+import re
 import zlib
 
 import pytest
@@ -10,6 +11,7 @@ from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import ErrorCode, PdfSecurityError
 from safeuploads.inspectors import pdf_inspector
 from safeuploads.inspectors.pdf_inspector import PdfContentInspector
+from safeuploads.utils import ResourceMonitor
 from tests import pdfs
 
 JS_ACTION = b"<< /S /JavaScript /JS (app.alert(1)) >>"
@@ -41,6 +43,34 @@ def _set_xref_offset(pdf: bytes, num: int, offset: int) -> bytes:
     """Point the xref table entry of object ``num`` at ``offset``."""
     old = b"%010d 00000 n " % _xref_offset(pdf, num)
     return pdf.replace(old, b"%010d 00000 n " % offset)
+
+
+def _insert_before_object(pdf: bytes, num: int, gap: bytes) -> bytes:
+    """Insert ``gap`` before object ``num`` and shift the xref table."""
+    at = _xref_offset(pdf, num)
+
+    def shifted(match: re.Match[bytes]) -> bytes:
+        offset = int(match[2])
+        offset += len(gap) * (offset >= at)
+        return match[1] + b"%0*d" % (len(match[2]), offset)
+
+    pdf = re.sub(rb"(startxref\n)(\d+)", shifted, pdf[:at] + gap + pdf[at:])
+    return re.sub(rb"(^)(\d{10})(?= 00000 n )", shifted, pdf, flags=re.M)
+
+
+def _padded_repeats(*, pad: int, repeats: int) -> tuple[bytes, int]:
+    """
+    Put ``pad`` spaces before object 1 and list it ``repeats`` times.
+
+    Returns:
+        The PDF, whose extra xref subsections all point at the first
+        space, and the offset of that space.
+    """
+    base = pdfs.document()
+    at = _xref_offset(base, 1)
+    data = _insert_before_object(base, 1, b" " * pad)
+    repeated = (b"1 1\n%010d 00000 n \n" % at) * repeats
+    return data.replace(b"trailer\n", repeated + b"trailer\n"), at
 
 
 class TestAcceptedDocuments:
@@ -211,6 +241,20 @@ class TestAcceptedDocuments:
         }
         _inspect(pdfs.document(catalog=b" /OpenAction " + JS_ACTION), config)
 
+    def test_linearized_document(self):
+        _inspect(pdfs.linearized())
+
+    def test_3d_annotation(self):
+        annotation = (
+            b"<< /Type /Annot /Subtype /3D /Rect [0 0 100 100] /3DD 6 0 R >>"
+        )
+        artwork = pdfs.stream(b"/Type /3D /Subtype /U3D", b"U3D\x00")
+        _inspect(
+            pdfs.document(
+                page=b" /Annots [5 0 R]", extra=[annotation, artwork]
+            )
+        )
+
     def test_file_rewound(self):
         data = pdfs.document()
         file_obj = io.BytesIO(data)
@@ -241,10 +285,25 @@ class TestActiveContent:
             b"ImportData",
             b"GoToR",
             b"GoToE",
+            b"OnInstantiate",
         ],
     )
     def test_default_blocked_names(self, name):
         err = _rejected(pdfs.document(catalog=b" /X /" + name))
+        assert err.error_code == ErrorCode.PDF_ACTIVE_CONTENT
+
+    def test_3d_javascript(self):
+        annotation = (
+            b"<< /Type /Annot /Subtype /3D /Rect [0 0 100 100] /3DD 6 0 R >>"
+        )
+        artwork = pdfs.stream(
+            b"/Type /3D /Subtype /U3D /OnInstantiate 7 0 R", b"U3D\x00"
+        )
+        script = pdfs.stream(b"", b"host.app.alert(1);")
+        data = pdfs.document(
+            page=b" /Annots [5 0 R]", extra=[annotation, artwork, script]
+        )
+        err = _rejected(data)
         assert err.error_code == ErrorCode.PDF_ACTIVE_CONTENT
 
     @pytest.mark.parametrize("name", [b"J#61vaScript", b"#4A#53", b"Launc#68"])
@@ -416,6 +475,17 @@ class TestSyntax:
             b"endobj\n2 0 obj", b"endobj\ntrailer\n2 0 obj"
         )
         err = _rejected(data)
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
+    def test_long_number_is_accepted(self):
+        _inspect(pdfs.document(extra=[b"[" + b"1" * 20_000 + b".5]"]))
+
+    def test_digit_run_glued_to_letter_is_rejected_quickly(self):
+        # Rejecting the run must not take time quadratic in its length
+        data = pdfs.document(extra=[b"[" + b"1" * 20_000 + b"a]"])
+        with ResourceMonitor(max_time_seconds=1) as monitor:
+            err = _rejected(data)
+            monitor.check_time()
         assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
 
 
@@ -633,6 +703,63 @@ class TestCrossReference:
         data = pdfs.document()
         data = _set_xref_offset(data, 2, _xref_offset(data, 2) - 1)
         _inspect(data)
+
+    def test_offset_into_whitespace_inside_comment_is_accepted(self):
+        data = _insert_before_object(pdfs.document(), 2, b"% note  \n  ")
+        target = data.index(b"% note") + len(b"% note")
+        _inspect(_set_xref_offset(data, 2, target))
+
+    def test_offset_into_whitespace_before_endobj(self):
+        data = pdfs.document()
+        target = data.index(b"\nendobj", _xref_offset(data, 2))
+        err = _rejected(_set_xref_offset(data, 2, target))
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
+    def test_startxref_before_whitespace_is_accepted(self):
+        data = pdfs.document()
+        start = int(data.split(b"startxref\n")[1].split(b"\n")[0])
+        _inspect(
+            data.replace(
+                b"startxref\n%d" % start, b"startxref\n%d" % (start - 1)
+            )
+        )
+
+    def test_repeated_entries_into_long_whitespace(self):
+        # Each entry resolves its offset without rescanning the run
+        data, _ = _padded_repeats(pad=300_000, repeats=3_000)
+        with ResourceMonitor(max_time_seconds=1):
+            _inspect(data)
+
+    def test_repeated_entry_into_whitespace_before_other_token(self):
+        data, pad_start = _padded_repeats(pad=1_000, repeats=2)
+        target = data.index(b"\nendobj")
+        data = data.replace(
+            b"1 1\n%010d" % pad_start, b"1 1\n%010d" % target, 1
+        )
+        err = _rejected(data)
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
+    def test_linearized_first_page_table_not_reached(self):
+        err = _rejected(pdfs.linearized(startxref_main=True))
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
+    def test_xref_stream_not_reached(self):
+        rows = b"\x01" + (17).to_bytes(4, "big") + b"\x00"
+        orphan = pdfs.stream(
+            b"/Type /XRef /W [1 4 1] /Size 6 /Index [5 1]", rows
+        )
+        err = _rejected(pdfs.document(extra=[orphan]))
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
+
+    def test_xref_table_not_reached(self):
+        data = pdfs.document()
+        xref = data.index(b"xref\n")
+        stray = data[xref : data.index(b"startxref")]
+        data = data[:xref] + stray + data[xref:]
+        start = data.index(b"xref\n", xref + 1)
+        data = data.replace(b"startxref\n%d" % xref, b"startxref\n%d" % start)
+        err = _rejected(data)
+        assert err.error_code == ErrorCode.PDF_INVALID_STRUCTURE
 
     def test_wrong_object_number(self):
         data = pdfs.document()

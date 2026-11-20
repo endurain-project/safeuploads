@@ -23,7 +23,8 @@ class DangerousExtensionCategory(Enum):
     Attributes:
         WINDOWS_EXECUTABLES: Traditional Windows executable formats.
         SCRIPT_FILES: Script files that can execute code.
-        WEB_SCRIPTS: Web server and dynamic content scripts.
+        WEB_SCRIPTS: Web server scripts and markup a browser runs
+            scripts in (HTML, SVG).
         UNIX_EXECUTABLES: Unix/Linux executables and shell scripts.
         MACOS_EXECUTABLES: macOS specific executables and applications.
         JAVA_EXECUTABLES: Java related executables and bytecode.
@@ -111,6 +112,14 @@ class DangerousExtensionCategory(Enum):
             ".rb",
             ".go",
             ".lua",
+            ".cfm",
+            ".ashx",
+            ".asmx",
+            # Markup a browser renders with its scripts
+            ".html",
+            ".htm",
+            ".xhtml",
+            ".svg",
         }
     )
 

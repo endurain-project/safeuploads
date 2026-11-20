@@ -33,6 +33,7 @@ from .audit import (
 )
 from .config import FileSecurityConfig
 from .exceptions import (
+    ConfigValidationIssue,
     ContentThreatError,
     ErrorCode,
     FilenameSecurityError,
@@ -51,6 +52,7 @@ from .protocols import SeekableFile
 from .utils import (
     ResourceMonitor,
     allowed_extensions,
+    await_within_time_limit,
     bytes_to_mb,
     check_resource_limits,
 )
@@ -145,6 +147,9 @@ class FileValidator:
                 ``*_sync`` methods never use it.
 
         Raises:
+            TypeError: If ``executor`` is neither None nor a
+                ``ThreadPoolExecutor``; the inspection closures
+                cannot run in another process.
             FileSecurityConfigurationError: If the configuration
                 has any error-severity issue.
 
@@ -162,24 +167,20 @@ class FileValidator:
             magic_mime: MIME type detector of the MIME validator.
             magic_available: Whether python-magic initialized successfully.
         """
+        if executor is not None and not isinstance(
+            executor, ThreadPoolExecutor
+        ):
+            raise TypeError(
+                "executor must be a concurrent.futures.ThreadPoolExecutor"
+                f" or None, not {type(executor).__name__}"
+            )
         self.config = config or FileSecurityConfig()
         self._executor = executor
 
-        # Validate the actual (possibly custom) config in use and
-        # log every issue by severity. Warnings never block
-        # construction; any error-severity issue does.
-        issues = self.config.validate_instance()
-        for issue in issues:
-            log = logger.error if issue.severity == "error" else logger.warning
-            log(
-                "Configuration %s: %s. %s",
-                issue.component,
-                issue.message,
-                issue.recommendation,
-            )
-        config_errors = [i for i in issues if i.severity == "error"]
-        if config_errors:
-            raise FileSecurityConfigurationError(config_errors)
+        # Warnings are logged once here; every validation call
+        # repeats the check and logs only what blocks it.
+        for issue in self._check_config():
+            self._log_issue(issue)
 
         # Initialize specialized validators
         self.unicode_validator = UnicodeSecurityValidator(self.config)
@@ -201,6 +202,46 @@ class FileValidator:
         self._audit = SecurityAuditLogger(
             enabled=self.config.limits.enable_audit_logging
         )
+
+    @staticmethod
+    def _log_issue(issue: ConfigValidationIssue) -> None:
+        """
+        Log a configuration issue at the level of its severity.
+
+        Args:
+            issue: Issue to log.
+        """
+        log = logger.error if issue.severity == "error" else logger.warning
+        log(
+            "Configuration %s: %s. %s",
+            issue.component,
+            issue.message,
+            issue.recommendation,
+        )
+
+    def _check_config(self) -> list[ConfigValidationIssue]:
+        """
+        Validate the active configuration and reject error issues.
+
+        Runs at construction and before every validation, so a
+        limit changed after construction is checked before any
+        upload byte is read. Error-severity issues are logged
+        here; warnings are returned for the caller to log.
+
+        Returns:
+            The warning-severity issues; empty when there are none.
+
+        Raises:
+            FileSecurityConfigurationError: If the configuration
+                has any error-severity issue.
+        """
+        issues = self.config.validate_instance()
+        config_errors = [i for i in issues if i.severity == "error"]
+        if config_errors:
+            for issue in config_errors:
+                self._log_issue(issue)
+            raise FileSecurityConfigurationError(config_errors)
+        return issues
 
     @property
     def magic_mime(self) -> magic.Magic:
@@ -513,7 +554,7 @@ class FileValidator:
 
         try:
             while True:
-                chunk = await file.read(chunk_size)
+                chunk = await await_within_time_limit(file.read(chunk_size))
                 check_resource_limits()
                 if not chunk:
                     break
@@ -659,7 +700,9 @@ class FileValidator:
         """
         Wrap a validation with audit logging and error mapping.
 
-        Binds a correlation ID, emits an audit start event and one
+        Re-checks the configuration first, so a configuration error
+        surfaces unwrapped and before any upload byte is read. Then
+        binds a correlation ID, emits an audit start event and one
         terminal success, failure or resource-limit event, wraps
         unexpected errors in ``FileProcessingError`` and restores
         the correlation ID on exit. A cancelled validation ends with
@@ -674,6 +717,8 @@ class FileValidator:
             sanitized name for the terminal audit event.
 
         Raises:
+            FileSecurityConfigurationError: The configuration has an
+                error-severity issue.
             FileValidationError: Propagated from the body.
             ResourceLimitError: Propagated from the body.
             FileProcessingError: Propagated as-is or wrapping an
@@ -681,6 +726,7 @@ class FileValidator:
             asyncio.CancelledError: Propagated unchanged when the
                 awaiting task is cancelled.
         """
+        self._check_config()
         cid, cid_token = bind_correlation_id()
         run = _ValidationRun(filename or "unknown")
         t0 = time.monotonic()
@@ -752,7 +798,7 @@ class FileValidator:
         """
         Run blocking image inspection on a temp file.
 
-        Checks, in order, MIME type, signature, the dimensions the
+        Checks, in order, signature, MIME type, the dimensions the
         header declares and content threats.
 
         Args:
@@ -764,24 +810,23 @@ class FileValidator:
             Detected MIME type.
 
         Raises:
-            MimeTypeError: If the MIME type is not allowed or does
-                not permit the extension.
+            MimeTypeError: If MIME detection fails, the MIME type is
+                not allowed or does not permit the extension.
             FileSignatureError: If the signature mismatches or the
                 dimension header is missing or invalid.
             ImageDimensionError: If the header declares more than
                 ``max_image_pixels`` pixels.
             ContentThreatError: If content analysis finds threats.
         """
-        header = temp_file.read(8192)
-        temp_file.seek(0)
-        detected_mime = self.mime_validator.detect(header, filename)
+        _, detected_mime = self._read_header_and_detect(
+            temp_file, filename, "image"
+        )
         self.mime_validator.enforce(
             detected_mime,
             self.config.ALLOWED_IMAGE_TYPES,
             filename,
             error_code=ErrorCode.MIME_TYPE_MISMATCH,
         )
-        self.signature_validator.validate(header, "image")
         self.image_dimension_validator.validate(temp_file, filename=filename)
 
         if self.config.limits.enable_content_analysis:
@@ -910,10 +955,9 @@ class FileValidator:
 
         Sanitizes the filename, checks its extension, streams the
         upload under the size limit and runs ``inspect`` in a worker
-        thread. The sanitized name is assigned to ``file.filename``,
-        and every later step uses the returned name rather than
-        reading ``file.filename`` back, so an upload object that
-        does not keep the assignment cannot change it.
+        thread. ``file.filename`` is set to the sanitized name only
+        once every check passed; every step uses the sanitized name
+        rather than reading ``file.filename`` back.
 
         Args:
             file: Uploaded file to validate.
@@ -933,7 +977,6 @@ class FileValidator:
             FileValidationError: If a validation check fails.
         """
         name = self._validated_filename(file.filename)
-        file.filename = name
         run.filename = name
         self.extension_validator.validate_allowed(
             name, allowed_extensions(allowed_types)
@@ -946,6 +989,8 @@ class FileValidator:
             detected_mime = await self._inspect_temp_file(
                 temp_file, inspect, file_size, name
             )
+        # Only an accepted upload carries the sanitized name
+        file.filename = name
         return ValidationResult(name, detected_mime)
 
     def _validate_streamed_sync(

@@ -1,18 +1,23 @@
 """Utility helpers for allow-lists, resource monitoring and scanning."""
 
+import asyncio
 import contextvars
 import logging
 import mmap
+import struct
 import sys
 import time
 import zlib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from types import TracebackType
+from typing import TypeVar
 
 from .exceptions import ErrorCode, ResourceLimitError
 from .protocols import SeekableFile
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 def _read_statm_rss_bytes() -> int:
@@ -332,14 +337,25 @@ class ResourceMonitor:
         Raises:
             ResourceLimitError: If the time limit is exceeded.
         """
-        if elapsed <= self.max_time_seconds:
-            return
+        if elapsed > self.max_time_seconds:
+            raise self._time_exceeded_error(elapsed)
+
+    def _time_exceeded_error(self, elapsed: float) -> ResourceLimitError:
+        """
+        Log and build the error for an exhausted time budget.
+
+        Args:
+            elapsed: Seconds elapsed since context entry.
+
+        Returns:
+            Error carrying ``ErrorCode.RESOURCE_TIME_EXCEEDED``.
+        """
         logger.error(
             "Validation time limit exceeded: %.2fs > %.2fs",
             elapsed,
             self.max_time_seconds,
         )
-        raise ResourceLimitError(
+        return ResourceLimitError(
             message=(
                 f"Validation time limit exceeded: "
                 f"{elapsed:.1f}s "
@@ -390,6 +406,16 @@ class ResourceMonitor:
         return time.monotonic() - self.start_time
 
     @property
+    def remaining_seconds(self) -> float:
+        """
+        Return the wall-clock budget left since context entry.
+
+        Returns:
+            Seconds left before the time limit, never negative.
+        """
+        return max(0.0, self.max_time_seconds - self.elapsed)
+
+    @property
     def memory_delta(self) -> int:
         """
         Return RSS growth since context entry.
@@ -429,6 +455,38 @@ _active_monitor: contextvars.ContextVar[ResourceMonitor | None] = (
 )
 
 
+async def await_within_time_limit(awaitable: Awaitable[_T]) -> _T:
+    """
+    Await ``awaitable`` for at most the active monitor's time budget.
+
+    Bounds a call that may never return, such as a stalled upload
+    read, which ``check_resource_limits`` cannot reach because it
+    only runs between awaits. Awaits without a bound when no
+    monitor is active.
+
+    Args:
+        awaitable: Awaitable to run under the time limit.
+
+    Returns:
+        The result of ``awaitable``.
+
+    Raises:
+        ResourceLimitError: If the budget ran out before
+            ``awaitable`` finished.
+    """
+    monitor = _active_monitor.get()
+    if monitor is None:
+        return await awaitable
+    try:
+        async with asyncio.timeout(monitor.remaining_seconds) as limit:
+            return await awaitable
+    except TimeoutError:
+        # A TimeoutError raised by the awaitable itself is not ours
+        if not limit.expired():
+            raise
+        raise monitor._time_exceeded_error(monitor.elapsed) from None
+
+
 def check_resource_limits() -> None:
     """
     Enforce the active ``ResourceMonitor`` limits, if any.
@@ -449,7 +507,139 @@ def check_resource_limits() -> None:
     monitor.check_memory()
 
 
-def iter_gzip_chunks(stream: SeekableFile, chunk_size: int) -> Iterator[bytes]:
+# Gzip member header layout (RFC 1952): a 10-byte fixed part whose
+# FLG byte announces the optional FEXTRA, FNAME, FCOMMENT and FHCRC
+# fields, in that order
+_GZIP_FIXED_HEADER_SIZE = 10
+_GZIP_FLG_OFFSET = 3
+_GZIP_FHCRC = 0x02
+_GZIP_FEXTRA = 0x04
+_GZIP_FNAME = 0x08
+_GZIP_FCOMMENT = 0x10
+# RFC 1952 sets no limit on FNAME; it is held in memory, so it is
+# bounded like FEXTRA, whose length field caps it at 65,535 bytes
+_GZIP_MAX_NAME_SIZE = 0xFFFF
+
+
+class _GzipHeaderReader:
+    """
+    Read one gzip member header, feeding every byte to its decompressor.
+
+    ``zlib`` parses and checks the header from the same bytes (magic,
+    method, reserved flags and the FHCRC header CRC), so a malformed
+    header raises ``zlib.error`` as it is read; this reader follows
+    the field layout to return the FNAME field. Each step reads at
+    most ``chunk_size`` bytes and calls ``check_resource_limits``.
+
+    Attributes:
+        data: Input read past the header, not yet given to the
+            decompressor.
+    """
+
+    def __init__(
+        self,
+        stream: SeekableFile,
+        chunk_size: int,
+        decompressor: "zlib._Decompress",
+        data: bytes,
+    ):
+        """
+        Initialize the reader at the start of a member.
+
+        Args:
+            stream: Binary file the rest of the member is read from.
+            chunk_size: Bytes read from ``stream`` per step.
+            decompressor: Fresh gzip decompressor for the member.
+            data: Input already read, starting with the member.
+        """
+        self._stream = stream
+        self._chunk_size = chunk_size
+        self._decompressor = decompressor
+        self.data = data
+
+    def read_header(self) -> str | None:
+        """
+        Read the member header up to the compressed data.
+
+        Returns:
+            The FNAME field decoded as ISO-8859-1, as RFC 1952
+            specifies, or None if the header has none.
+
+        Raises:
+            ResourceLimitError: If the active resource monitor's time
+                or memory limit is exceeded.
+            zlib.error: If the header is invalid or FNAME is longer
+                than 65,535 bytes.
+            EOFError: If the input ends inside the header.
+        """
+        flags = self._read(_GZIP_FIXED_HEADER_SIZE)[_GZIP_FLG_OFFSET]
+        if flags & _GZIP_FEXTRA:
+            (extra_size,) = struct.unpack("<H", self._read(2))
+            self._read(extra_size)
+        name = None
+        if flags & _GZIP_FNAME:
+            name = self._read_field(keep=True).decode("latin-1")
+        if flags & _GZIP_FCOMMENT:
+            self._read_field(keep=False)
+        if flags & _GZIP_FHCRC:
+            self._read(2)
+        return name
+
+    def _fill(self) -> None:
+        """Read the next input step if none is pending."""
+        check_resource_limits()
+        if not self.data:
+            self.data = self._stream.read(self._chunk_size)
+            if not self.data:
+                raise EOFError("Gzip header ended before its end")
+
+    def _consume(self, size: int) -> bytes:
+        """Pass up to ``size`` pending bytes to the decompressor."""
+        piece, self.data = self.data[:size], self.data[size:]
+        self._decompressor.decompress(piece)
+        return piece
+
+    def _read(self, size: int) -> bytes:
+        """Return the next ``size`` header bytes."""
+        out = b""
+        while len(out) < size:
+            self._fill()
+            out += self._consume(size - len(out))
+        return out
+
+    def _read_field(self, keep: bool) -> bytes:
+        """
+        Read a NUL-terminated field.
+
+        Args:
+            keep: Whether to return the field; a field that is not
+                kept (FCOMMENT) is not held in memory and has no
+                length limit.
+
+        Returns:
+            The field without its NUL, or empty if not kept.
+
+        Raises:
+            zlib.error: If a kept field exceeds 65,535 bytes.
+        """
+        kept = b""
+        while True:
+            self._fill()
+            end = self.data.find(b"\x00")
+            piece = self._consume(end + 1 if end >= 0 else len(self.data))
+            if keep:
+                kept += piece
+                if len(kept) - (end >= 0) > _GZIP_MAX_NAME_SIZE:
+                    raise zlib.error("Gzip header file name too long")
+            if end >= 0:
+                return kept[:-1]
+
+
+def iter_gzip_chunks(
+    stream: SeekableFile,
+    chunk_size: int,
+    check_name: Callable[[str], None] | None = None,
+) -> Iterator[bytes]:
     """
     Decompress gzip data in bounded steps, yielding each output chunk.
 
@@ -460,11 +650,16 @@ def iter_gzip_chunks(stream: SeekableFile, chunk_size: int) -> Iterator[bytes]:
     ``chunk_size`` input bytes, produces at most ``chunk_size``
     output bytes and calls ``check_resource_limits``. Members may be
     concatenated and zero padded; data that does not start a gzip
-    member is an error.
+    member is an error. Each member's header is read field by field
+    (RFC 1952) before its data, and its FNAME is passed to
+    ``check_name``.
 
     Args:
         stream: Binary file positioned at the start of the gzip data.
         chunk_size: Bytes read, and at most inflated, per step.
+        check_name: Called with every member's FNAME field (decoded
+            as ISO-8859-1) before the member is inflated; it raises
+            to reject the name.
 
     Yields:
         Non-empty chunks of decompressed data.
@@ -472,37 +667,42 @@ def iter_gzip_chunks(stream: SeekableFile, chunk_size: int) -> Iterator[bytes]:
     Raises:
         ResourceLimitError: If the active resource monitor's time or
             memory limit is exceeded.
-        zlib.error: If a header, deflate stream or trailer is invalid.
+        zlib.error: If a header, deflate stream or trailer is invalid,
+            or an FNAME field is longer than 65,535 bytes.
         EOFError: If the input ends inside a gzip member.
     """
-    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    # True while the current decompressor has been given no input,
-    # where the stream may end
-    fresh = True
+    data = b""
     # True once a member has ended: zero padding may follow it
     after_member = False
     while True:
         check_resource_limits()
-        if decompressor.eof:
-            data = decompressor.unused_data
-            decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
-            fresh = after_member = True
-        else:
-            data = decompressor.unconsumed_tail
-        from_stream = not data
-        if from_stream:
+        if not data:
             data = stream.read(chunk_size)
-        if fresh:
-            if from_stream and not data:
+            if not data:
+                # The stream may end between members
                 return
-            if after_member:
-                data = data.lstrip(b"\x00")
-                if not data:
-                    continue
-            fresh = False
-        output = decompressor.decompress(data, chunk_size)
-        if output:
-            yield output
-        elif from_stream and not data and not decompressor.eof:
-            # All input is consumed and nothing was pending
-            raise EOFError("Compressed gzip data ended before the end")
+        if after_member:
+            data = data.lstrip(b"\x00")
+            if not data:
+                continue
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        header = _GzipHeaderReader(stream, chunk_size, decompressor, data)
+        name = header.read_header()
+        if name is not None and check_name is not None:
+            check_name(name)
+        data = header.data
+        while not decompressor.eof:
+            check_resource_limits()
+            at_end = False
+            if not data:
+                data = stream.read(chunk_size)
+                at_end = not data
+            output = decompressor.decompress(data, chunk_size)
+            data = decompressor.unconsumed_tail
+            if output:
+                yield output
+            elif at_end and not decompressor.eof:
+                # All input is consumed and nothing was pending
+                raise EOFError("Compressed gzip data ended before the end")
+        data = decompressor.unused_data
+        after_member = True

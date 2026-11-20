@@ -8,7 +8,7 @@ import logging
 import tempfile
 import threading
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 import pytest
 
@@ -23,6 +23,7 @@ from safeuploads.exceptions import (
     FileSecurityConfigurationError,
     FileSignatureError,
     FileSizeError,
+    FileValidationError,
     ImageDimensionError,
     MimeTypeError,
     ResourceLimitError,
@@ -501,10 +502,10 @@ class TestValidateImageFile:
         )
         file._position = 6  # host consumed the HTML prefix
 
-        with pytest.raises(MimeTypeError) as exc_info:
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_image_file(file)
 
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_valid_jpeg_with_stream_at_end_accepted(
@@ -593,9 +594,9 @@ class TestValidateImageFile:
         validator = FileValidator()
         file = mock_upload_file(filename="fake.webp", content=content)
 
-        with pytest.raises(MimeTypeError) as exc_info:
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_image_file(file)
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -647,9 +648,9 @@ class TestValidateImageFile:
         content = ftyp + images.heic()[len(images.heif_ftyp()) :]
         file = mock_upload_file(filename="photo.heic", content=content)
 
-        with pytest.raises(MimeTypeError) as exc_info:
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_image_file(file)
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("filename", ["photo.jpg", "photo.webp"])
@@ -780,24 +781,23 @@ class TestValidateImageFile:
         pdf_content = b"%PDF-1.4" + b"\x00" * 100
         file = mock_upload_file(filename="fake.jpg", content=pdf_content)
 
-        with pytest.raises(MimeTypeError) as exc_info:
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_image_file(file)
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     @pytest.mark.asyncio
-    async def test_validate_image_text_content_rejected_by_mime(
+    async def test_validate_image_text_content_rejected_by_signature(
         self, mock_upload_file
     ):
-        """Test MIME detection rejects text disguised as image."""
+        """Test the signature check rejects text disguised as image."""
         validator = FileValidator()
-        # Text content with image extension - MIME type will catch this first
         file = mock_upload_file(
             filename="fake.jpg", content=b"This is just text"
         )
 
-        with pytest.raises(MimeTypeError) as exc_info:
+        with pytest.raises(FileSignatureError) as exc_info:
             await validator.validate_image_file(file)
-        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
 
 class TestImagePixelLimit:
@@ -858,13 +858,14 @@ class TestImagePixelLimit:
         assert exc_info.value.error_code == ErrorCode.IMAGE_INVALID_STRUCTURE
 
     @pytest.mark.asyncio
-    async def test_mime_checked_before_dimensions(self, mock_upload_file):
-        """A wrong MIME type is reported before the dimension check."""
+    async def test_signature_checked_before_dimensions(self, mock_upload_file):
+        """A wrong signature is reported before the dimension check."""
         file = mock_upload_file(
             filename="a.jpg", content=b"not an image" + images.jpeg()
         )
-        with pytest.raises(MimeTypeError):
+        with pytest.raises(FileSignatureError) as exc_info:
             await FileValidator().validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
 
     @pytest.mark.asyncio
     async def test_dimensions_checked_before_content_scan(
@@ -2288,7 +2289,7 @@ class TestCancellationSafety:
         release = threading.Event()
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
-            max_memory_buffer_size=10, chunk_size=64
+            max_memory_buffer_size=10, chunk_size=10
         )
         validator = FileValidator(config=config)
         real_submit = validator._submit
@@ -2331,7 +2332,7 @@ class TestCancellationSafety:
         threads: list[int] = []
         config = FileSecurityConfig()
         config.limits = SecurityLimits(
-            max_memory_buffer_size=10, chunk_size=64
+            max_memory_buffer_size=10, chunk_size=10
         )
         validator = FileValidator(config=config)
         real_submit = validator._submit
@@ -2590,3 +2591,307 @@ class TestNestedArchivesEndToEnd:
             exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
         )
         assert "inner.zip: Excessive compression ratio" in str(exc_info.value)
+
+
+_PAYLOAD_NAMES = {
+    "image": "photo.png",
+    "zip": "archive.zip",
+    "activity": "track.gpx",
+    "gzip": "archive.gz",
+}
+
+
+def _zip_payload() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("a.txt", b"hi")
+    return buf.getvalue()
+
+
+_GPX_PAYLOAD = (
+    b'<?xml version="1.0"?><gpx version="1.1" creator="t" '
+    b'xmlns="http://www.topografix.com/GPX/1/1"></gpx>'
+)
+
+
+def _payload(stem: str) -> tuple[str, bytes]:
+    """Return a valid filename and content for a file type."""
+    data = {
+        "image": images.png(),
+        "zip": _zip_payload(),
+        "activity": _GPX_PAYLOAD,
+        "gzip": gzip.compress(b"hello"),
+    }[stem]
+    return _PAYLOAD_NAMES[stem], data
+
+
+class _CountingUpload:
+    """Upload recording how many times it was read."""
+
+    def __init__(self, filename: str, content: bytes):
+        self.filename = filename
+        self.size = len(content)
+        self.reads = 0
+        self._stream = io.BytesIO(content)
+
+    async def read(self, size: int = -1) -> bytes:
+        self.reads += 1
+        return self._stream.read(size)
+
+    async def seek(self, offset: int) -> int:
+        return self._stream.seek(offset)
+
+
+class TestConfigRecheckedPerCall:
+    """A config mutated after construction is validated on every call."""
+
+    @pytest.mark.parametrize("stem", list(_PAYLOAD_NAMES))
+    async def test_async_rejects_mutated_config(self, stem):
+        """A limit broken after construction fails before any read."""
+        validator = FileValidator()
+        name, data = _payload(stem)
+        upload = _CountingUpload(name, data)
+        validator.config.limits.chunk_size = -1
+
+        with pytest.raises(FileSecurityConfigurationError):
+            await getattr(validator, f"validate_{stem}_file")(upload)
+
+        assert upload.reads == 0
+
+    @pytest.mark.parametrize("stem", list(_PAYLOAD_NAMES))
+    def test_sync_rejects_mutated_config(self, stem):
+        """The sync methods re-check the config too."""
+        validator = FileValidator()
+        name, data = _payload(stem)
+        source = _SpyRead(data)
+        validator.config.limits.chunk_size = -1
+
+        with pytest.raises(FileSecurityConfigurationError):
+            getattr(validator, f"validate_{stem}_file_sync")(source, name)
+
+        assert not source.touched
+
+    async def test_pdf_rejects_mutated_config(self):
+        """validate_pdf_file re-checks the config as well."""
+        validator = FileValidator()
+        upload = _CountingUpload("a.pdf", b"%PDF-1.4\n")
+        validator.config.limits.max_pdf_size = 0
+
+        with pytest.raises(FileSecurityConfigurationError):
+            await validator.validate_pdf_file(upload)
+
+        assert upload.reads == 0
+
+    def test_error_issues_are_reported(self):
+        """The raised error carries the error-severity issues."""
+        validator = FileValidator()
+        validator.config.limits.chunk_size = -1
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            validator.validate_image_file_sync(
+                io.BytesIO(images.png()), "photo.png"
+            )
+
+        assert any("chunk_size" in e.message for e in exc_info.value.errors)
+
+    def test_warnings_logged_only_at_construction(self, caplog):
+        """Warning-severity issues are not logged again per call."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_image_size=150 * 1024 * 1024)
+        with caplog.at_level(
+            logging.WARNING, logger="safeuploads.file_validator"
+        ):
+            validator = FileValidator(config=config)
+            assert "max_image_size" in caplog.text
+            caplog.clear()
+            validator.validate_image_file_sync(
+                io.BytesIO(images.png()), "photo.png"
+            )
+
+        assert "max_image_size" not in caplog.text
+
+    def test_valid_config_still_accepted(self):
+        """An untouched config validates normally."""
+        result = FileValidator().validate_image_file_sync(
+            io.BytesIO(images.png()), "photo.png"
+        )
+
+        assert result.filename == "photo.png"
+
+
+class _SpyRead(io.BytesIO):
+    """BytesIO recording whether it was read."""
+
+    def __init__(self, data: bytes):
+        super().__init__(data)
+        self.touched = False
+
+    def read(self, size: int = -1, /) -> bytes:
+        self.touched = True
+        return super().read(size)
+
+
+class TestChunkSizeBoundedByBuffer:
+    """A chunk larger than the memory buffer cannot be configured."""
+
+    def test_oversized_chunk_rejected_at_construction(self):
+        """chunk_size above max_memory_buffer_size fails construction."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(
+            chunk_size=2048, max_memory_buffer_size=1024
+        )
+
+        with pytest.raises(FileSecurityConfigurationError) as exc_info:
+            FileValidator(config=config)
+
+        assert any("chunk_size" in e.message for e in exc_info.value.errors)
+
+    async def test_oversized_chunk_set_after_construction_rejected(self):
+        """The bound is enforced on a config mutated later."""
+        validator = FileValidator()
+        limits = validator.config.limits
+        limits.chunk_size = limits.max_memory_buffer_size + 1
+        upload = _CountingUpload("photo.png", images.png())
+
+        with pytest.raises(FileSecurityConfigurationError):
+            await validator.validate_image_file(upload)
+
+        assert upload.reads == 0
+
+
+_GIF = b"GIF89a" + b"\x01\x00\x01\x00" + b"\x00" * 32
+
+
+class TestImageCheckOrder:
+    """Images run detect, signature, then MIME enforcement."""
+
+    def test_gif_named_png_fails_signature(self):
+        """A GIF body fails the signature check before MIME enforcement."""
+        with pytest.raises(FileSignatureError) as exc_info:
+            FileValidator().validate_image_file_sync(
+                io.BytesIO(_GIF), "photo.png"
+            )
+
+        assert exc_info.value.filename == "photo.png"
+        assert exc_info.value.expected_type == "image"
+
+    async def test_gif_named_png_fails_signature_async(self):
+        """The async path reports the same error."""
+        upload = _CountingUpload("photo.png", _GIF)
+
+        with pytest.raises(FileSignatureError) as exc_info:
+            await FileValidator().validate_image_file(upload)
+
+        assert exc_info.value.expected_type == "image"
+
+    def test_valid_png_accepted(self):
+        """A valid PNG still passes all three checks."""
+        result = FileValidator().validate_image_file_sync(
+            io.BytesIO(images.png()), "photo.png"
+        )
+
+        assert result.mime_type == "image/png"
+
+
+class _NeverReturns:
+    """Upload whose read never completes."""
+
+    filename = "photo.png"
+    size = 1
+
+    async def read(self, size: int = -1) -> bytes:
+        await asyncio.Event().wait()
+        return b""
+
+    async def seek(self, offset: int) -> int:
+        return 0
+
+
+class _ReadTimesOut(_NeverReturns):
+    """Upload whose own read raises TimeoutError."""
+
+    async def read(self, size: int = -1) -> bytes:
+        raise TimeoutError("backend timeout")
+
+
+class TestStalledReadBounded:
+    """The wall-clock limit also bounds a read that never returns."""
+
+    async def test_stalled_read_raises_time_exceeded(self):
+        """A read that never completes ends with a time-limit error."""
+        config = FileSecurityConfig()
+        config.limits = SecurityLimits(max_validation_time_seconds=0.05)
+        validator = FileValidator(config=config)
+
+        with pytest.raises(ResourceLimitError) as exc_info:
+            await asyncio.wait_for(
+                validator.validate_image_file(_NeverReturns()), timeout=5
+            )
+
+        assert exc_info.value.error_code == ErrorCode.RESOURCE_TIME_EXCEEDED
+
+    async def test_read_error_is_not_mistaken_for_time_limit(self):
+        """A TimeoutError raised by the upload itself is not a limit."""
+        with pytest.raises(FileProcessingError) as exc_info:
+            await FileValidator().validate_image_file(_ReadTimesOut())
+
+        assert not isinstance(exc_info.value, ResourceLimitError)
+
+
+class TestExecutorType:
+    """Only a thread pool executor is accepted."""
+
+    def test_process_pool_rejected(self):
+        """A process pool cannot run the inspection closures."""
+        with ProcessPoolExecutor(1) as pool, pytest.raises(TypeError):
+            FileValidator(executor=pool)
+
+    @pytest.mark.parametrize("executor", ["x", object(), 1])
+    def test_non_executor_rejected(self, executor):
+        """Anything that is not a ThreadPoolExecutor is a TypeError."""
+        with pytest.raises(TypeError):
+            FileValidator(executor=executor)
+
+    def test_thread_pool_and_none_accepted(self):
+        """A ThreadPoolExecutor and None construct a validator."""
+        with ThreadPoolExecutor(1) as pool:
+            FileValidator(executor=pool)
+        FileValidator(executor=None)
+
+
+class TestFilenameAssignedAfterValidation:
+    """file.filename changes only once validation succeeded."""
+
+    @pytest.mark.parametrize("stem", list(_PAYLOAD_NAMES))
+    async def test_success_assigns_sanitized_name(self, stem):
+        """A passing upload carries the sanitized name afterwards."""
+        name, data = _payload(stem)
+        base, ext = name.rsplit(".", 1)
+        upload = _CountingUpload(f"../x/{base}<>.{ext}", data)
+
+        result = await getattr(FileValidator(), f"validate_{stem}_file")(
+            upload
+        )
+
+        assert upload.filename == result.filename == f"{base}__.{ext}"
+
+    @pytest.mark.parametrize("stem", list(_PAYLOAD_NAMES))
+    async def test_failure_keeps_original_name(self, stem):
+        """A rejected upload keeps the name the client sent."""
+        name = _PAYLOAD_NAMES[stem]
+        original = f"../x/{name}"
+        upload = _CountingUpload(original, b"not valid content" * 4)
+
+        with pytest.raises(FileValidationError):
+            await getattr(FileValidator(), f"validate_{stem}_file")(upload)
+
+        assert upload.filename == original
+
+    async def test_rejected_filename_keeps_original_name(self):
+        """A name that fails sanitization is left untouched."""
+        upload = _CountingUpload("a.exe", images.png())
+
+        with pytest.raises(FilenameSecurityError):
+            await FileValidator().validate_image_file(upload)
+
+        assert upload.filename == "a.exe"

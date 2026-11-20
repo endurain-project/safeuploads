@@ -150,7 +150,7 @@ except FileValidationError as err:
 - **Image Dimension Limits**: Header-only pixel count check for PNG, JPEG, WebP and HEIC that rejects decompression (pixel) bombs before the host decodes them
 - **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing and FIT structure checks
 - **Gzip Support**: Gzip archive validation with decompression bomb detection
-- **PDF Support**: Whole-file PDF parsing that rejects names from a configurable block-list (`BLOCKED_PDF_NAMES`: JavaScript, launch, embedded files, rich media, XFA, form submission, remote documents), also inside object streams and behind `#xx` escapes; encrypted PDFs; structures readers could parse differently; and Flate streams past a size or ratio limit
+- **PDF Support**: Whole-file PDF parsing that rejects names from a configurable block-list (`BLOCKED_PDF_NAMES`: JavaScript, launch, embedded files, rich media, XFA, form submission, remote documents, 3D artwork JavaScript), also inside object streams and behind `#xx` escapes; encrypted PDFs; structures readers could parse differently; and Flate streams past a size or ratio limit
 - **Content Analysis**: Optional malware signature, web shell, and polyglot file detection
 - **Audit Logging**: Structured security event logging with correlation IDs via `contextvars`
 - **Performance Optimizations**: Pre-compiled pattern sets, `frozenset` lookups

@@ -104,7 +104,9 @@ improperly.
 
 - `ExtensionSecurityValidator` maintains a blocklist generated
   from `DangerousExtensionCategory` covering 16 categories:
-  Windows executables, script files, web scripts, Unix/macOS
+  Windows executables, script files, web scripts (server scripts
+  such as `.php`, `.cfm`, `.ashx` and `.asmx`, and markup a
+  browser runs scripts in: `.html`, `.htm`, `.xhtml`, `.svg`), Unix/macOS
   executables, Java, mobile apps, browser extensions, package
   formats, archives, virtualization, container and disk images
   (`.iso`, `.img`, `.vhd`), Office documents and add-ins that can
@@ -217,9 +219,9 @@ single-level content inspection.
   `.rar`) and every other archive signature (bzip2, xz, 7z, RAR,
   and the tar `ustar` magic at offset 257) is rejected with
   `ZIP_NESTED_ARCHIVE` regardless of the flag.
-- Extensions are taken from the entry name after stripping
-  trailing dots and spaces, as Windows drops them on
-  extraction.
+- Extensions are taken from the entry name as extractors write
+  it: empty and `.` components and the trailing dots and spaces
+  of each component are dropped (`x.7z/.` is `x.7z`).
 - When `scan_zip_content` is enabled (default) and nested
   archives are not allowed, the first bytes of each entry are
   checked against `ZipThreatCategory.NESTED_ARCHIVE_SIGNATURES`
@@ -259,6 +261,11 @@ single-level content inspection.
   `x.fit.gz`), and a ZIP or gzip stream inside it is inspected
   one level deeper under `max_zip_depth`. Gzip levels are bounded
   by depth; the ancestor hash check applies to ZIP levels.
+- `max_uncompressed_size` is cumulative across the whole nesting
+  tree: the declared entry sizes of every archive level and the
+  output of every gzip stream, container bytes included, count
+  toward it, so many nested levels cannot add up past the limit.
+  Exceeding it raises `ZipBombError` (`ZIP_BOMB_DETECTED`).
 - An inner archive or entry that is larger than
   `max_individual_file_size` (`FILE_TOO_LARGE`), cannot be read,
   is corrupt (`ZIP_CORRUPT`) or cannot be inspected is rejected,
@@ -356,6 +363,12 @@ outside the extraction directory (Zip Slip).
   dots (`a/..`, `a/. ./x.txt`) is a traversal, because Windows
   drops trailing dots and spaces from a component. `./x.txt`,
   `a/.config/x` and `a/b..c.txt` are accepted.
+- Extractors write a name without its empty and `.` components
+  and the trailing dots and spaces of each component, with `/`
+  and `\` both separating components, so `evil.exe/.`,
+  `evil.exe\.` and `shell.php/.` are written as `evil.exe` and
+  `shell.php`. The extension, suspicious-name, nested-archive-name
+  and Windows reserved-name checks run on the name in that form.
 - An entry name containing `:`, in its NFC or NFKC form (so a
   fullwidth colon U+FF1A too), is rejected with
   `ZIP_CONTENT_THREAT`: NTFS reads it as an alternate data stream
@@ -385,12 +398,15 @@ host extracting or listing the entries stores it anyway.
     not introduce a path separator or `..`;
   - every path component is checked against
     `WINDOWS_RESERVED_NAMES`;
+  - a name stored without the UTF-8 flag whose raw bytes are
+    valid UTF-8 also gets the Unicode checks on that decoding,
+    since extractors that keep the raw bytes show it that way;
   - a file's base name is checked against `BLOCKED_EXTENSIONS`
     (every extension in the name) and
     `COMPOUND_BLOCKED_EXTENSIONS`.
 - The reserved-name and extension checks run on the NFC name and
-  its NFKC form, after stripping trailing dots and spaces that
-  Windows drops on extraction.
+  its NFKC form, after dropping the empty and `.` components and
+  the trailing dots and spaces that extractors drop.
 - A failing name is reported as `ZIP_CONTENT_THREAT`; the message
   shows the name with control and bidi characters escaped.
 
@@ -402,7 +418,7 @@ hidden inside ZIP archives.
 **Mitigations:**
 
 - Besides `BLOCKED_EXTENSIONS` (see above), the entry's final
-  extension, after stripping trailing dots and spaces, is checked
+  extension, taken from the name as extractors write it, is checked
   against `ZipThreatCategory.EXECUTABLE_FILES`, `SCRIPT_FILES`,
   and `SYSTEM_FILES`, which also cover configuration files such
   as `.ini`, `.cfg` and `.conf`.
@@ -423,9 +439,16 @@ hidden inside ZIP archives.
 - An entry compressed with a method other than stored or
   deflated is rejected with `ZIP_UNSUPPORTED_COMPRESSION` and
   never opened.
-- An entry whose content cannot be opened or read (encrypted,
-  local header name differing from the central directory, or a
-  CRC mismatch seen during the read) is rejected with
+- An entry flagged as encrypted (flag bit 0) is always rejected
+  with `ZIP_ENCRYPTED_ENTRY`, from the header metadata, also with
+  `scan_zip_content=False` and in nested archives, because no
+  check can read its content and an extractor holding the
+  password would write content no check has seen. An encryption
+  flag that differs between the local and the central header is
+  `ZIP_INVALID_STRUCTURE`.
+- An entry whose content cannot be opened or read (a local
+  header name differing from the central directory, or a CRC
+  mismatch seen during the read) is rejected with
   `ZIP_CONTENT_THREAT`, because its content cannot be inspected.
 - With `scan_zip_content` the whole entry is read (for the end
   record search, or by the nested inspection), so a CRC mismatch
@@ -481,7 +504,14 @@ extension.
   accepted as images. A HEIC must open with an `ftyp` box that
   names `heic` or `heix` (HEVC still images) as its major or a
   compatible brand, so AVIF, HEIF image sequences, MP4 and other
-  ISO media are not accepted as HEIC.
+  ISO media are not accepted as HEIC. A HEIC with a top-level
+  `moov` box (an image sequence) is rejected with
+  `IMAGE_INVALID_STRUCTURE` during the dimension check.
+- For an image upload the signature is checked before the MIME
+  allow-list, as for the other types, so content that is not an
+  image raises `FileSignatureError` (`FILE_SIGNATURE_MISMATCH`);
+  a valid image header under an extension the detected type does
+  not list still raises `MimeTypeError`.
 
 ### Polyglot Files
 
@@ -532,8 +562,13 @@ Windows shortcuts) embedded within uploaded files.
   CLSID.
 - Web shell markers are `<?php`, `<script` and the ASP/JSP
   directive forms `<%@ page` and `<%@ language` (with or
-  without the space). A bare `<%` is not a marker in content
-  analysis. Patterns are matched on the raw bytes, lower-cased
+  without the space). A bare `<%` and the PHP short echo tag
+  `<?=` are not markers in content analysis: a 2-3 byte marker
+  occurs by chance in binary samples (about once per 16 MB for
+  3 bytes), so ASP/JSP scriptlets without a directive and PHP
+  short echo tags are not detected. Content analysis is a
+  heuristic; never serve uploads with a type a browser or
+  server executes. Patterns are matched on the raw bytes, lower-cased
   in ASCII, without decoding; memory use is about twice the
   scanned sample.
 
@@ -619,10 +654,12 @@ or opens a remote document, all without any malformed bytes.
   `/EmbeddedFiles`, `/EF`, `/FileAttachment`), `/RichMedia`,
   XFA forms (`/XFA`), form submission and import
   (`/SubmitForm`, `/ImportData`) and remote or embedded
-  documents (`/GoToR`, `/GoToE`). `/OpenAction` and `/AA` are not
-  blocked on their own: they also name harmless actions, such as
-  the `/OpenAction [page /Fit]` that LaTeX writes, while the
-  dangerous actions they can start are blocked by name. `/URI`
+  documents (`/GoToR`, `/GoToE`) and the JavaScript a 3D artwork
+  stream runs when it is loaded (`/OnInstantiate`). `/OpenAction`
+  and `/AA` are not blocked on their own: they also name harmless
+  actions, such as the `/OpenAction [page /Fit]` that LaTeX
+  writes, while the dangerous actions they can start are blocked
+  by name. `/URI`
   links and AcroForm fields without XFA are accepted.
 - A stream whose dictionary has `/F`, `/FFilter` or
   `/FDecodeParms` reads its data from another file and is
@@ -668,6 +705,14 @@ PDF/HTML polyglots).
   entries are rejected rather than repaired: repairing readers
   rebuild the table by scanning, and may find objects the
   validator did not parse.
+- Every cross-reference table and xref stream the scan finds must
+  be one the chain from `startxref` through `/Prev` and
+  `/XRefStm` reached; otherwise the file is rejected with
+  `PDF_INVALID_STRUCTURE`. Some readers start from another
+  section, such as the first-page table of a linearized file, and
+  would otherwise read a table the checks never verified. A
+  genuine linearized file, whose first-page table the chain
+  reaches, is accepted.
 - In a hybrid file the chain continues from the trailer's
   `/Prev`, so an `/XRefStm` stream dictionary with its own
   `/Prev` is rejected; the section it links would go unverified.
@@ -755,6 +800,11 @@ paths (e.g., ZIP with many entries, deeply nested structures).
   variable, which worker threads inherit through the copied
   context. A single blocking call, such as one `zipfile`
   central-directory parse, is not interrupted mid-call.
+- In the async `validate_*_file` methods, each `await file.read()`
+  is bounded by the time left under `max_validation_time_seconds`
+  (`ResourceMonitor.remaining_seconds`), so a stalled upload
+  stream raises `ResourceLimitError` with `RESOURCE_TIME_EXCEEDED`.
+  The `*_sync` methods can check the limit only between chunks.
 - ZIP analysis has its own `zip_analysis_timeout` (default 5 s),
   compared against `time.monotonic()` on each entry during
   iteration.
@@ -792,6 +842,18 @@ size, similar to ZIP bombs.
   `ZIP_CORRUPT`.
 - Exceeding either limit raises a validation error immediately,
   without reading the rest of the stream.
+- A gzip file in which `zipfile` finds a ZIP end record and
+  central directory (a ZIP in the FEXTRA field or in a stored
+  deflate block) is rejected with `CompressionSecurityError`
+  (`GZIP_ZIP_POLYGLOT`), at the top level and, as `ZipContentError`,
+  for a nested entry, because ZIP readers would extract content
+  the gzip checks never see.
+- Every member header is parsed field by field (RFC 1952). The
+  FNAME field (ISO-8859-1) gets the archive entry-name checks of
+  a ZIP entry name, with the same error codes (for example
+  `ZIP_DIRECTORY_TRAVERSAL`), before the member is inflated. An
+  FNAME over 65,535 bytes or a malformed header is `ZIP_CORRUPT`.
+  The same applies to a gzip stream nested in a ZIP.
 - Deflate data that `zlib` cannot decode is rejected with
   `CompressionSecurityError` (`ZIP_CORRUPT`).
 
@@ -817,9 +879,14 @@ reader or thumbnailer renders it.
   limited.
 - The whole PDF is read into memory, bounded by `max_pdf_size`
   (default 50 MB), and the active `ResourceMonitor` is checked
-  every 1,024 tokens, on every inflation step and every
-  `chunk_size` bytes of each predictor row, so a very wide row
-  cannot run past the time limit.
+  every 1,024 tokens or cross-reference entries, on every
+  inflation step and every `chunk_size` bytes of each predictor
+  row, so a very wide row cannot run past the time limit.
+- Number tokens are matched without backtracking, and a
+  cross-reference offset is resolved by a binary search over the
+  object and table header positions the scan recorded, so neither
+  a long run of digits nor many entries pointing into whitespace
+  makes the scan quadratic.
 
 ### Image Decompression Bombs (CWE-400)
 
@@ -937,7 +1004,8 @@ so 60,000 × 60,000 pixels is about 10 GB.
 - HEIC: the size an HEVC bitstream's own parameter sets declare
   is not read, so a coded image larger than its `ispe` is not
   detected; libheif's security limits bound it when decoding.
-  HEIF image sequences are rejected rather than inspected.
+  HEIF image sequences (a top-level `moov` box) are rejected
+  rather than inspected.
 - A host that decodes uploads should decode in an isolated
   worker process with a memory limit, keep the decoder's own
   pixel limit set (for example Pillow's `Image.MAX_IMAGE_PIXELS`)

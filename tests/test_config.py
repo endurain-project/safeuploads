@@ -145,6 +145,7 @@ class TestFileSecurityConfig:
                 {
                     "JS",
                     "JavaScript",
+                    "OnInstantiate",
                     "Launch",
                     "EmbeddedFile",
                     "EmbeddedFiles",
@@ -472,7 +473,9 @@ class TestLimitRangeValidation:
         self, field, valid, invalid, kind
     ):
         """The smallest valid value raises no error-severity issue."""
-        assert _errors_for(**{field: valid}) == []
+        # chunk_size may not exceed the buffer, so shrink it with it
+        extra = {"chunk_size": valid} if "buffer" in field else {}
+        assert _errors_for(**{field: valid}, **extra) == []
 
     @pytest.mark.parametrize(
         ("field", "valid", "invalid", "kind"), _LIMIT_CASES
@@ -495,6 +498,22 @@ class TestLimitRangeValidation:
         errors = _errors_for(**{field: value})
 
         assert [e.error_type for e in errors] == ["invalid_timeout"]
+
+
+class TestChunkSizeBound:
+    """A read chunk never exceeds the memory buffer."""
+
+    def test_chunk_size_equal_to_buffer_is_accepted(self):
+        """chunk_size equal to max_memory_buffer_size is valid."""
+        assert _errors_for(chunk_size=1024, max_memory_buffer_size=1024) == []
+
+    def test_chunk_size_above_buffer_is_rejected(self):
+        """chunk_size past max_memory_buffer_size is an error."""
+        errors = _errors_for(chunk_size=1025, max_memory_buffer_size=1024)
+
+        assert [e.error_type for e in errors] == ["invalid_streaming_limit"]
+        assert "chunk_size" in errors[0].message
+        assert "max_memory_buffer_size" in errors[0].message
 
 
 class TestNestedArchiveScanDependency:

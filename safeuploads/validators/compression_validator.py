@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import struct
 import time
 import zipfile
@@ -58,6 +59,7 @@ _CD_HEADER_SIZE = struct.calcsize(_CD_HEADER_STRUCT)
 _LOCAL_HEADER_STRUCT = "<4s2B4HL2L2H"
 _LOCAL_HEADER_SIGNATURE = b"PK\x03\x04"
 _LOCAL_HEADER_SIZE = struct.calcsize(_LOCAL_HEADER_STRUCT)
+_ENCRYPTED_FLAG = 0x01
 _DATA_DESCRIPTOR_FLAG = 0x08
 _UTF8_NAME_FLAG = 0x800
 _ZIP64_EXTRA_ID = 0x0001
@@ -76,6 +78,44 @@ SUPPORTED_COMPRESSION_METHODS = frozenset(
 PERMITTED_NESTED_ARCHIVE_EXTS = frozenset(
     ZipThreatCategory.RECURSABLE_ARCHIVES.value | {".gz"}
 )
+
+
+def effective_entry_name(name: str) -> str:
+    r"""
+    Return an archive entry name as extractors write it.
+
+    ``zipfile``, ``bsdtar`` and Windows drop empty and ``.`` path
+    components and the trailing dots and spaces of every component,
+    so ``evil.exe/.``, ``evil.exe\.`` and ``evil.exe/ `` are all
+    written as ``evil.exe``. Both ``/`` and ``\`` separate components.
+
+    Args:
+        name: Entry name as stored in the archive.
+
+    Returns:
+        The remaining components joined by ``/``; empty if none is
+        left.
+    """
+    components = (
+        component.rstrip(". ")
+        for component in name.replace("\\", "/").split("/")
+    )
+    return "/".join(component for component in components if component)
+
+
+def entry_extension(name: str) -> str:
+    """
+    Return the final extension of an entry name as extracted.
+
+    Args:
+        name: Entry name as stored in the archive.
+
+    Returns:
+        Lowercase extension of the base name ``effective_entry_name``
+        leaves, including the dot, or an empty string.
+    """
+    base = effective_entry_name(name).rpartition("/")[2]
+    return os.path.splitext(base)[1].lower()
 
 
 class _CentralDirectory(NamedTuple):
@@ -179,6 +219,25 @@ def _central_directory_span(
     if start_dir < 0:
         return None
     return _CentralDirectory(start_dir, size, offset, end)
+
+
+def has_zip_end_record(file_obj: SeekableFile) -> bool:
+    """
+    Check whether ``zipfile`` would open the file as a ZIP archive.
+
+    The end record and central directory are located the way
+    ``zipfile`` locates them (see ``_central_directory_span``), so a
+    file that only carries a ZIP inside it (a gzip FEXTRA field, a
+    stored deflate block) is found too.
+
+    Args:
+        file_obj: Seekable file to check; its position is changed.
+
+    Returns:
+        True if ``zipfile`` finds an end record and a central
+        directory it would read.
+    """
+    return _central_directory_span(file_obj) is not None
 
 
 def _count_zip_entries(file_obj: SeekableFile, limit: int) -> int | None:
@@ -367,7 +426,8 @@ def _local_header_matches(
 
     Readers that walk local headers trust them instead of the
     central directory, so both must name the same entry with the
-    same name encoding, flag bit 3 and compression method. Every
+    same name encoding, flag bits 0 (encryption) and 3 and
+    compression method. Every
     Unicode Path extra field, local or central, must carry the raw
     name, and the central extra field must be well formed. Without
     bit 3 the local CRC-32 and sizes must also agree; with it, the
@@ -392,7 +452,7 @@ def _local_header_matches(
         central_extra is None
         or fields[0] != _LOCAL_HEADER_SIGNATURE
         or (fields[3] ^ entry.flag_bits)
-        & (_DATA_DESCRIPTOR_FLAG | _UTF8_NAME_FLAG)
+        & (_ENCRYPTED_FLAG | _DATA_DESCRIPTOR_FLAG | _UTF8_NAME_FLAG)
         or fields[4] != entry.compress_type
         or name != entry.orig_filename.encode(encoding)
         or not _unicode_paths_match(local_extra + central_extra, name)
@@ -592,11 +652,8 @@ class CompressionSecurityValidator(BaseValidator):
             config: Security configuration with compression limits.
         """
         super().__init__(config)
-        self._nested_archive_exts: tuple[str, ...] = tuple(
+        self._nested_archive_exts: frozenset[str] = frozenset(
             ZipThreatCategory.NESTED_ARCHIVES.value
-        )
-        self._permitted_nested_exts: tuple[str, ...] = tuple(
-            PERMITTED_NESTED_ARCHIVE_EXTS
         )
 
     def validate_zip_compression_ratio(
@@ -610,7 +667,9 @@ class CompressionSecurityValidator(BaseValidator):
         archive with too many entries is rejected at bounded cost;
         the parsed count is checked again after parsing. Every
         entry must be stored or deflated; any other compression
-        method is rejected before entry data is read. Size and
+        method is rejected before entry data is read, and so is an
+        entry flagged as encrypted, whose content no check can read,
+        whether or not ``scan_zip_content`` is enabled. Size and
         ratio checks read the declared ``file_size`` and
         ``compress_size``. Once they pass, the listed entries, the
         central directory and the end records must fill the file
@@ -620,7 +679,9 @@ class CompressionSecurityValidator(BaseValidator):
         (deflated entries are inflated, bounded by the declared
         ``file_size``). A nested archive name is rejected unless
         ``allow_nested_archives`` is set and the name is a ZIP
-        archive's or a gzip stream's. Enable
+        archive's or a gzip stream's; the extension is taken from
+        the name as extracted (``effective_entry_name``), so
+        ``x.7z/.`` is ``x.7z``. Enable
         ``limits.verify_zip_decompression`` to additionally read
         every entry through ``zipfile`` and reject one whose CRC-32
         does not match its data.
@@ -637,7 +698,8 @@ class CompressionSecurityValidator(BaseValidator):
                 that does not match its declared sizes and a
                 directory entry that declares file data), an entry
                 uses an unsupported compression method
-                (``ZIP_UNSUPPORTED_COMPRESSION``), the archive is
+                (``ZIP_UNSUPPORTED_COMPRESSION``), an entry is
+                encrypted (``ZIP_ENCRYPTED_ENTRY``), the archive is
                 corrupt (``ZIP_CORRUPT``), it has too many entries,
                 a nested archive is detected, or an individual file
                 is too large.
@@ -685,6 +747,7 @@ class CompressionSecurityValidator(BaseValidator):
                 for entry in zip_entries:
                     check_resource_limits()
                     self._check_compression_method(entry)
+                    self._check_not_encrypted(entry)
 
                     # Check for timeout
                     if (
@@ -801,14 +864,10 @@ class CompressionSecurityValidator(BaseValidator):
                     # Check for nested archive files; only ZIP and
                     # gzip names are permitted, and only with
                     # allow_nested_archives
-                    filename_lower = entry.filename.lower()
-                    if filename_lower.endswith(
-                        self._nested_archive_exts
-                    ) and not (
+                    extension = entry_extension(entry.filename)
+                    if extension in self._nested_archive_exts and not (
                         self.config.limits.allow_nested_archives
-                        and filename_lower.endswith(
-                            self._permitted_nested_exts
-                        )
+                        and extension in PERMITTED_NESTED_ARCHIVE_EXTS
                     ):
                         nested_archives.append(entry.filename)
 
@@ -1055,6 +1114,41 @@ class CompressionSecurityValidator(BaseValidator):
                 " entries are accepted"
             ),
             error_code=ErrorCode.ZIP_UNSUPPORTED_COMPRESSION,
+        )
+
+    def _check_not_encrypted(self, entry: zipfile.ZipInfo) -> None:
+        """
+        Raise if an entry is flagged as encrypted.
+
+        Neither the content scan nor the layout check can read an
+        encrypted entry's data, and an extractor holding the password
+        writes content no check has seen, so the flag alone rejects
+        the archive.
+
+        Args:
+            entry: Central-directory entry to check.
+
+        Raises:
+            CompressionSecurityError: With ``ZIP_ENCRYPTED_ENTRY`` if
+                flag bit 0 is set.
+        """
+        if not entry.flag_bits & _ENCRYPTED_FLAG:
+            return
+        logger.warning(
+            "Encrypted ZIP entry",
+            extra=log_extra(
+                {
+                    "error_type": "zip_encrypted_entry",
+                    "file_name": entry.filename,
+                }
+            ),
+        )
+        raise CompressionSecurityError(
+            message=(
+                f"Encrypted entry '{entry.filename}': encrypted entries"
+                " cannot be inspected and are not accepted"
+            ),
+            error_code=ErrorCode.ZIP_ENCRYPTED_ENTRY,
         )
 
     def _check_entry_count(self, file_count: int) -> None:

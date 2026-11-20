@@ -76,11 +76,18 @@ that addresses it.
   empty block lists or reserved names, reserved names that are
   not lowercase, an empty `BLOCKED_PDF_NAMES` or an entry that is
   not a bare PDF name, a content scan window smaller than an
-  image, activity or PDF size limit, a `max_sanitized_name_length`
+  image, activity or PDF size limit, a `chunk_size` above
+  `max_memory_buffer_size`, a `max_sanitized_name_length`
   that with the longest allowed extension exceeds 255 bytes),
   including sets overridden
   on the instance;
-  warnings are only logged.
+  warnings are only logged, once, at construction. The
+  configuration is checked again at the start of every
+  validation call, so a limit changed after construction that
+  makes it invalid raises the same error before any byte is
+  read. A `FileValidator` `executor` must be a
+  `ThreadPoolExecutor` or `None`; anything else raises
+  `TypeError`.
 
 ## Content Analysis
 
@@ -191,7 +198,9 @@ and [PDF Parser Differentials](threat-model.md#pdf-parser-differentials)).
   needs an extension, take it from `ValidationResult.filename`,
   not from the uploaded name: it is sanitized, and its extension
   is one the configuration lists for the detected MIME type.
-  `mime_type` alone cannot choose it, since GPX and TCX share
+  The async methods assign the sanitized name to `file.filename`
+  only after validation succeeds; a rejected upload keeps the
+  client's name. `mime_type` alone cannot choose it, since GPX and TCX share
   their XML types. The root element must match the extension
   (`gpx` or `TrainingCenterDatabase`), but the content is not
   validated against the GPX or TCX schema, so an importer must
@@ -230,7 +239,10 @@ and [PDF Parser Differentials](threat-model.md#pdf-parser-differentials)).
   each HEIC box and item entry, PDF tokenizing, stream inflation
   and predictor rows) and on exit; a single blocking call, such
   as one `zipfile` central-directory parse or one libmagic call,
-  is not interrupted mid-call. A `ResourceLimitError` keeps its
+  is not interrupted mid-call. In the async methods each
+  `await file.read()` is also bounded by the time left, so a
+  stalled upload stream is cut off; the `*_sync` methods check
+  only between chunks. A `ResourceLimitError` keeps its
   own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED`
   code.
 - [ ] Request timeout configured at the reverse proxy and

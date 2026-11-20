@@ -108,6 +108,25 @@ class TestResourceMonitorTime:
             raise ValueError("test error")
 
 
+class TestResourceMonitorRemainingTime:
+    """The monitor reports the wall-clock budget still available."""
+
+    def test_remaining_shrinks_with_elapsed_time(self, fake_clock):
+        """remaining_seconds is the limit minus the elapsed time."""
+        fake_clock.now = 100.0
+        with ResourceMonitor(max_time_seconds=10.0) as monitor:
+            fake_clock.now = 104.0
+            assert monitor.remaining_seconds == pytest.approx(6.0)
+
+    def test_remaining_never_negative(self, fake_clock):
+        """An exhausted budget reports zero, not a negative value."""
+        monitor = ResourceMonitor(max_time_seconds=1.0)
+        monitor.start_time = 100.0
+        fake_clock.now = 105.0
+
+        assert monitor.remaining_seconds == 0.0
+
+
 class TestResourceMonitorMemory:
     """Test memory monitoring."""
 

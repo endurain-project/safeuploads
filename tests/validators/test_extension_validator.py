@@ -325,6 +325,13 @@ _ADDED_BLOCKED_EXTENSIONS = [
     ".pgif",
     ".phtm",
     ".inc",
+    ".html",
+    ".htm",
+    ".xhtml",
+    ".svg",
+    ".cfm",
+    ".ashx",
+    ".asmx",
 ]
 
 

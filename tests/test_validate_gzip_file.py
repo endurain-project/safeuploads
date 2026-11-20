@@ -8,6 +8,7 @@ import pytest
 from safeuploads.audit import get_correlation_id
 from safeuploads.config import FileSecurityConfig, SecurityLimits
 from safeuploads.exceptions import (
+    CompressionSecurityError,
     ErrorCode,
     ExtensionSecurityError,
     FilenameSecurityError,
@@ -17,8 +18,14 @@ from safeuploads.exceptions import (
     MimeTypeError,
     ResourceLimitError,
     ZipBombError,
+    ZipContentError,
 )
 from safeuploads.file_validator import FileValidator
+from tests.inspectors.test_gzip_inspector import (
+    build_fextra_polyglot,
+    build_gzip_member,
+    build_stored_polyglot,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -140,6 +147,34 @@ class TestValidateGzipFileDecompressionBomb:
         assert (
             exc_info.value.error_code == ErrorCode.COMPRESSION_RATIO_EXCEEDED
         )
+
+
+class TestValidateGzipFileHeaderChecks:
+    """The gzip header is checked before the upload is accepted."""
+
+    async def test_safe_stored_name_accepted(self, mock_upload_file):
+        """A gzip whose FNAME is an ordinary name passes."""
+        data = build_gzip_member(b"Hello World", name=b"notes.txt")
+        f = mock_upload_file("archive.gz", data)
+        await FileValidator().validate_gzip_file(f)
+
+    async def test_traversal_stored_name_rejected(self, mock_upload_file):
+        """A gzip whose FNAME climbs out of the target is rejected."""
+        data = build_gzip_member(b"Hello World", name=b"../../evil.exe")
+        f = mock_upload_file("archive.gz", data)
+        with pytest.raises(ZipContentError) as exc_info:
+            await FileValidator().validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.ZIP_DIRECTORY_TRAVERSAL
+
+    @pytest.mark.parametrize(
+        "build", [build_fextra_polyglot, build_stored_polyglot]
+    )
+    async def test_zip_polyglot_rejected(self, mock_upload_file, build):
+        """A gzip that zipfile also opens as a ZIP is rejected."""
+        f = mock_upload_file("archive.gz", build())
+        with pytest.raises(CompressionSecurityError) as exc_info:
+            await FileValidator().validate_gzip_file(f)
+        assert exc_info.value.error_code == ErrorCode.GZIP_ZIP_POLYGLOT
 
 
 class TestValidateGzipFileExceptionWrapping:

@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 # Script patterns checked against the lower-cased content,
 # sourced from the shared SuspiciousFilePattern enum. The bare
 # "<%" is left out: this scan covers whole binary samples, where
-# a 2-byte marker occurs by chance. ASP/JSP is detected by the
-# distinctive WEBSHELL_PATTERNS markers instead, added here so
-# they also match in any letter case.
+# a 2-byte marker occurs by chance; the 3-byte PHP short echo tag
+# "<?=" is not a pattern for the same reason. ASP/JSP is detected
+# by the distinctive WEBSHELL_PATTERNS markers instead, added here
+# so they also match in any letter case.
 _SCRIPT_PATTERNS: tuple[str, ...] = tuple(
     pattern
     for pattern in SuspiciousFilePattern.SCRIPT_PATTERNS.value

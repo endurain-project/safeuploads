@@ -48,12 +48,12 @@ safeuploads/
 | `ExtensionSecurityValidator` | Blocked, dangerous and compound extension checks. `validate_allowed` checks an extension against the allowlist and the blocked list. |
 | `WindowsSecurityValidator` | Rejects Windows reserved device names. |
 | `FilenameSecurityValidator` | Strips path components and dangerous characters from a filename and limits its length to `max_sanitized_name_length`. |
-| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image: JPEG, PNG or WebP; ZIP, gzip, activity, FIT, or PDF with `%PDF-` at offset 0). |
+| `FileSignatureValidator` | Checks that the file header matches the signatures of the expected type (image: JPEG, PNG, WebP, or HEIC: an ISOBMFF `ftyp` box naming the `heic` or `heix` brand; ZIP, gzip, activity, FIT, or PDF with `%PDF-` at offset 0). |
 | `MimeTypeValidator` | Detects the MIME type from content with libmagic (serialized by a lock, never falling back to the filename), enforces the allowed MIME types and requires the filename's extension to be one listed for the detected type. |
 | `CompressionSecurityValidator` | Checks compression ratio, uncompressed size, entry count, and nested archive limits, and that the listed entries fill the file exactly. |
 | `XmlSecurityValidator` | Parses XML with `defusedxml`, blocking DTDs and external entities (raises `XmlSecurityError`). |
 | `FitSecurityValidator` | Checks the FIT container: headers, header CRC, data size, CRC-16 per section, and that the sections cover the file exactly. |
-| `ImageDimensionValidator` | Reads width and height from the PNG IHDR chunk, the first JPEG frame header (SOF) or the first WebP chunk (VP8, VP8L or VP8X canvas) without decoding pixels, and rejects an image whose pixel count exceeds `max_image_pixels` (raises `ImageDimensionError`). A missing or malformed dimension header raises `FileSignatureError` with `IMAGE_INVALID_STRUCTURE`. |
+| `ImageDimensionValidator` | Reads width and height from the PNG IHDR chunk, the first JPEG frame header (SOF), the first WebP chunk (VP8, VP8L or VP8X canvas) or the HEIC primary item's `ispe` property without decoding pixels, and rejects an image whose pixel count exceeds `max_image_pixels` (raises `ImageDimensionError`). For HEIC, every `ispe` in the file is checked, and a grid's descriptor and tiles must match its `ispe`. A missing or malformed dimension header raises `FileSignatureError` with `IMAGE_INVALID_STRUCTURE`. |
 | `ZipContentInspector` | Iterates ZIP entries checking for traversal, executables, scripts, symlinks, and recursive structures, and runs the top-level Unicode, Windows reserved-name and blocked-extension checks on each entry name. With `allow_nested_archives`, inspects every inner ZIP like the top level. |
 | `GzipContentInspector` | Streams gzip decompression, checking ratio and size progressively. |
 | `PdfContentInspector` | Tokenizes the whole PDF and verifies the structure readers rely on (header, trailing `startxref` and `%%EOF`, every cross-reference entry, every stream `/Length`, every object stream offset), so no reader parses an object the scan did not see. Rejects encryption, names in `BLOCKED_PDF_NAMES` after `#xx` decoding (including inside object streams), external stream data, unsupported filters and Flate output past `max_pdf_uncompressed_size` or `max_compression_ratio` (raises `PdfSecurityError`). |
@@ -122,6 +122,7 @@ UploadFile
 │    ├── PNG IHDR             │
 │    ├── JPEG frame header    │
 │    ├── WebP VP8/VP8L/VP8X   │
+│    ├── HEIC ispe, grid      │
 │    └── width × height ≤     │
 │        max_image_pixels     │
 └─────────────┬───────────────┘
@@ -444,7 +445,7 @@ UploadFile (.pdf)
 | XML validation | Chunked feed to `defusedxml`'s parser, no element tree built | `chunk_size` at a time |
 | FIT validation | Chunked CRC-16 over each section | `chunk_size` at a time |
 | PDF inspection | The whole file, tokenized outside stream data; Flate streams inflated, object and xref streams kept decoded to parse them | Whole file (bounded by `max_pdf_size`); inflation `chunk_size` at a time, kept output bounded by `max_pdf_uncompressed_size` |
-| Image dimension check | PNG and WebP: first 30 bytes. JPEG: the marker and length of each segment up to the frame header, skipping segment payloads by seek | Minimal; a run of 0xFF fill bytes is read `chunk_size` at a time |
+| Image dimension check | PNG and WebP: first 30 bytes. JPEG: the marker and length of each segment up to the frame header, skipping segment payloads by seek. HEIC: the header of each top-level box, skipping payloads by seek, then the whole `meta` box and the grid descriptor | Minimal for PNG, JPEG and WebP; a run of 0xFF fill bytes is read `chunk_size` at a time. HEIC: the `meta` box (bounded by `max_image_size`, a few KB in camera files) |
 | Content analysis | Byte scan of image, activity and PDF uploads (not ZIP) | Bounded by `content_scan_max_size` (50 MB); about twice the sample while matching |
 
 ---

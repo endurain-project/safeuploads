@@ -7,6 +7,7 @@ from safeuploads.exceptions import ErrorCode, FileSignatureError
 from safeuploads.validators.signature_validator import (
     FileSignatureValidator,
 )
+from tests.images import heic, heif_ftyp
 
 
 class TestSignature:
@@ -51,6 +52,63 @@ class TestSignature:
         with pytest.raises(FileSignatureError) as exc_info:
             validator.validate(content, expected_type="image")
         assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            heif_ftyp(b"heic", (b"mif1", b"heic")),
+            heif_ftyp(b"heix", (b"mif1", b"heix")),
+            heif_ftyp(b"mif1", (b"mif1", b"heic")),
+            heif_ftyp(b"mif1", (b"miaf", b"heix")),
+        ],
+        ids=["heic", "heix", "mif1-heic", "mif1-heix"],
+    )
+    def test_heic_signature_accepted(self, content):
+        """An ftyp box with an HEVC still-image brand passes."""
+        validator = FileSignatureValidator(FileSecurityConfig())
+
+        # Should not raise
+        validator.validate(content + b"\x00" * 16, expected_type="image")
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            heif_ftyp(b"avif", (b"mif1", b"avif")),
+            heif_ftyp(b"msf1", (b"msf1", b"hevc")),
+            heif_ftyp(b"mif1", (b"mif1",)),
+            heif_ftyp(b"isom", (b"isom", b"mp41")),
+            # heic beyond the declared ftyp size
+            b"\x00\x00\x00\x10ftypmif1\x00\x00\x00\x00heic" + b"\x00" * 8,
+            # ftyp size past the bytes read
+            b"\x00\x00\x01\x00ftypmif1\x00\x00\x00\x00heic",
+            b"\x00\x00\x00\x0cftypheic",
+            b"\x00\x00\x00\x18ftop" + b"heic" * 4,
+        ],
+        ids=[
+            "avif",
+            "sequence",
+            "mif1-only",
+            "mp4",
+            "brand-outside-box",
+            "box-past-content",
+            "box-below-minimum",
+            "not-ftyp",
+        ],
+    )
+    def test_non_heic_iso_media_rejected(self, content):
+        """ISO media without an HEVC still-image brand is rejected."""
+        validator = FileSignatureValidator(FileSecurityConfig())
+
+        with pytest.raises(FileSignatureError) as exc_info:
+            validator.validate(content + b"\x00" * 16, expected_type="image")
+        assert exc_info.value.error_code == ErrorCode.FILE_SIGNATURE_MISMATCH
+
+    def test_heic_signature_not_accepted_for_other_types(self):
+        """The HEIC signature counts only for the image type."""
+        validator = FileSignatureValidator(FileSecurityConfig())
+
+        with pytest.raises(FileSignatureError):
+            validator.validate(heic(), expected_type="zip")
 
     def test_webp_signature_not_accepted_for_other_types(
         self, valid_webp_bytes

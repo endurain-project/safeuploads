@@ -40,6 +40,36 @@ _SIGNATURES: dict[str, list[bytes]] = {
 }
 
 
+# ISOBMFF brands of HEVC-coded still images (HEIF Main and Main 10
+# profiles); AVIF, image sequences and other codecs carry others.
+_HEIC_BRANDS = frozenset({b"heic", b"heix"})
+# ftyp box header (8), major brand (4) and minor version (4)
+_FTYP_MIN_SIZE = 16
+
+
+def _is_heic(content: bytes) -> bool:
+    """
+    Report whether content starts with a HEIC file type box.
+
+    Args:
+        content: Leading bytes of the uploaded file.
+
+    Returns:
+        Whether an ftyp box opens the file and lists an HEVC
+        still-image brand as its major or a compatible brand.
+    """
+    if content[4:8] != b"ftyp":
+        return False
+    size = int.from_bytes(content[:4], "big")
+    if not _FTYP_MIN_SIZE <= size <= len(content):
+        return False
+    brands = {content[8:12]}
+    brands.update(
+        content[i : i + 4] for i in range(_FTYP_MIN_SIZE, size - 3, 4)
+    )
+    return not _HEIC_BRANDS.isdisjoint(brands)
+
+
 class FileSignatureValidator(BaseValidator):
     """
     Checks the leading bytes of a file against its expected type.
@@ -99,6 +129,10 @@ class FileSignatureValidator(BaseValidator):
             and content[:4] == b"RIFF"
             and content[8:12] == b"WEBP"
         ):
+            return
+
+        # HEIC: an ISOBMFF ftyp box naming an HEVC still-image brand
+        if expected_type == "image" and _is_heic(content):
             return
 
         # FIT files: ".FIT" at bytes 8-11

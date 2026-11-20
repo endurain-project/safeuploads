@@ -232,6 +232,10 @@ class FileSecurityConfig:
                 "image/jpeg": frozenset({".jpg", ".jpeg"}),
                 "image/png": frozenset({".png"}),
                 "image/webp": frozenset({".webp"}),
+                # libmagic reports image/heif when the major brand is
+                # mif1 and HEVC is only a compatible brand
+                "image/heic": frozenset({".heic", ".heif"}),
+                "image/heif": frozenset({".heic", ".heif"}),
             }
         )
     )

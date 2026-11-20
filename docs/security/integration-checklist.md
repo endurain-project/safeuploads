@@ -105,7 +105,12 @@ bodies are not caught (see
   uploaded bytes, so metadata (EXIF, GPS), data appended to the
   image and secondary images are dropped.
 - [ ] Image decoder libraries (Pillow, libjpeg-turbo, libpng,
-  libwebp) kept up to date.
+  libwebp, and libheif with libde265 for HEIC) kept up to date.
+- [ ] A host that cannot decode HEIC removes `image/heic` and
+  `image/heif` from `ALLOWED_IMAGE_TYPES`.
+- [ ] HEIC is decoded with the decoder's own limits on, such as
+  libheif's security limits, which also bound the HEVC
+  bitstream size that safeuploads does not read.
 
 ## PDF Handling
 
@@ -207,8 +212,8 @@ and [PDF Parser Differentials](threat-model.md#pdf-parser-differentials)).
   only the time limit applies.
 - [ ] Both limits are checked at loop boundaries (upload
   streaming, ZIP entry loops, gzip decompression, each XML
-  chunk, each JPEG segment before the frame header, PDF
-  tokenizing and stream inflation) and on exit; a single blocking call, such as one
+  chunk, each JPEG segment before the frame header, each HEIC
+  box and item entry, PDF tokenizing and stream inflation) and on exit; a single blocking call, such as one
   `zipfile` central-directory parse or one libmagic call, is
   not interrupted mid-call. A `ResourceLimitError` keeps its
   own `RESOURCE_TIME_EXCEEDED` or `RESOURCE_MEMORY_EXCEEDED`

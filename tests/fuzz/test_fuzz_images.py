@@ -12,8 +12,10 @@ _IMAGE_SIGNATURES = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")
 
 
 def _is_known_image(content):
-    """Return whether content starts like a JPEG, PNG or WebP."""
+    """Return whether content starts like a JPEG, PNG, WebP or HEIC."""
     if content.startswith(_IMAGE_SIGNATURES):
+        return True
+    if content[4:8] == b"ftyp":
         return True
     return content[:4] == b"RIFF" and content[8:12] == b"WEBP"
 
@@ -110,6 +112,7 @@ class TestFuzzImageValidation:
                 ("a.png", images.png, 2**31 - 1),
                 ("a.jpg", images.jpeg, 2**16 - 1),
                 ("a.webp", images.webp, 2**14),
+                ("a.heic", images.heic, 2**32 - 1),
             ]
         ),
         data=st.data(),
@@ -135,3 +138,27 @@ class TestFuzzImageValidation:
         """Arbitrary bytes between APP0 and the frame must not crash."""
         content = images.jpeg(8, 8, before_frame=segments)
         await _assert_accepts_only_images("fuzz.jpg", content)
+
+    @given(meta=st.binary(min_size=0, max_size=2000))
+    @settings(max_examples=200, deadline=3000)
+    @pytest.mark.asyncio
+    async def test_mutated_heic_meta_never_crashes(self, meta):
+        """Arbitrary bytes in a HEIC meta box must not crash."""
+        content = images.heif_file(images.heif_box(b"meta", meta))
+        await _assert_accepts_only_images("fuzz.heic", content)
+
+    @given(data=st.data())
+    @settings(max_examples=200, deadline=3000)
+    @pytest.mark.asyncio
+    async def test_mutated_heic_grid_never_crashes(self, data):
+        """Flipping bytes of a grid HEIC's meta box must not crash."""
+        content = bytearray(
+            images.heic_grid(64, 48, rows=2, columns=2, tile=(32, 24))
+        )
+        start = len(images.heif_ftyp())
+        for _ in range(data.draw(st.integers(min_value=1, max_value=8))):
+            index = data.draw(
+                st.integers(min_value=start, max_value=len(content) - 1)
+            )
+            content[index] = data.draw(st.integers(0, 255))
+        await _assert_accepts_only_images("fuzz.heic", bytes(content))

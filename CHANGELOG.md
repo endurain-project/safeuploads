@@ -19,8 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `PdfSecurityError`, exported from `safeuploads`: a `FileValidationError` raised with the new `ErrorCode.PDF_INVALID_STRUCTURE` (default), `PDF_ENCRYPTED`, `PDF_ACTIVE_CONTENT` or `PDF_STREAM_BOMB`.
 - Configuration validation reports an empty `BLOCKED_PDF_NAMES` (`empty_blocked_pdf_names`), an entry that is not a bare printable ASCII PDF name (`invalid_pdf_name`), and a `max_pdf_size` (`invalid_size_limit`) or `max_pdf_uncompressed_size` (`invalid_uncompressed_size`) of 0 or less.
 
+- HEIC image support. `FileSignatureValidator` accepts an ISOBMFF file whose opening `ftyp` box names `heic` or `heix` (HEVC still images) as its major or a compatible brand; AVIF, HEIF image sequences, MP4 and other ISO media are still rejected. `ALLOWED_IMAGE_TYPES` maps `image/heic` and `image/heif` (what libmagic reports when the major brand is `mif1`) to `.heic` and `.heif`.
+- `ImageDimensionValidator` reads HEIC dimensions from the primary item's `ispe` property without decoding, and checks every `ispe` in the file against `max_image_pixels`. A grid's descriptor, read from the location `iloc` gives, must declare the grid's `ispe` size, and its tiles must be HEVC images of one size that cover it exactly. A HEIC whose item structure is missing, malformed or uses another codec as its primary image raises `FileSignatureError` with `IMAGE_INVALID_STRUCTURE`.
+
 ### Changed
 
+- **Breaking:** `ALLOWED_IMAGE_TYPES` allows HEIC by default, so `validate_image_file()` accepts `.heic` and `.heif` uploads. A host that cannot decode HEIC removes `image/heic` and `image/heif` from it.
 - **Breaking:** with `enable_content_analysis`, `content_scan_max_size` must also cover `max_pdf_size`. A configuration whose window is below 50 MB now fails validation with `content_scan_window_too_small`; lower `max_pdf_size` to the window or raise the window.
 
 ## [4.0.1] - 2026-11-15

@@ -44,6 +44,7 @@ _JPEG = images.jpeg()
 _POLYGLOT_JPEG = images.jpeg(body=b"\x00" * 9000 + b"PK\x03\x04")
 _WEBP = images.webp()
 _POLYGLOT_WEBP = _WEBP + b"\x00" * 9000 + b"PK\x03\x04"
+_HEIC = images.heic()
 _PIXEL_BOMB_PNG = images.png(60000, 60000)
 # The frame header sits past a 20 KB EXIF segment
 _PIXEL_BOMB_JPEG = images.jpeg(
@@ -102,6 +103,7 @@ _BOMB_LIMITS = {
 _VALID = [
     ("image", "photo.jpg", _JPEG),
     ("image", "photo.webp", _WEBP),
+    ("image", "photo.heic", _HEIC),
     ("zip", "archive.zip", _ZIP),
     ("activity", "track.gpx", _GPX),
     ("activity", "workout.tcx", _TCX),
@@ -114,6 +116,7 @@ _VALID_IDS = [f"{stem}-{name}" for stem, name, _ in _VALID]
 _VALID_MIMES = [
     "image/jpeg",
     "image/webp",
+    "image/heic",
     "application/zip",
     "text/xml",
     "text/xml",

@@ -145,7 +145,7 @@ except FileValidationError as err:
 - **MIME Type Verification**: Magic number validation for images, ZIP, activity files, gzip, and PDF, with the extension required to match the detected type
 - **Streaming Validation**: Memory-efficient processing via `SpooledTemporaryFile` for large files
 - **Resource Monitoring**: wall-clock time and memory limits enforced via `ResourceMonitor` during the work
-- **Image Dimension Limits**: Header-only pixel count check for PNG, JPEG and WebP that rejects decompression (pixel) bombs before the host decodes them
+- **Image Dimension Limits**: Header-only pixel count check for PNG, JPEG, WebP and HEIC that rejects decompression (pixel) bombs before the host decodes them
 - **Activity File Support**: GPX, TCX, and FIT file validation with XXE-safe XML parsing and FIT structure checks
 - **Gzip Support**: Gzip archive validation with decompression bomb detection
 - **PDF Support**: Whole-file PDF parsing that rejects names from a configurable block-list (`BLOCKED_PDF_NAMES`: JavaScript, launch, embedded files, rich media, XFA, form submission, remote documents), also inside object streams and behind `#xx` escapes; encrypted PDFs; structures readers could parse differently; and Flate streams past a size or ratio limit

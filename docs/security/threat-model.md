@@ -407,7 +407,10 @@ extension.
 - File signatures (magic bytes) are verified independently of
   the MIME type. A WebP must carry `WEBP` at bytes 8-11 of its
   RIFF container, so WAV, AVI and other RIFF files are not
-  accepted as images.
+  accepted as images. A HEIC must open with an `ftyp` box that
+  names `heic` or `heix` (HEVC still images) as its major or a
+  compatible brand, so AVIF, HEIF image sequences, MP4 and other
+  ISO media are not accepted as HEIC.
 
 ### Polyglot Files
 
@@ -636,7 +639,8 @@ significantly during validation consumes all available memory.
   accounting is disabled.
 - The limit is checked at loop boundaries (upload streaming, ZIP
   entry loops, gzip decompression, each XML chunk, each JPEG
-  segment before the frame header) and on exit,
+  segment before the frame header, each HEIC box and item
+  entry) and on exit,
   and raises `ResourceLimitError` with
   `RESOURCE_MEMORY_EXCEEDED`. A single blocking call is not
   interrupted mid-call.
@@ -755,6 +759,23 @@ so 60,000 × 60,000 pixels is about 10 GB.
   (signature 0x2F, version 0) or `VP8X`, whose canvas size is
   checked. Any other first chunk is rejected with
   `IMAGE_INVALID_STRUCTURE`.
+- HEIC: the top-level boxes are walked to the one `meta` box,
+  whose `hdlr` must be `pict`. The primary item (`pitm`) must be
+  an HEVC image (`hvc1`) or a grid, and its size is its one
+  `ispe` property. Every `ispe` in the file is checked against
+  the limit, so a thumbnail, alpha, depth or tile image cannot
+  declare a larger size than the primary. For a grid, which a
+  decoder sizes from its descriptor rather than its `ispe`, the
+  descriptor is read from the location in `iloc` (in `idat` or
+  at a file offset, at most 12 bytes) and its output size must
+  equal the `ispe`. The grid must reference (`dimg`) exactly
+  rows × columns HEVC tiles of one size that cover the output,
+  trimmed only at the right and bottom edges, so the tiles
+  decoded add up to about the output size. Missing, repeated,
+  truncated or oversized boxes, unsupported box versions,
+  protected (encrypted) items, other codecs or derivations as
+  the primary item, and data outside the file or `idat` are
+  rejected with `IMAGE_INVALID_STRUCTURE`.
 - The check runs after the signature check and before content
   analysis, on the upload streamed to a spooled temp file. The
   JPEG walk checks the active `ResourceMonitor` on every
@@ -762,7 +783,9 @@ so 60,000 × 60,000 pixels is about 10 GB.
   the frame header, so a 20 MB JPEG made only of 4-byte
   segments takes seconds, bounded by `max_image_size` and
   `max_validation_time_seconds`. A run of 0xFF fill bytes is
-  skipped `chunk_size` bytes at a time.
+  skipped `chunk_size` bytes at a time. The HEIC walk checks it
+  on every box and every `ipma` and `iloc` entry; the `meta`
+  box is read into memory whole, bounded by `max_image_size`.
 
 **Decoding trust boundary:**
 
@@ -779,6 +802,10 @@ so 60,000 × 60,000 pixels is about 10 GB.
   canvas, but the number of frames is not limited, and data
   after a JPEG's end of image (such as the secondary images of
   an MPO file) is not parsed.
+- HEIC: the size an HEVC bitstream's own parameter sets declare
+  is not read, so a coded image larger than its `ispe` is not
+  detected; libheif's security limits bound it when decoding.
+  HEIF image sequences are rejected rather than inspected.
 - A host that decodes uploads should decode in an isolated
   worker process with a memory limit, keep the decoder's own
   pixel limit set (for example Pillow's `Image.MAX_IMAGE_PIXELS`)

@@ -544,6 +544,106 @@ class TestValidateImageFile:
         assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("filename", "content", "detected"),
+        [
+            ("photo.heic", images.heic(4032, 3024), "image/heic"),
+            ("photo.HEIF", images.heic(), "image/heic"),
+            (
+                "tiled.heic",
+                images.heic_grid(
+                    4032, 3024, rows=6, columns=8, tile=(512, 512)
+                ),
+                "image/heic",
+            ),
+            (
+                "photo.heif",
+                images.heif_ftyp(b"mif1", (b"mif1", b"heic"))
+                + images.heic()[len(images.heif_ftyp()) :],
+                "image/heif",
+            ),
+        ],
+        ids=["heic", "heif-extension", "grid", "mif1-brand"],
+    )
+    async def test_validate_valid_heic(
+        self, mock_upload_file, filename, content, detected
+    ):
+        """HEVC-coded HEIF images are accepted as .heic or .heif."""
+        validator = FileValidator()
+        file = mock_upload_file(filename=filename, content=content)
+
+        result = await validator.validate_image_file(file)
+
+        assert result == ValidationResult(filename, detected)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ftyp",
+        [
+            images.heif_ftyp(b"avif", (b"mif1", b"avif")),
+            images.heif_ftyp(b"msf1", (b"msf1", b"hevc")),
+        ],
+        ids=["avif", "heif-sequence"],
+    )
+    async def test_other_heif_family_named_heic_rejected(
+        self, mock_upload_file, ftyp
+    ):
+        """AVIF and image sequences under a .heic name are rejected."""
+        validator = FileValidator()
+        content = ftyp + images.heic()[len(images.heif_ftyp()) :]
+        file = mock_upload_file(filename="photo.heic", content=content)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.MIME_TYPE_MISMATCH
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("filename", ["photo.jpg", "photo.webp"])
+    async def test_heic_under_another_types_extension_rejected(
+        self, mock_upload_file, filename
+    ):
+        """A HEIC under another image format's extension fails."""
+        validator = FileValidator()
+        file = mock_upload_file(filename=filename, content=images.heic())
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+        assert exc_info.value.detected_mime == "image/heic"
+
+    @pytest.mark.asyncio
+    async def test_png_named_heic_rejected(
+        self, mock_upload_file, valid_png_bytes
+    ):
+        """A PNG under a .heic name fails."""
+        validator = FileValidator()
+        file = mock_upload_file(filename="photo.heic", content=valid_png_bytes)
+
+        with pytest.raises(MimeTypeError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.EXTENSION_MIME_MISMATCH
+
+    @pytest.mark.asyncio
+    async def test_heic_grid_larger_than_its_ispe_rejected(
+        self, mock_upload_file
+    ):
+        """A grid whose descriptor exceeds its ispe is rejected."""
+        validator = FileValidator()
+        content = images.heic_grid(
+            4032,
+            3024,
+            rows=6,
+            columns=8,
+            tile=(512, 512),
+            grid_size=(60000, 60000),
+        )
+        file = mock_upload_file(filename="bomb.heic", content=content)
+
+        with pytest.raises(FileSignatureError) as exc_info:
+            await validator.validate_image_file(file)
+        assert exc_info.value.error_code == ErrorCode.IMAGE_INVALID_STRUCTURE
+
+    @pytest.mark.asyncio
     async def test_validate_image_missing_filename(
         self, mock_upload_file, valid_jpeg_bytes
     ):
@@ -662,6 +762,7 @@ class TestImagePixelLimit:
             ("a.png", images.png),
             ("a.jpg", images.jpeg),
             ("a.webp", images.webp),
+            ("a.heic", images.heic),
         ],
     )
     async def test_limit_is_inclusive(self, mock_upload_file, filename, build):

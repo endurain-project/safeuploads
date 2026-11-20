@@ -130,9 +130,9 @@ validator = FileValidator(config=config)
 ```json
 {
   "error": "invalid_mime_type",
-  "message": "Invalid file type. Detected: application/x-dosexec. Allowed: image/jpeg, image/png, image/webp",
+  "message": "Invalid file type. Detected: application/x-dosexec. Allowed: image/jpeg, image/png, image/webp, image/heic, image/heif",
   "detected_mime": "application/x-dosexec",
-  "allowed_mimes": ["image/jpeg", "image/png", "image/webp"],
+  "allowed_mimes": ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"],
   "error_code": "MIME_TYPE_MISMATCH"
 }
 ```

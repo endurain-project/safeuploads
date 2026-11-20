@@ -815,7 +815,7 @@ class FileValidator:
 
     async def validate_image_file(self, file: UploadFile) -> ValidationResult:
         """
-        Validate an uploaded PNG, JPEG or WebP image.
+        Validate an uploaded PNG, JPEG, WebP or HEIC image.
 
         Checks filename, extension, size, MIME type, signature and
         the pixel count the image header declares, then runs the

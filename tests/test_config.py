@@ -94,6 +94,8 @@ class TestFileSecurityConfig:
             "image/jpeg": frozenset({".jpg", ".jpeg"}),
             "image/png": frozenset({".png"}),
             "image/webp": frozenset({".webp"}),
+            "image/heic": frozenset({".heic", ".heif"}),
+            "image/heif": frozenset({".heic", ".heif"}),
         }
 
     def test_allowed_zip_types(self):

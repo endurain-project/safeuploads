@@ -186,3 +186,303 @@ def webp(width: int = 1, height: int = 1, *, body: bytes = b"") -> bytes:
         A RIFF container holding one VP8L chunk and ``body``.
     """
     return riff_webp(vp8l_chunk(width, height) + body)
+
+
+def heif_box(kind: bytes, payload: bytes) -> bytes:
+    """
+    Build one ISOBMFF box with a 32-bit size.
+
+    Args:
+        kind: Four-byte box type.
+        payload: Box payload.
+
+    Returns:
+        Size, type and payload.
+    """
+    return struct.pack(">I", 8 + len(payload)) + kind + payload
+
+
+def heif_full_box(
+    kind: bytes, payload: bytes, *, version: int = 0, flags: int = 0
+) -> bytes:
+    """
+    Build one ISOBMFF full box.
+
+    Args:
+        kind: Four-byte box type.
+        payload: Payload after the version and flags.
+        version: Box version.
+        flags: 24-bit box flags.
+
+    Returns:
+        The box.
+    """
+    return heif_box(
+        kind, bytes((version,)) + flags.to_bytes(3, "big") + payload
+    )
+
+
+def heif_ftyp(
+    major: bytes = b"heic", compatible: tuple[bytes, ...] = (b"mif1", b"heic")
+) -> bytes:
+    """
+    Build a file type box.
+
+    Args:
+        major: Major brand.
+        compatible: Compatible brands.
+
+    Returns:
+        The ftyp box.
+    """
+    return heif_box(
+        b"ftyp", major + b"\x00\x00\x00\x00" + b"".join(compatible)
+    )
+
+
+def heif_infe(item_id: int, item_type: bytes, *, protection: int = 0) -> bytes:
+    """
+    Build a version 2 item info entry.
+
+    Args:
+        item_id: Item ID.
+        item_type: Four-byte item type.
+        protection: Item protection index (0 when unprotected).
+
+    Returns:
+        The infe box.
+    """
+    return heif_full_box(
+        b"infe",
+        struct.pack(">HH", item_id, protection) + item_type + b"\x00",
+        version=2,
+    )
+
+
+def heif_iinf(entries: list[bytes], *, count: int | None = None) -> bytes:
+    """
+    Build an item info box.
+
+    Args:
+        entries: infe boxes.
+        count: Declared entry count; ``len(entries)`` when omitted.
+
+    Returns:
+        The iinf box.
+    """
+    declared = len(entries) if count is None else count
+    return heif_full_box(
+        b"iinf", struct.pack(">H", declared) + b"".join(entries)
+    )
+
+
+def heif_ispe(width: int, height: int) -> bytes:
+    """
+    Build an image spatial extents property.
+
+    Args:
+        width: Image width.
+        height: Image height.
+
+    Returns:
+        The ispe box.
+    """
+    return heif_full_box(b"ispe", struct.pack(">II", width, height))
+
+
+def heif_ipma(associations: list[tuple[int, tuple[int, ...]]]) -> bytes:
+    """
+    Build a version 0 property association box with 8-bit indices.
+
+    Args:
+        associations: Item ID and its 1-based ipco property indices.
+
+    Returns:
+        The ipma box.
+    """
+    body = struct.pack(">I", len(associations))
+    for item_id, indices in associations:
+        body += struct.pack(">HB", item_id, len(indices)) + bytes(indices)
+    return heif_full_box(b"ipma", body)
+
+
+def heif_iprp(properties: list[bytes], ipma: bytes) -> bytes:
+    """
+    Build an item properties box.
+
+    Args:
+        properties: Property boxes placed in ipco, in index order.
+        ipma: The ipma box.
+
+    Returns:
+        The iprp box.
+    """
+    return heif_box(b"iprp", heif_box(b"ipco", b"".join(properties)) + ipma)
+
+
+def heif_iloc(items: list[tuple[int, int, list[tuple[int, int]]]]) -> bytes:
+    """
+    Build a version 1 item location box with 32-bit fields.
+
+    Args:
+        items: Item ID, construction method and (offset, length)
+            extents of each item.
+
+    Returns:
+        The iloc box.
+    """
+    body = b"\x44\x00" + struct.pack(">H", len(items))
+    for item_id, method, extents in items:
+        body += struct.pack(">HHHH", item_id, method, 0, len(extents))
+        for offset, length in extents:
+            body += struct.pack(">II", offset, length)
+    return heif_full_box(b"iloc", body, version=1)
+
+
+def heif_dimg(from_id: int, to_ids: list[int]) -> bytes:
+    """
+    Build a version 0 item reference box with one dimg reference.
+
+    Args:
+        from_id: Derived item ID (the grid).
+        to_ids: Input item IDs (the tiles), in grid order.
+
+    Returns:
+        The iref box.
+    """
+    ref = struct.pack(">HH", from_id, len(to_ids))
+    ref += b"".join(struct.pack(">H", i) for i in to_ids)
+    return heif_full_box(b"iref", heif_box(b"dimg", ref))
+
+
+def heif_grid_descriptor(
+    rows: int, columns: int, width: int, height: int
+) -> bytes:
+    """
+    Build an ImageGrid descriptor, 32-bit fields above 65535.
+
+    Args:
+        rows: Tile rows, 1 to 256.
+        columns: Tile columns, 1 to 256.
+        width: Output width.
+        height: Output height.
+
+    Returns:
+        Version, flags, rows, columns and output size.
+    """
+    if width > 0xFFFF or height > 0xFFFF:
+        return struct.pack(
+            ">BBBBII", 0, 1, rows - 1, columns - 1, width, height
+        )
+    return struct.pack(">BBBBHH", 0, 0, rows - 1, columns - 1, width, height)
+
+
+def heif_meta(
+    children: list[bytes], *, handler: bytes = b"pict", primary: int = 1
+) -> bytes:
+    """
+    Build a meta box with hdlr and pitm before ``children``.
+
+    Args:
+        children: Remaining meta child boxes.
+        handler: Handler type in hdlr.
+        primary: Primary item ID in pitm.
+
+    Returns:
+        The meta box.
+    """
+    hdlr = heif_full_box(b"hdlr", b"\x00" * 4 + handler + b"\x00" * 13)
+    pitm = heif_full_box(b"pitm", struct.pack(">H", primary))
+    return heif_full_box(b"meta", hdlr + pitm + b"".join(children))
+
+
+def heif_file(meta: bytes, *, ftyp: bytes | None = None) -> bytes:
+    """
+    Place a meta box between ftyp and a small mdat.
+
+    Args:
+        meta: The meta box.
+        ftyp: File type box; a HEIC one when omitted.
+
+    Returns:
+        The file.
+    """
+    return (heif_ftyp() if ftyp is None else ftyp) + meta + _HEIF_MDAT
+
+
+# Stands in for coded image data, which the checks never read
+_HEIF_MDAT = heif_box(b"mdat", b"\x00" * 16)
+
+
+def heic(width: int = 1, height: int = 1) -> bytes:
+    """
+    Build a HEIC holding one HEVC image item.
+
+    Args:
+        width: Image width in ispe.
+        height: Image height in ispe.
+
+    Returns:
+        The file.
+    """
+    return heif_file(
+        heif_meta(
+            [
+                heif_iloc([(1, 0, [(0, 16)])]),
+                heif_iinf([heif_infe(1, b"hvc1")]),
+                heif_iprp([heif_ispe(width, height)], heif_ipma([(1, (1,))])),
+            ]
+        )
+    )
+
+
+def heic_grid(
+    width: int,
+    height: int,
+    *,
+    rows: int,
+    columns: int,
+    tile: tuple[int, int],
+    grid_size: tuple[int, int] | None = None,
+) -> bytes:
+    """
+    Build a HEIC whose primary item is a grid of HEVC tiles.
+
+    Item 1 is the grid, items 2 onward its tiles; the grid
+    descriptor is stored in idat.
+
+    Args:
+        width: Grid width in its ispe.
+        height: Grid height in its ispe.
+        rows: Tile rows.
+        columns: Tile columns.
+        tile: Width and height in every tile's ispe.
+        grid_size: Output size in the grid descriptor; the ispe
+            size when omitted.
+
+    Returns:
+        The file.
+    """
+    out_width, out_height = grid_size or (width, height)
+    descriptor = heif_grid_descriptor(rows, columns, out_width, out_height)
+    tiles = list(range(2, 2 + rows * columns))
+    return heif_file(
+        heif_meta(
+            [
+                heif_iloc(
+                    [(1, 1, [(0, len(descriptor))])]
+                    + [(t, 0, [(0, 16)]) for t in tiles]
+                ),
+                heif_iinf(
+                    [heif_infe(1, b"grid")]
+                    + [heif_infe(t, b"hvc1") for t in tiles]
+                ),
+                heif_dimg(1, tiles),
+                heif_iprp(
+                    [heif_ispe(width, height), heif_ispe(*tile)],
+                    heif_ipma([(1, (1,))] + [(t, (2,)) for t in tiles]),
+                ),
+                heif_box(b"idat", descriptor),
+            ]
+        )
+    )
